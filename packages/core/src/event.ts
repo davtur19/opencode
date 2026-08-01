@@ -129,6 +129,14 @@ export interface Interface {
     data: Data<D>,
     options?: PublishOptions,
   ) => Effect.Effect<Payload<D>>
+  /** Atomically persist a batch of durable events (single transaction) and notify once per aggregate. */
+  readonly publishBatch: <D extends Definition>(
+    input: readonly {
+      readonly definition: D
+      readonly data: Data<D>
+      readonly options?: PublishOptions
+    }[],
+  ) => Effect.Effect<Payload<D>[]>
   readonly subscribe: <D extends Definition>(definition: D) => Stream.Stream<Payload<D>>
   readonly all: () => Stream.Stream<Payload>
   readonly durable: (input: { readonly aggregateID: string; readonly after?: number }) => Stream.Stream<Payload>
@@ -363,6 +371,174 @@ export const layerWith = (options?: LayerOptions) =>
               )
             }
           }
+        })
+      }
+
+      /** Batch commit of fresh durable events (no replay input). All items must share one aggregate. */
+      function commitDurableEvents(
+        items: readonly {
+          readonly definition: Definition
+          readonly event: Payload
+          readonly commit?: (seq: number) => Effect.Effect<void>
+        }[],
+      ) {
+        return Effect.gen(function* () {
+          const durableItems = items.filter((item) => item.definition?.durable)
+          if (durableItems.length === 0) return [] as Payload[]
+          const durable = durableItems[0]!.definition!.durable!
+          const aggregateID = (durableItems[0]!.event.data as Record<string, unknown>)[durable.aggregate]
+          if (typeof aggregateID !== "string") {
+            yield* Effect.die(
+              new InvalidDurableEventError({
+                type: durableItems[0]!.event.type,
+                message: `Expected string aggregate field ${durable.aggregate}`,
+              }),
+            )
+          } else {
+            if (
+              durableItems.some(
+                (item) =>
+                  (item.event.data as Record<string, unknown>)[item.definition!.durable!.aggregate] !== aggregateID,
+              )
+            ) {
+              yield* Effect.die(
+                new InvalidDurableEventError({
+                  type: durableItems[0]!.event.type,
+                  message: "Batch durable events must share a single aggregate",
+                }),
+              )
+            }
+            return yield* Effect.uninterruptible(
+              Effect.gen(function* () {
+                const committed = yield* db
+                  .transaction(
+                    () =>
+                      Effect.gen(function* () {
+                        const row = yield* db
+                          .select({ seq: EventSequenceTable.seq, ownerID: EventSequenceTable.owner_id })
+                          .from(EventSequenceTable)
+                          .where(eq(EventSequenceTable.aggregate_id, aggregateID))
+                          .get()
+                          .pipe(Effect.orDie)
+                        const latest = row?.seq ?? -1
+                        const results: Payload[] = []
+                        let seq = latest + 1
+                        for (const item of durableItems) {
+                          const definition = item.definition!
+                          const version = definition.durable!.version
+                          const encoded = Schema.encodeUnknownSync(definition.data)(item.event.data) as Record<
+                            string,
+                            unknown
+                          >
+                          const stored = yield* db
+                            .select({ aggregateID: EventTable.aggregate_id, seq: EventTable.seq })
+                            .from(EventTable)
+                            .where(eq(EventTable.id, item.event.id))
+                            .get()
+                            .pipe(Effect.orDie)
+                          if (stored)
+                            yield* Effect.die(
+                              new InvalidDurableEventError({
+                                type: item.event.type,
+                                message: `Event ${item.event.id} already exists at aggregate ${stored.aggregateID} sequence ${stored.seq}`,
+                              }),
+                            )
+                          const committedEvent = {
+                            ...item.event,
+                            durable: { aggregateID, seq, version },
+                          } as Payload
+                          const list = projectors.get(item.event.type) ?? []
+                          for (const projector of list) {
+                            yield* projector(committedEvent)
+                          }
+                          if (item.commit) yield* item.commit(seq)
+                          yield* db
+                            .insert(EventTable)
+                            .values([
+                              {
+                                id: item.event.id,
+                                aggregate_id: aggregateID,
+                                seq,
+                                type: versionedType(definition.type, version),
+                                data: encoded,
+                              },
+                            ])
+                            .run()
+                            .pipe(Effect.orDie)
+                          results.push(committedEvent)
+                          seq += 1
+                        }
+                        yield* db
+                          .insert(EventSequenceTable)
+                          .values([{ aggregate_id: aggregateID, seq: seq - 1 }])
+                          .onConflictDoUpdate({
+                            target: EventSequenceTable.aggregate_id,
+                            set: { seq: seq - 1 },
+                          })
+                          .run()
+                          .pipe(Effect.orDie)
+                        return results
+                      }),
+                    { behavior: "immediate" },
+                  )
+                  .pipe(Effect.orDie)
+                for (const event of committed) {
+                  yield* Effect.forEach(
+                    pubsub.durable.get(event.durable!.aggregateID) ?? [],
+                    (wake) => PubSub.publish(wake, undefined),
+                    { discard: true },
+                  )
+                }
+                return committed
+              }),
+            )
+          }
+          return [] as Payload[]
+        })
+      }
+
+      function publishBatch<D extends Definition>(
+        input: readonly {
+          readonly definition: D
+          readonly data: Data<D>
+          readonly options?: PublishOptions
+        }[],
+      ) {
+        return Effect.gen(function* () {
+          const serviceLocation = Option.getOrUndefined(yield* Effect.serviceOption(Location.Service))
+          const durableItems: {
+            readonly definition: Definition
+            readonly event: Payload
+            readonly commit?: (seq: number) => Effect.Effect<void>
+          }[] = []
+          const ephemeral: Payload[] = []
+          for (const { definition, data, options } of input) {
+            const location =
+              options?.location ??
+              (serviceLocation
+                ? { directory: serviceLocation.directory, workspaceID: serviceLocation.workspaceID }
+                : undefined)
+            const payload = {
+              id: options?.id ?? ID.create(),
+              ...(options?.metadata ? { metadata: options.metadata } : {}),
+              type: definition.type,
+              ...(location ? { location } : {}),
+              data,
+            } as Payload
+            if (definition?.durable) {
+              durableItems.push({ definition, event: payload, commit: options?.commit })
+            } else {
+              ephemeral.push(payload)
+            }
+          }
+          const committed = yield* commitDurableEvents(durableItems)
+          const results = [...committed, ...ephemeral]
+          yield* Effect.forEach(
+            results,
+            (event) => notify(event, event.durable !== undefined),
+            { discard: true },
+          )
+          return results as Payload<D>[]
         })
       }
 
@@ -621,6 +797,7 @@ export const layerWith = (options?: LayerOptions) =>
 
       return Service.of({
         publish,
+        publishBatch,
         subscribe,
         all: streamAll,
         durable,

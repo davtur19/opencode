@@ -38,7 +38,7 @@ import { SessionID, MessageID, PartID } from "./schema"
 
 import type { Provider } from "@/provider/provider"
 import { Global } from "@opencode-ai/core/global"
-import { Effect, Layer, Option, Context, Schema, Types } from "effect"
+import { Effect, Fiber, Layer, Option, Context, Schema, Types } from "effect"
 import { NonNegativeInt, optional } from "@opencode-ai/core/schema"
 import { RuntimeFlags } from "@/effect/runtime-flags"
 import { ProviderV2 } from "@opencode-ai/core/provider"
@@ -498,6 +498,60 @@ const layer: Layer.Layer<
     const events = yield* EventV2Bridge.Service
     const flags = yield* RuntimeFlags.Service
 
+    // Coalesced part updates. `updatePart` is called once per stream/tool chunk with the
+    // full part payload; each call previously ran a full durable commit (event-log insert +
+    // part upsert + sequence upsert in one SQLite transaction) and a `structuredClone`.
+    // During a burst only the latest state of each part matters (the projector upserts whole
+    // parts), so we debounce per part and persist every part once per short window.
+    const PART_FLUSH_INTERVAL = 80 // ms
+    const pendingParts = new Map<string, { part: SessionV1.Part; time: number }>()
+    let flushFiber: Fiber.Fiber<void, never> | undefined = undefined
+
+    const partKey = (part: SessionV1.Part) => `${part.sessionID}:${part.messageID}:${part.id}`
+
+    const flushPendingParts = Effect.fn("Session.flushPendingParts")(function* () {
+      flushFiber = undefined
+      if (pendingParts.size === 0) return
+      const entries = Array.from(pendingParts.entries())
+      pendingParts.clear()
+      // `publishBatch` requires every durable event in one batch to share a single
+      // aggregate (session), otherwise `commitDurableEvents` dies with
+      // "Batch durable events must share a single aggregate". The `pendingParts` map
+      // is shared across sessions, so group the pending updates by session before
+      // publishing.
+      const bySession = new Map<string, (typeof entries)[number][]>()
+      for (const entry of entries) {
+        const sessionID = entry[1].part.sessionID
+        const group = bySession.get(sessionID)
+        if (group) group.push(entry)
+        else bySession.set(sessionID, [entry])
+      }
+      for (const group of bySession.values()) {
+        yield* events.publishBatch(
+          group.map(([, { part, time }]) => ({
+            definition: SessionV1.Event.PartUpdated,
+            data: { sessionID: part.sessionID, part, time },
+          })),
+        )
+      }
+    })
+
+    const schedulePartFlush = Effect.fn("Session.schedulePartFlush")(function* () {
+      if (flushFiber) return
+      flushFiber = yield* Effect.forkDetach(
+        Effect.sleep(`${PART_FLUSH_INTERVAL} millis`).pipe(
+          Effect.andThen(flushPendingParts),
+          Effect.ensuring(
+            Effect.sync(() => {
+              flushFiber = undefined
+            }),
+          ),
+        ),
+      )
+    })
+
+    yield* Effect.addFinalizer(flushPendingParts)
+
     const createNext = Effect.fn("Session.createNext")(function* (input: {
       id?: SessionID
       title?: string
@@ -636,11 +690,8 @@ const layer: Layer.Layer<
 
     const updatePart = <T extends SessionV1.Part>(part: T): Effect.Effect<T> =>
       Effect.gen(function* () {
-        yield* events.publish(SessionV1.Event.PartUpdated, {
-          sessionID: part.sessionID,
-          part: structuredClone(part),
-          time: Date.now(),
-        })
+        pendingParts.set(partKey(part), { part, time: Date.now() })
+        yield* schedulePartFlush()
         return part
       }).pipe(Effect.withSpan("Session.updatePart"))
 
@@ -868,6 +919,7 @@ const layer: Layer.Layer<
       messageID: MessageID
       partID: PartID
     }) {
+      pendingParts.delete(`${input.sessionID}:${input.messageID}:${input.partID}`)
       yield* events.publish(SessionV1.Event.PartRemoved, {
         sessionID: input.sessionID,
         messageID: input.messageID,
