@@ -696,7 +696,7 @@ const layer: Layer.Layer<
       if (flushFiber) return
       flushFiber = yield* Effect.forkDetach(
         Effect.sleep(`${PART_FLUSH_INTERVAL} millis`).pipe(
-          Effect.andThen(flushPendingParts),
+          Effect.andThen(() => flushPendingParts()),
           Effect.ensuring(
             Effect.sync(() => {
               flushFiber = undefined
@@ -706,7 +706,7 @@ const layer: Layer.Layer<
       )
     })
 
-    yield* Effect.addFinalizer(flushPendingParts)
+    yield* Effect.addFinalizer(() => flushPendingParts())
 
     const createNext = Effect.fn("Session.createNext")(function* (input: {
       id?: SessionID
