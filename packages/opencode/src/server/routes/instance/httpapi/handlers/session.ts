@@ -61,7 +61,18 @@ export const sessionHandlers = HttpApiBuilder.group(InstanceHttpApi, "session", 
     const events = yield* EventV2Bridge.Service
     const scope = yield* Scope.Scope
 
+    // Read-your-writes policy for HTTP reads: `Session.updatePart` coalesces part updates
+    // in a buffer that is flushed on an ~80ms debounce (see Session.flushNow), so reads
+    // that go straight to the DB (session/message reads here, the run-loop history in
+    // prompt.ts) could miss the latest parts. Handlers that serve part-bearing data call
+    // `session.flushNow()` before reading: it drains the buffer synchronously (bounded,
+    // best-effort — see Session.flushNow) and awaits any in-flight flush, preserving
+    // streaming coalescing when the buffer is empty.
+
     const list = Effect.fn("SessionHttpApi.list")(function* (ctx: { query: typeof ListQuery.Type }) {
+      // Read-your-writes: session rows are touched by part projectors (usage/token deltas),
+      // so flush before listing to reflect parts still sitting in the buffer.
+      yield* session.flushNow()
       const directory = ctx.query.directory ? yield* InstanceState.directory : undefined
       return yield* session.list({
         directory: ctx.query.scope === "project" ? undefined : directory,
@@ -83,8 +94,6 @@ export const sessionHandlers = HttpApiBuilder.group(InstanceHttpApi, "session", 
     })
 
     const get = Effect.fn("SessionHttpApi.get")(function* (ctx: { params: { sessionID: SessionID } }) {
-      // Read-your-writes: flush coalesced part updates before serving the session
-      // so its message count/latest update reflect parts still sitting in the buffer.
       yield* session.flushNow()
       return yield* requireSession(ctx.params.sessionID)
     })
@@ -119,9 +128,6 @@ export const sessionHandlers = HttpApiBuilder.group(InstanceHttpApi, "session", 
         })
       }
       yield* requireSession(ctx.params.sessionID)
-      // Read-your-writes: part updates are coalesced in a buffer (Session.updatePart)
-      // and flushed on a debounce, so HTTP message reads could miss the latest parts.
-      // Flush synchronously before serving, mirroring the run loop in prompt.ts.
       yield* session.flushNow()
       if (ctx.query.limit === undefined || ctx.query.limit === 0) {
         return yield* SessionError.mapStorageNotFound(session.messages({ sessionID: ctx.params.sessionID }))
@@ -154,8 +160,6 @@ export const sessionHandlers = HttpApiBuilder.group(InstanceHttpApi, "session", 
     const message = Effect.fn("SessionHttpApi.message")(function* (ctx: {
       params: { sessionID: SessionID; messageID: MessageID }
     }) {
-      // Read-your-writes: flush coalesced part updates so the returned message
-      // includes the latest parts, not just what was already durable.
       yield* session.flushNow()
       return yield* SessionError.mapStorageNotFound(
         MessageV2.get({ sessionID: ctx.params.sessionID, messageID: ctx.params.messageID }),
@@ -285,6 +289,9 @@ export const sessionHandlers = HttpApiBuilder.group(InstanceHttpApi, "session", 
       payload: typeof SummarizePayload.Type
     }) {
       yield* revertSvc.cleanup(yield* requireSession(ctx.params.sessionID))
+      // Read-your-writes: the compacting prompt is built from the session messages, so
+      // flush coalesced part updates before reading them (see the flushNow policy above).
+      yield* session.flushNow()
       const messages = yield* SessionError.mapStorageNotFound(session.messages({ sessionID: ctx.params.sessionID }))
       const defaultAgent = yield* agentSvc.defaultAgent()
       const currentAgent = messages.findLast((message) => message.info.role === "user")?.info.agent ?? defaultAgent

@@ -2,6 +2,7 @@ import { LayerNode } from "@opencode-ai/core/effect/layer-node"
 import { PermissionV1 } from "@opencode-ai/core/v1/permission"
 import { Slug } from "@opencode-ai/core/util/slug"
 import { SessionV1 } from "@opencode-ai/core/v1/session"
+import { EventV2 } from "@opencode-ai/core/event"
 import { serviceUse } from "@opencode-ai/core/effect/service-use"
 import path from "path"
 import { BackgroundJob } from "@/background/job"
@@ -459,7 +460,13 @@ export interface Interface {
     partID: PartID
   }) => Effect.Effect<SessionV1.Part | undefined>
   readonly updatePart: <T extends SessionV1.Part>(part: T) => Effect.Effect<T>
-  /** Flush the coalesced part-update buffer synchronously and await any in-flight flush (read-your-writes). */
+  /**
+   * Best-effort read-your-writes barrier. Flushes the coalesced part-update buffer and
+   * awaits any in-flight flush so bulk readers (LLM history, HTTP reads) see the latest
+   * parts. Bounded retries (~3 attempts with short backoff) — it does NOT guarantee
+   * durability: on persistent failures it logs a warning and leaves the scheduled
+   * 250ms retry to persist the buffer.
+   */
   readonly flushNow: () => Effect.Effect<void>
   readonly updatePartDelta: (input: {
     sessionID: SessionID
@@ -505,24 +512,44 @@ const layer: Layer.Layer<
     // part upsert + sequence upsert in one SQLite transaction) and a `structuredClone`.
     // During a burst only the latest state of each part matters (the projector upserts whole
     // parts), so we debounce per part and persist every part once per short window.
+    // NOTE: persistence happens at flush time, up to ~80ms after the last `updatePart`.
+    // A crash inside that window can lose the part's latest state (the previous state that
+    // was already flushed stays durable). This is the accepted tradeoff that makes streaming
+    // chunks cheaper than one durable transaction per chunk.
     const PART_FLUSH_INTERVAL = 80 // ms
     const PART_FLUSH_RETRY_INTERVAL = 250 // ms
-    const pendingParts = new Map<string, { part: SessionV1.Part; time: number }>()
+    const PART_FLUSH_BACKOFF = 100 // ms, pause between flushNow attempts
+    const pendingParts = new Map<string, { part: SessionV1.Part; time: number; eventId: EventV2.ID }>()
     let flushFiber: Fiber.Fiber<void, never> | undefined = undefined
-    // Barrier completing when the currently running flush finishes. `removePart` awaits it
-    // so no PartUpdated committed by an in-flight flush can land after the PartRemoved.
+    // Single-flight barrier: at most one flush drains the buffer at a time. Concurrent
+    // callers (the 80ms debounce, flushNow, the 250ms retry, removePart) await the in-flight
+    // flush's barrier and re-check the buffer afterwards instead of draining concurrently.
     let flushBarrier: Deferred.Deferred<void> | undefined = undefined
+    // True while a detached 250ms retry is scheduled (sleeping or running). A failed flush
+    // only schedules a retry when this is false, so a failure never spawns more than one
+    // retry, no matter how many callers observe it.
+    let retryScheduled = false
 
     const partKey = (part: SessionV1.Part) => `${part.sessionID}:${part.messageID}:${part.id}`
 
     const flushPendingParts: () => Effect.Effect<void, never, never> = Effect.fn("Session.flushPendingParts")(function* () {
+      // Serialize: if another flush is already running, wait for it and then re-check the
+      // buffer. The drain loop of the in-flight flush keeps re-snapshotting, so entries added
+      // while it ran are covered either by it or by us becoming the next owner.
+      let inFlight = flushBarrier
+      while (inFlight) {
+        yield* Deferred.await(inFlight).pipe(Effect.ignore)
+        if (pendingParts.size === 0) return
+        inFlight = flushBarrier
+      }
       const barrier = yield* Deferred.make<void>()
       flushBarrier = barrier
       try {
         // Drain the buffer. Each iteration snapshots the pending entries, clears the map and
         // publishes one batch per session. Entries only leave the buffer after a successful
-        // publish; on failure they are restored and a retry with a short backoff is scheduled,
-        // so a failed flush never drops an update.
+        // publish; on failure they are restored (with their original event id) and a retry
+        // with a short backoff is scheduled, so a failed flush never drops an update and a
+        // retry reuses the same event id instead of committing a duplicate event.
         while (pendingParts.size > 0) {
           const entries = Array.from(pendingParts.entries())
           pendingParts.clear()
@@ -542,8 +569,12 @@ const layer: Layer.Layer<
           for (const group of bySession.values()) {
             const result = yield* events
               .publishBatch(
-                group.map(([, { part, time }]) => ({
+                group.map(([, { part, time, eventId }]) => ({
                   definition: SessionV1.Event.PartUpdated,
+                  // Reuse the id allocated at buffer time (updatePart) so every attempt of
+                  // the same buffered content produces the same durable event id: a retry
+                  // can never commit a duplicate event or double-notify subscribers.
+                  options: { id: eventId },
                   // Deliver a snapshot to subscribers: callers keep mutating the buffered
                   // object between flushes, so clone at delivery time (not per updatePart).
                   data: { sessionID: part.sessionID, part: structuredClone(part), time },
@@ -562,15 +593,27 @@ const layer: Layer.Layer<
             yield* Effect.logWarning("Session.flushPendingParts failed, scheduling retry", {
               batch: entries.length,
             })
-            yield* Effect.forkDetach(
-              Effect.sleep(`${PART_FLUSH_RETRY_INTERVAL} millis`).pipe(Effect.andThen(flushPendingParts)),
-            )
+            // At most one detached retry per failure: while a retry is scheduled (sleeping
+            // or running) no other failure may schedule another. The retry clears the flag
+            // just before running so a failure of the retry itself schedules the next one.
+            if (!retryScheduled) {
+              retryScheduled = true
+              yield* Effect.forkDetach(
+                Effect.sleep(`${PART_FLUSH_RETRY_INTERVAL} millis`).pipe(
+                  Effect.andThen(
+                    Effect.sync(() => {
+                      retryScheduled = false
+                    }),
+                  ),
+                  Effect.andThen(flushPendingParts),
+                ),
+              )
+            }
             break
           }
         }
       } finally {
         flushBarrier = undefined
-        flushFiber = undefined
         yield* Deferred.succeed(barrier, undefined).pipe(Effect.ignore)
       }
     })
@@ -729,31 +772,41 @@ const layer: Layer.Layer<
 
     const updatePart = <T extends SessionV1.Part>(part: T): Effect.Effect<T> =>
       Effect.gen(function* () {
-        pendingParts.set(partKey(part), { part, time: Date.now() })
+        // Buffer the update and allocate its durable event id once, here: every attempt to
+        // flush this buffered version reuses this id, so retries can never commit a
+        // duplicate PartUpdated (see flushPendingParts). Persistence happens on the next
+        // flush (~80ms debounce); a crash inside that window loses the part's latest state.
+        pendingParts.set(partKey(part), { part, time: Date.now(), eventId: EventV2.ID.create() })
         yield* schedulePartFlush()
         return part
       }).pipe(Effect.withSpan("Session.updatePart"))
 
     const flushNow: Interface["flushNow"] = Effect.fn("Session.flushNow")(function* () {
-      // Read-your-writes for bulk readers. `updatePart` buffers parts to coalesce streaming
-      // chunks, and bulk reads (MessageV2.page/hydrate — the run loop's LLM history) go
-      // straight to the DB, which never sees the buffer. Flush synchronously and await any
-      // in-flight flush so a prompt saved moments ago (e.g. a subagent's first message) is
-      // durable before the next DB read. Only drains when the buffer is non-empty, so
-      // streaming coalescing is preserved: this runs once per turn, not per chunk.
+      // Best-effort read-your-writes for bulk readers. `updatePart` buffers parts to
+      // coalesce streaming chunks, and bulk reads (MessageV2.page/hydrate — the run loop's
+      // LLM history, HTTP session reads) go straight to the DB, which never sees the buffer.
+      // Flush synchronously and await any in-flight flush so a prompt saved moments ago
+      // (e.g. a subagent's first message) is durable before the next DB read. Only drains
+      // when the buffer is non-empty, so streaming coalescing is preserved.
+      // Bounded, NOT guaranteed-durable: `flushPendingParts` restores the buffer on failure
+      // (never fails), so this retries at most MAX_ATTEMPTS times with a short pause and
+      // then gives up with a warning — durability is left to the scheduled 250ms retry.
+      // This deliberately avoids the old busy-loop that spawned one detached retry per
+      // iteration when the DB rejected the batch.
+      const MAX_ATTEMPTS = 3
+      let attempts = 0
       while (true) {
         if (pendingParts.size === 0 && !flushBarrier) return
-        const barrier = flushBarrier
-        if (barrier) {
-          // A flush is in progress; await it. Its drain loop keeps re-checking the buffer,
-          // so it also covers entries added while it was running.
-          yield* Deferred.await(barrier).pipe(Effect.ignore)
-          continue
-        }
-        // Run the flush directly instead of waiting out the debounce. If a debounce flush is
-        // already scheduled (sleeping) it wakes to an empty buffer and no-ops; concurrent
-        // flush runs drain atomically, so no entry is published twice.
+        attempts += 1
         yield* flushPendingParts()
+        if (pendingParts.size === 0) return
+        if (attempts >= MAX_ATTEMPTS) {
+          yield* Effect.logWarning("Session.flushNow: parts still buffered after 3 attempts; leaving the scheduled retry to persist them", {
+            pending: pendingParts.size,
+          })
+          return
+        }
+        yield* Effect.sleep(`${PART_FLUSH_BACKOFF} millis`)
       }
     })
 
@@ -762,7 +815,10 @@ const layer: Layer.Layer<
       // otherwise the processor's tool-call dedup (ensureToolCall/readToolCall) misses the
       // part and creates a second part with the same tool_call_id.
       const pending = pendingParts.get(`${input.sessionID}:${input.messageID}:${input.partID}`)
-      if (pending) return pending.part
+      // Return a copy, never the live buffered object: callers (the processor's tool-call
+      // dedup) hold the part across stream chunks and must not corrupt the buffer that the
+      // next flush snapshot is built from.
+      if (pending) return structuredClone(pending.part)
       const row = yield* db
         .select()
         .from(PartTable)
@@ -990,13 +1046,19 @@ const layer: Layer.Layer<
       // Ordering: no PartUpdated for a removed part may commit after its PartRemoved.
       // 1. Drop any still-buffered update so a future flush cannot publish it.
       pendingParts.delete(key)
-      // 2. Await any in-flight flush that may have already snapshotted the part, so its
-      //    PartUpdated commits before we publish PartRemoved.
-      const barrier = flushBarrier
-      if (barrier) yield* Deferred.await(barrier).pipe(Effect.ignore)
-      // 3. A failed flush restores entries to the buffer; drop them again before publishing
-      //    PartRemoved, otherwise a scheduled retry would resurrect the removed part.
-      pendingParts.delete(key)
+      // 2. Wait out ANY in-flight flush (of any caller — debounce, flushNow, retry). Its
+      //    drain may have already snapshotted this part, so its PartUpdated must commit
+      //    before we publish PartRemoved. A failed flush restores entries and schedules a
+      //    retry, so keep looping until no flush is in flight, dropping the key again each
+      //    time — the scheduled retry drains the map fresh and must never see this key.
+      let inFlight = flushBarrier
+      while (inFlight) {
+        yield* Deferred.await(inFlight).pipe(Effect.ignore)
+        pendingParts.delete(key)
+        inFlight = flushBarrier
+      }
+      // 3. No flush is in flight and the key is not buffered; any flush that starts now
+      //    snapshots the map without this part, so PartRemoved is its last event.
       yield* events.publish(SessionV1.Event.PartRemoved, {
         sessionID: input.sessionID,
         messageID: input.messageID,

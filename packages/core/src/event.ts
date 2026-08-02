@@ -518,6 +518,11 @@ export const layerWith = (options?: LayerOptions) =>
               (serviceLocation
                 ? { directory: serviceLocation.directory, workspaceID: serviceLocation.workspaceID }
                 : undefined)
+            // Idempotency: a caller retrying the same content (e.g. re-flushing a failed
+            // part batch) MUST reuse the same options.id. `commitDurableEvents` rejects an
+            // event id that already exists, so a retry that reuses the id cannot commit a
+            // duplicate durable event or double-notify subscribers, while a fresh
+            // ID.create() on every attempt would.
             const payload = {
               id: options?.id ?? ID.create(),
               ...(options?.metadata ? { metadata: options.metadata } : {}),
