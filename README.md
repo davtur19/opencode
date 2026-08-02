@@ -43,6 +43,31 @@
 
 ---
 
+## OpenCode fork — improvements over upstream v1.18.11
+
+This fork's default branch (`main`) contains all the changes below on top of upstream opencode v1.18.11.
+
+### Performance (server)
+- Coalesced part updates: part updates are buffered and flushed every 80ms (`PART_FLUSH_INTERVAL`) to reduce SQLite writes while streaming.
+- `publishBatch` / `commitDurableEvents`: durable events are committed in a single transaction per aggregate.
+- Read-through `getPart`: buffered parts are visible before the flush (fixes duplicate tool-calls on rapid updates).
+- Atomic `flushPendingParts` with barrier + retry (250ms) and correct `removePart` ordering (no resurrect of removed parts).
+- `flushNow` before LLM-history reads and HTTP session reads (`get`/`messages`/`message`) for read-your-writes on the web API.
+
+### Web UI
+- Collapsible thinking blocks, with reasoning text visible in streaming.
+- Session resync + SSE reconnect when the tab becomes visible again (fixes out-of-sync after a backgrounded tab).
+- Offline banner with reconnecting state; animations paused while offline; auto-resync on reconnect.
+- Subagent task attribution with title fallback when the `sessionId` metadata is missing.
+- Shell tool output rendered as a terminal with ANSI color support; shell tool parts expanded by default.
+- Mobile fixes: composer overlap, larger touch targets, responsive titlebar.
+- Home sessions scoped to the selected project directory (memoized filter).
+- i18n parity: 7 missing keys added to all 17 non-English locales.
+
+### Notes
+- All fork changes are contained in this single branch for easy cloning.
+- The original per-area feature branches (and their PRs against `dev`) remain available: see `github.com/davtur19/opencode/pulls`.
+
 ### Installation
 
 ```bash
