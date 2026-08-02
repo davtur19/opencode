@@ -1,0 +1,23 @@
+/* Composer bottom bar — narrow (mobile) viewports.
+   The agent/model/variant controls are wrapped in Kobalte tooltip/menu
+   triggers that do not shrink on their own (min-width: auto), so with a long
+   selected model name the text runs into the send button instead of
+   truncating. Allowing every direct child of the control row to shrink lets
+   the existing `truncate` spans kick in and keeps the send button clear. */
+[data-component="prompt-input-v2"] [data-slot="prompt-controls"] > * {
+  min-width: 0;
+}
+
+/* Touch devices: a comfortable send-button tap target (>= 40px) and a tighter
+   max-width for the model selector so the ellipsis shows before the button. */
+@media (hover: none) and (pointer: coarse) {
+  [data-component="prompt-input-v2"] [data-action="prompt-model"] {
+    max-width: 140px;
+  }
+
+  [data-component="prompt-input-v2"] [data-action="prompt-submit"] {
+    width: 40px;
+    height: 40px;
+    padding: 10px;
+  }
+}
