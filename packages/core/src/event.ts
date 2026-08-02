@@ -431,25 +431,42 @@ export const layerWith = (options?: LayerOptions) =>
                             unknown
                           >
                           const stored = yield* db
-                            .select({ aggregateID: EventTable.aggregate_id, seq: EventTable.seq })
+                            .select({
+                              aggregateID: EventTable.aggregate_id,
+                              seq: EventTable.seq,
+                              type: EventTable.type,
+                              data: EventTable.data,
+                            })
                             .from(EventTable)
                             .where(eq(EventTable.id, item.event.id))
                             .get()
                             .pipe(Effect.orDie)
-                          if (stored)
-                            // Defense in depth: in the part-flush flow
-                            // (Session.flushPendingParts) this is unreachable — buffered parts
-                            // reuse the event id allocated at buffer time, so every retry
-                            // references an id that is either not yet committed (first attempt)
-                            // or already committed (idempotent replay). Do NOT build a retry
+                          if (stored) {
+                            // Idempotent replay: the part-flush flow (Session.flushPendingParts)
+                            // reuses the event id allocated at buffer time, so a retry after an
+                            // interrupted flush finds the id already committed. If the stored row
+                            // matches (same aggregate, type and data), treat it as a legit replay:
+                            // the insert, projectors and commit hook already ran on the first
+                            // attempt, so skip them (and their seq slot) and continue the batch —
+                            // otherwise the catchDefect in flushPendingParts restores the buffer
+                            // and the retry dies forever with the buffer stuck. Divergent content
+                            // under the same id is a real anomaly → die. Do NOT build a retry
                             // that generates a fresh id per attempt: it would trip this guard
                             // and die with a duplicate-event error.
+                            if (
+                              stored.aggregateID === aggregateID &&
+                              stored.type === versionedType(definition.type, version) &&
+                              isDeepStrictEqual(stored.data, encoded)
+                            ) {
+                              continue
+                            }
                             yield* Effect.die(
                               new InvalidDurableEventError({
                                 type: item.event.type,
                                 message: `Event ${item.event.id} already exists at aggregate ${stored.aggregateID} sequence ${stored.seq}`,
                               }),
                             )
+                          }
                           const committedEvent = {
                             ...item.event,
                             durable: { aggregateID, seq, version },

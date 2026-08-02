@@ -289,6 +289,11 @@ const layer = Layer.effect(
               metadata: value.providerMetadata,
             }
             yield* session.updatePart(ctx.reasoningMap[value.id])
+            // Symmetric to text-start (see below): publish the empty reasoning snapshot
+            // immediately, before the first reasoning-delta is broadcast live. The client
+            // discards deltas for parts it has not seen yet, so buffering the snapshot on
+            // the 80ms debounce would drop the first reasoning tokens.
+            yield* session.flushNow()
             return
 
           case "reasoning-delta":
@@ -498,7 +503,11 @@ const layer = Layer.effect(
             // is broadcast live: the client discards deltas for parts it has not seen
             // yet, so buffering the snapshot on the 80ms debounce would hide the first
             // token. flushNow is typed and exposed on Session.Service (see session.ts).
-            yield* session.flushNow()
+            if (!(yield* session.flushNow())) {
+              yield* Effect.logWarning("text-start flush failed: first deltas may be dropped by clients", {
+                "session.id": ctx.currentText.sessionID,
+              })
+            }
             return
 
           case "text-delta":

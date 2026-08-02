@@ -1093,13 +1093,14 @@ const layer = Layer.effect(
           // (and the previous assistant parts) are buffered by Session.updatePart and only
           // flushed on an 80ms debounce. A subagent's prompt is saved via updatePart and its
           // run loop reads the history milliseconds later — without a synchronous flush the
-          // model would see an empty user message.
-          if (!(yield* sessions.flushNow())) {
+          // model would see an empty user message. Scope the flush to this session so other
+          // sessions' coalescing is not disturbed.
+          if (!(yield* sessions.flushNow(sessionID))) {
             // The DB rejected the batch: retry once after a short pause. If it still fails,
             // warn loudly and proceed — the model must still respond this turn even though
             // the history it builds may be stale/missing parts.
             yield* Effect.sleep("150 millis")
-            if (!(yield* sessions.flushNow())) {
+            if (!(yield* sessions.flushNow(sessionID))) {
               yield* Effect.logWarning("flushNow failed after retries; history may be stale", {
                 "session.id": sessionID,
               })
