@@ -4,11 +4,14 @@ import { FileIcon } from "@opencode-ai/ui/file-icon"
 import { List } from "@opencode-ai/ui/list"
 import type { ListRef } from "@opencode-ai/ui/list"
 import { getDirectory, getFilename } from "@opencode-ai/core/util/path"
+import { useQuery } from "@tanstack/solid-query"
 import { createMemo, createResource, createSignal } from "solid-js"
 import { useLanguage } from "@/context/language"
+import { loadHomeSessionIndex } from "@/context/global-sync/home-session-index"
 import { ServerConnection } from "@/context/server"
 import { useGlobal } from "@/context/global"
 import { cleanPickerInput, createDirectorySearch, displayPickerPath } from "./directory-picker-domain"
+import { pathKey } from "@/utils/path-key"
 import type { Path } from "@opencode-ai/sdk/v2/client"
 
 interface DialogSelectDirectoryProps {
@@ -21,7 +24,7 @@ interface DialogSelectDirectoryProps {
 type Row = {
   absolute: string
   search: string
-  group: "recent" | "folders"
+  group: "recent" | "known" | "folders"
 }
 
 function toRow(absolute: string, home: string, group: Row["group"]): Row {
@@ -81,6 +84,41 @@ export function DialogSelectDirectory(props: DialogSelectDirectoryProps) {
     base: start,
   })
 
+  // Directories that carry root sessions for this server, derived from the same
+  // home session index the home sessions list uses (shared query cache).
+  const knownDirectories = useQuery(() => ({
+    queryKey: sync.homeSessions.indexKey,
+    queryFn: async ({ signal }) => {
+      const cache = sync.homeSessions
+      const eventSequence = cache.eventSequence()
+      const index = await loadHomeSessionIndex(
+        (input, options) => sdk.client.v2.session.list(input, options),
+        eventSequence,
+        signal,
+      )
+      cache.complete(eventSequence)
+      return index
+    },
+    retry: false,
+    staleTime: 30_000,
+    refetchOnMount: true,
+  }))
+  const knownSessionDirs = createMemo(() => {
+    const sessions = sync.homeSessions.sessions(knownDirectories.data, undefined)
+    return Array.from(new Set(sessions.map((session) => pathKey(session.directory))))
+  })
+
+  // Suggestions shown when the query is empty or the search found nothing:
+  // every known session directory plus shortcuts for home and the CWD.
+  const suggestions = createMemo(() => {
+    const rows: Row[] = knownSessionDirs().map((directory) => toRow(directory, home(), "known"))
+    const homeDirectory = home()
+    const cwd = sync.data.path.directory
+    if (homeDirectory) rows.push(toRow(homeDirectory, homeDirectory, "known"))
+    if (cwd && pathKey(cwd) !== pathKey(homeDirectory || cwd)) rows.push(toRow(cwd, homeDirectory, "known"))
+    return rows
+  })
+
   const recentProjects = createMemo(() => {
     const projects = serverCtx.projects.list()
     const byProject = new Map<string, number>()
@@ -116,7 +154,8 @@ export function DialogSelectDirectory(props: DialogSelectDirectoryProps) {
   const items = async (value: string) => {
     const results = await directories(value)
     const directoryRows = results.map((absolute) => toRow(absolute, home(), "folders"))
-    return uniqueRows([...recentProjects(), ...directoryRows])
+    const suggestionRows = !value.trim() || results.length === 0 ? suggestions() : []
+    return uniqueRows([...recentProjects(), ...suggestionRows, ...directoryRows])
   }
 
   function resolve(absolute: string) {
@@ -136,11 +175,15 @@ export function DialogSelectDirectory(props: DialogSelectDirectoryProps) {
         filterKeys={["search"]}
         groupBy={(item) => item.group}
         sortGroupsBy={(a, b) => {
-          if (a.category === b.category) return 0
-          return a.category === "recent" ? -1 : 1
+          const order: Record<string, number> = { recent: 0, known: 1, folders: 2 }
+          return (order[a.category] ?? 0) - (order[b.category] ?? 0)
         }}
         groupHeader={(group) =>
-          group.category === "recent" ? language.t("home.recentProjects") : language.t("command.project.open")
+          group.category === "recent"
+            ? language.t("home.recentProjects")
+            : group.category === "known"
+              ? language.t("dialog.directory.knownDirectories")
+              : language.t("command.project.open")
         }
         ref={(r) => (list = r)}
         onFilter={(value) => setFilter(cleanPickerInput(value))}

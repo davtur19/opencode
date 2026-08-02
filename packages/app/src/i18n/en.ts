@@ -328,6 +328,7 @@ export const dict = {
 
   "dialog.directory.search.placeholder": "Search folders",
   "dialog.directory.empty": "No folders found",
+  "dialog.directory.knownDirectories": "Known directories",
   "dialog.directory.action.selectFile": "Select file",
   "dialog.directory.action.selectFolder": "Select folder",
   "dialog.directory.root": "Root",
@@ -620,6 +621,7 @@ export const dict = {
   "home.projects": "Projects",
   "home.project.add": "Add project",
   "home.recentlyClosed": "Recently closed",
+  "home.otherDirectories": "Other directories",
   "home.server.collapse": "Collapse server projects",
   "home.server.expand": "Expand server projects",
   "home.sessions.search.placeholder": "Search sessions",
@@ -896,8 +898,9 @@ export const dict = {
   "settings.general.row.showCustomAgents.title": "Show agent",
   "settings.general.row.showCustomAgents.description":
     "Switch between agents in the composer. When hidden, defaults to Build agent.",
-  "settings.general.row.reasoningSummaries.title": "Show reasoning summaries",
-  "settings.general.row.reasoningSummaries.description": "Display model reasoning summaries in the timeline",
+  "settings.general.row.reasoningSummaries.title": "Expand thinking blocks by default",
+  "settings.general.row.reasoningSummaries.description":
+    "Thinking blocks are always visible. When enabled, they start expanded; when disabled, they start collapsed but can be expanded on click",
   "settings.general.row.shellToolPartsExpanded.title": "Expand shell tool parts",
   "settings.general.row.shellToolPartsExpanded.description":
     "Show shell tool parts expanded by default in the timeline",

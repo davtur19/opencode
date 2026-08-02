@@ -178,6 +178,8 @@ type ServerSDKBase = {
     on: ServerEventEmitter["on"]
     listen: ServerEventEmitter["listen"]
     start: () => Promise<void> | undefined
+    running: () => boolean
+    restart: () => Promise<void> | undefined
   }
   createClient: (
     opts: Omit<Parameters<typeof createSdkForServer>[0], "server" | "fetch">,
@@ -256,6 +258,8 @@ function createServerSdkContextBase(server: ServerConnection.Any, scope: ServerS
   let run: Promise<void> | undefined
   let started = false
   let generation = 0
+  // True while the event stream has an established connection and is not between reconnect attempts.
+  let connected = false
 
   const start = () => {
     if (started) return run
@@ -277,6 +281,7 @@ function createServerSdkContextBase(server: ServerConnection.Any, scope: ServerS
             kind === "v1"
               ? (await eventSdk.global.event({ signal: attempt.signal })).stream
               : eventApi.event.subscribe({ signal: attempt.signal })
+          connected = true
           let yielded = Date.now()
           for await (const event of events) {
             streamErrorLogged = false
@@ -300,6 +305,7 @@ function createServerSdkContextBase(server: ServerConnection.Any, scope: ServerS
             })
           }
         } finally {
+          connected = false
           abort.signal.removeEventListener("abort", onAbort)
           attempt = undefined
         }
@@ -320,6 +326,14 @@ function createServerSdkContextBase(server: ServerConnection.Any, scope: ServerS
     started = false
     generation++
     attempt?.abort()
+  }
+
+  // Tear down the current stream (if any) and open a fresh connection. Used to
+  // force an immediate reconnect when the stream is known to be down, e.g. when
+  // the tab comes back to the foreground after the server restarted.
+  const restart = () => {
+    stop()
+    return start()
   }
 
   onMount(() => {
@@ -361,6 +375,8 @@ function createServerSdkContextBase(server: ServerConnection.Any, scope: ServerS
       on: emitter.on.bind(emitter),
       listen: emitter.listen.bind(emitter),
       start,
+      running: () => connected,
+      restart,
     },
     createClient(opts: Omit<Parameters<typeof createSdkForServer>[0], "server" | "fetch">) {
       return createSdkForServer({

@@ -39,6 +39,7 @@ function isBackgroundOpen(event: MouseEvent) {
 export type HomeSessionsViewProps = {
   language: ReturnType<typeof useLanguage>
   groups: Accessor<HomeSessionGroup[]>
+  loading: Accessor<boolean>
   showProjectName: Accessor<boolean>
   server: Accessor<ServerConnection.Key>
   canCreateSession: Accessor<boolean>
@@ -113,12 +114,21 @@ export function HomeSessionsView(props: HomeSessionsViewProps) {
           }
         >
           <Show
-            when={props.groups().length > 0}
+            when={!props.loading() && props.groups().length > 0}
             fallback={
-              <HomeSessionsEmpty
-                onNewSession={props.canCreateSession() ? props.onCreateSession : undefined}
-                language={props.language}
-              />
+              <Show
+                when={props.loading()}
+                fallback={
+                  <HomeSessionsEmpty
+                    onNewSession={props.canCreateSession() ? props.onCreateSession : undefined}
+                    language={props.language}
+                  />
+                }
+              >
+                <div class="pt-3">
+                  <HomeSessionSkeleton label={props.language.t("common.loading")} />
+                </div>
+              </Show>
             }
           >
             <div ref={props.onSetContent} class="flex flex-col pt-3 pr-3 pb-16">

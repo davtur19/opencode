@@ -110,6 +110,15 @@ function createServerCtx(
   const sdk = createServerSdkContext(conn, scope)
   const sync = createServerSyncContext(sdk)
 
+  // First-run seeding: with no opened projects (fresh browser profile) adopt the
+  // directory the server was started in, so the home picker and New Session work
+  // immediately. adopt() is a no-op once any project is open.
+  createEffect(() => {
+    const directory = sync.data.path.directory
+    if (!directory) return
+    projects.adopt(directory)
+  })
+
   function enrich(project: { worktree: string; expanded: boolean }) {
     const [childStore] = sync.child(project.worktree, { bootstrap: false })
     const projectID = childStore.project

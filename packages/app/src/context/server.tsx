@@ -142,6 +142,18 @@ export function createServerProjects<T extends ServerProjectState>(input: {
     touch(directory: string) {
       setStore("lastProject", input.scope(), directory)
     },
+    // First-run seeding: open a directory only while this server has no opened
+    // projects at all, so a fresh client lands on the server's own directory.
+    // No-op once any project is open (never reorders or re-adds), and
+    // directories the user explicitly closed stay closed.
+    adopt(directory: string) {
+      const scope = input.scope()
+      if (current().length > 0) return
+      const key = pathKey(directory)
+      if (currentClosed().some((worktree) => pathKey(worktree) === key)) return
+      setStore("projects", scope, [{ worktree: directory, expanded: true }])
+      setStore("lastProject", scope, directory)
+    },
   }
 }
 

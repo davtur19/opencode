@@ -290,6 +290,32 @@
   color: var(--v2-text-text-muted);
   line-height: var(--line-height-normal);
 
+  [data-slot="collapsible-trigger"] {
+    color: var(--v2-text-text-muted);
+    cursor: pointer;
+
+    [data-slot="collapsible-arrow"] {
+      opacity: 1;
+    }
+  }
+
+  [data-slot="reasoning-part-header"] {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    min-width: 0;
+  }
+
+  [data-slot="reasoning-part-label"] {
+    font-size: 13px;
+    font-weight: 500;
+    color: var(--v2-text-text-muted);
+  }
+
+  [data-slot="collapsible-content"] {
+    margin-top: 4px;
+  }
+
   [data-component="markdown"] {
     margin-top: 16px;
     font-style: normal;
@@ -1417,6 +1443,11 @@ body:not([data-new-layout]) {
 
   [data-component="reasoning-part"] {
     color: var(--text-base);
+
+    [data-slot="collapsible-trigger"],
+    [data-slot="reasoning-part-label"] {
+      color: var(--text-base);
+    }
 
     [data-component="markdown"],
     [data-component="markdown"] :is(strong, b) {

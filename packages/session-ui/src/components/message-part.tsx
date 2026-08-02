@@ -202,6 +202,8 @@ export interface MessagePartProps {
   showAssistantCopyPartID?: string | null
   turnDurationMs?: number
   useV2Actions?: boolean
+  /** Whether reasoning blocks should start expanded (default true). */
+  showReasoningSummaries?: boolean
 }
 
 function MessageActionButton(
@@ -594,13 +596,17 @@ function taskSession(
   agents?: readonly { name: string; color?: string }[],
 ) {
   if (!parentID) return undefined
-  const description = typeof input.description === "string" ? input.description : ""
+  const description = typeof input.description === "string" && input.description ? input.description : undefined
   const agent = taskAgent(input.subagent_type, agents).name
-  return (sessions ?? [])
+  const matches = (sessions ?? [])
     .filter((session) => session.parentID === parentID && !session.time?.archived)
     .filter((session) => (description ? session.title.startsWith(description) : true))
     .filter((session) => (agent ? session.title.includes(`@${agent}`) : true))
-    .sort((a, b) => (b.time.created ?? 0) - (a.time.created ?? 0))[0]?.id
+  // Only trust this fallback when it resolves to a single child. When the parent
+  // ran the same subagent more than once, a fuzzy match could attribute this task
+  // to another session's subagent.
+  if (matches.length !== 1) return undefined
+  return matches[0]?.id
 }
 
 const CONTEXT_GROUP_TOOLS = new Set(["read", "glob", "grep", "list"])
@@ -714,7 +720,9 @@ export function renderable(part: PartType, showReasoningSummaries = true) {
     return true
   }
   if (part.type === "text") return !!part.text?.trim()
-  if (part.type === "reasoning") return showReasoningSummaries && !!part.text?.trim()
+  // Reasoning parts are always rendered as collapsible blocks; the setting only
+  // controls their initial expanded state, not whether they are visible.
+  if (part.type === "reasoning") return !!part.text?.trim()
   return !!PART_MAPPING[part.type]
 }
 
@@ -818,6 +826,7 @@ export function AssistantParts(props: {
                         showAssistantCopyPartID={props.showAssistantCopyPartID}
                         turnDurationMs={props.turnDurationMs}
                         useV2Actions={props.useV2Actions}
+                        showReasoningSummaries={props.showReasoningSummaries}
                         defaultOpen={partDefaultOpen(item()!, props.shellToolDefaultOpen, props.editToolDefaultOpen)}
                       />
                     </Show>
@@ -1035,6 +1044,7 @@ export function AssistantMessageDisplay(props: {
                       message={props.message}
                       showAssistantCopyPartID={props.showAssistantCopyPartID}
                       useV2Actions={props.useV2Actions}
+                      showReasoningSummaries={props.showReasoningSummaries}
                     />
                   </Show>
                 )
@@ -1457,6 +1467,7 @@ export function Part(props: MessagePartProps) {
         showAssistantCopyPartID={props.showAssistantCopyPartID}
         turnDurationMs={props.turnDurationMs}
         useV2Actions={props.useV2Actions}
+        showReasoningSummaries={props.showReasoningSummaries}
       />
     </Show>
   )
@@ -1569,7 +1580,10 @@ PART_MAPPING["tool"] = function ToolPartDisplay(props) {
     if (part().tool !== "task") return undefined
     const value = input().description
     if (typeof value === "string" && value) return value
-    return taskId()
+    const id = taskId()
+    if (!id) return undefined
+    const childTitle = data.store.session?.find((session) => session.id === id)?.title
+    return childTitle?.replace(/\s+\(@[^)]+ subagent\)$/, "")
   })
 
   const render = createMemo(() => ToolRegistry.render(part().tool) ?? GenericTool)
@@ -1767,18 +1781,32 @@ PART_MAPPING["text"] = function TextPartDisplay(props) {
 
 PART_MAPPING["reasoning"] = function ReasoningPartDisplay(props) {
   const data = useData()
+  const i18n = useI18n()
   const part = () => props.part as ReasoningPart
   const streaming = createMemo(
     () => props.message.role === "assistant" && typeof (props.message as AssistantMessage).time.completed !== "number",
   )
   const text = () => readPartText(data.store.part_text_accum_delta, part())
+  // Per-block independent state: the setting only decides the initial state
+  // (true = expanded, false = collapsed but still visible and clickable).
+  const [open, setOpen] = createSignal(props.showReasoningSummaries ?? true)
 
   return (
     <Show when={text()}>
       <div data-component="reasoning-part" data-timeline-part-id={part().id}>
-        <Show when={streaming()} fallback={<Markdown text={text()} cacheKey={part().id} streaming={false} />}>
-          <PacedMarkdown text={text()} cacheKey={part().id} streaming={streaming()} />
-        </Show>
+        <Collapsible open={open()} onOpenChange={setOpen} variant="ghost" class="reasoning-collapsible">
+          <Collapsible.Trigger>
+            <span data-slot="reasoning-part-header">
+              <span data-slot="reasoning-part-label">{i18n.t("ui.sessionTurn.status.thinking")}</span>
+              <Collapsible.Arrow />
+            </span>
+          </Collapsible.Trigger>
+          <Collapsible.Content>
+            <Show when={streaming()} fallback={<Markdown text={text()} cacheKey={part().id} streaming={false} />}>
+              <PacedMarkdown text={text()} cacheKey={part().id} streaming={streaming()} />
+            </Show>
+          </Collapsible.Content>
+        </Collapsible>
       </div>
     </Show>
   )
@@ -1999,11 +2027,17 @@ ToolRegistry.register({
     const title = createMemo(() => agent().name ?? i18n.t("ui.tool.agent.default"))
     const tone = createMemo(() => agent().color)
     const v2Tone = createMemo(() => agent().v2Color)
+    const childSessionTitle = createMemo(() => {
+      const id = childSessionId()
+      if (!id) return
+      const childTitle = data.store.session?.find((session) => session.id === id)?.title
+      return childTitle?.replace(/\s+\(@[^)]+ subagent\)$/, "")
+    })
     const subtitle = createMemo(() => {
       const value =
         typeof props.input.description === "string" && props.input.description
           ? props.input.description
-          : childSessionId()
+          : childSessionTitle()
       if (!value) return value
       if (props.metadata.background === true) return `${value} (background)`
       return value
