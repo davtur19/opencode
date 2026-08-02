@@ -494,6 +494,11 @@ const layer = Layer.effect(
               metadata: value.providerMetadata,
             }
             yield* session.updatePart(ctx.currentText)
+            // Publish the empty part snapshot immediately, before the first text-delta
+            // is broadcast live: the client discards deltas for parts it has not seen
+            // yet, so buffering the snapshot on the 80ms debounce would hide the first
+            // token. flushNow is typed and exposed on Session.Service (see session.ts).
+            yield* session.flushNow()
             return
 
           case "text-delta":
