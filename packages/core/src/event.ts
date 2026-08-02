@@ -437,6 +437,13 @@ export const layerWith = (options?: LayerOptions) =>
                             .get()
                             .pipe(Effect.orDie)
                           if (stored)
+                            // Defense in depth: in the part-flush flow
+                            // (Session.flushPendingParts) this is unreachable — buffered parts
+                            // reuse the event id allocated at buffer time, so every retry
+                            // references an id that is either not yet committed (first attempt)
+                            // or already committed (idempotent replay). Do NOT build a retry
+                            // that generates a fresh id per attempt: it would trip this guard
+                            // and die with a duplicate-event error.
                             yield* Effect.die(
                               new InvalidDurableEventError({
                                 type: item.event.type,

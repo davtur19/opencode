@@ -65,14 +65,22 @@ export const sessionHandlers = HttpApiBuilder.group(InstanceHttpApi, "session", 
     // in a buffer that is flushed on an ~80ms debounce (see Session.flushNow), so reads
     // that go straight to the DB (session/message reads here, the run-loop history in
     // prompt.ts) could miss the latest parts. Handlers that serve part-bearing data call
-    // `session.flushNow()` before reading: it drains the buffer synchronously (bounded,
-    // best-effort — see Session.flushNow) and awaits any in-flight flush, preserving
-    // streaming coalescing when the buffer is empty.
+    // `flush()` before reading: it drains the buffer synchronously (bounded, best-effort —
+    // see Session.flushNow) and awaits any in-flight flush, preserving streaming
+    // coalescing when the buffer is empty.
+    // flushNow resolves false when parts are still buffered after its bounded attempts
+    // (e.g. DB down). HTTP responses must never fail because of that: warn and continue
+    // serving whatever is durable.
+    const flush = Effect.fn("SessionHttpApi.flush")(function* (route: string) {
+      if (!(yield* session.flushNow())) {
+        yield* Effect.logWarning(`SessionHttpApi.${route}: flushNow failed; reading possibly stale session data`)
+      }
+    })
 
     const list = Effect.fn("SessionHttpApi.list")(function* (ctx: { query: typeof ListQuery.Type }) {
       // Read-your-writes: session rows are touched by part projectors (usage/token deltas),
       // so flush before listing to reflect parts still sitting in the buffer.
-      yield* session.flushNow()
+      yield* flush("list")
       const directory = ctx.query.directory ? yield* InstanceState.directory : undefined
       return yield* session.list({
         directory: ctx.query.scope === "project" ? undefined : directory,
@@ -94,7 +102,7 @@ export const sessionHandlers = HttpApiBuilder.group(InstanceHttpApi, "session", 
     })
 
     const get = Effect.fn("SessionHttpApi.get")(function* (ctx: { params: { sessionID: SessionID } }) {
-      yield* session.flushNow()
+      yield* flush("get")
       return yield* requireSession(ctx.params.sessionID)
     })
 
@@ -128,7 +136,7 @@ export const sessionHandlers = HttpApiBuilder.group(InstanceHttpApi, "session", 
         })
       }
       yield* requireSession(ctx.params.sessionID)
-      yield* session.flushNow()
+      yield* flush("messages")
       if (ctx.query.limit === undefined || ctx.query.limit === 0) {
         return yield* SessionError.mapStorageNotFound(session.messages({ sessionID: ctx.params.sessionID }))
       }
@@ -160,7 +168,7 @@ export const sessionHandlers = HttpApiBuilder.group(InstanceHttpApi, "session", 
     const message = Effect.fn("SessionHttpApi.message")(function* (ctx: {
       params: { sessionID: SessionID; messageID: MessageID }
     }) {
-      yield* session.flushNow()
+      yield* flush("message")
       return yield* SessionError.mapStorageNotFound(
         MessageV2.get({ sessionID: ctx.params.sessionID, messageID: ctx.params.messageID }),
       )
@@ -291,7 +299,7 @@ export const sessionHandlers = HttpApiBuilder.group(InstanceHttpApi, "session", 
       yield* revertSvc.cleanup(yield* requireSession(ctx.params.sessionID))
       // Read-your-writes: the compacting prompt is built from the session messages, so
       // flush coalesced part updates before reading them (see the flushNow policy above).
-      yield* session.flushNow()
+      yield* flush("summarize")
       const messages = yield* SessionError.mapStorageNotFound(session.messages({ sessionID: ctx.params.sessionID }))
       const defaultAgent = yield* agentSvc.defaultAgent()
       const currentAgent = messages.findLast((message) => message.info.role === "user")?.info.agent ?? defaultAgent
