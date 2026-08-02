@@ -202,6 +202,8 @@ export interface MessagePartProps {
   showAssistantCopyPartID?: string | null
   turnDurationMs?: number
   useV2Actions?: boolean
+  /** Whether reasoning blocks should start expanded (default true). */
+  showReasoningSummaries?: boolean
 }
 
 function MessageActionButton(
@@ -714,7 +716,9 @@ export function renderable(part: PartType, showReasoningSummaries = true) {
     return true
   }
   if (part.type === "text") return !!part.text?.trim()
-  if (part.type === "reasoning") return showReasoningSummaries && !!part.text?.trim()
+  // Reasoning parts are always rendered as collapsible blocks; the setting only
+  // controls their initial expanded state, not whether they are visible.
+  if (part.type === "reasoning") return !!part.text?.trim()
   return !!PART_MAPPING[part.type]
 }
 
@@ -818,6 +822,7 @@ export function AssistantParts(props: {
                         showAssistantCopyPartID={props.showAssistantCopyPartID}
                         turnDurationMs={props.turnDurationMs}
                         useV2Actions={props.useV2Actions}
+                        showReasoningSummaries={props.showReasoningSummaries}
                         defaultOpen={partDefaultOpen(item()!, props.shellToolDefaultOpen, props.editToolDefaultOpen)}
                       />
                     </Show>
@@ -1035,6 +1040,7 @@ export function AssistantMessageDisplay(props: {
                       message={props.message}
                       showAssistantCopyPartID={props.showAssistantCopyPartID}
                       useV2Actions={props.useV2Actions}
+                      showReasoningSummaries={props.showReasoningSummaries}
                     />
                   </Show>
                 )
@@ -1457,6 +1463,7 @@ export function Part(props: MessagePartProps) {
         showAssistantCopyPartID={props.showAssistantCopyPartID}
         turnDurationMs={props.turnDurationMs}
         useV2Actions={props.useV2Actions}
+        showReasoningSummaries={props.showReasoningSummaries}
       />
     </Show>
   )
@@ -1767,18 +1774,32 @@ PART_MAPPING["text"] = function TextPartDisplay(props) {
 
 PART_MAPPING["reasoning"] = function ReasoningPartDisplay(props) {
   const data = useData()
+  const i18n = useI18n()
   const part = () => props.part as ReasoningPart
   const streaming = createMemo(
     () => props.message.role === "assistant" && typeof (props.message as AssistantMessage).time.completed !== "number",
   )
   const text = () => readPartText(data.store.part_text_accum_delta, part())
+  // Per-block independent state: the setting only decides the initial state
+  // (true = expanded, false = collapsed but still visible and clickable).
+  const [open, setOpen] = createSignal(props.showReasoningSummaries ?? true)
 
   return (
     <Show when={text()}>
       <div data-component="reasoning-part" data-timeline-part-id={part().id}>
-        <Show when={streaming()} fallback={<Markdown text={text()} cacheKey={part().id} streaming={false} />}>
-          <PacedMarkdown text={text()} cacheKey={part().id} streaming={streaming()} />
-        </Show>
+        <Collapsible open={open()} onOpenChange={setOpen} variant="ghost" class="reasoning-collapsible">
+          <Collapsible.Trigger>
+            <span data-slot="reasoning-part-header">
+              <span data-slot="reasoning-part-label">{i18n.t("ui.sessionTurn.status.thinking")}</span>
+              <Collapsible.Arrow />
+            </span>
+          </Collapsible.Trigger>
+          <Collapsible.Content>
+            <Show when={streaming()} fallback={<Markdown text={text()} cacheKey={part().id} streaming={false} />}>
+              <PacedMarkdown text={text()} cacheKey={part().id} streaming={streaming()} />
+            </Show>
+          </Collapsible.Content>
+        </Collapsible>
       </div>
     </Show>
   )
