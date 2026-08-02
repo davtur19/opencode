@@ -254,18 +254,25 @@ function buildHomeSessionRecords(input: {
   projectByID: () => Map<string, LocalProject>
 }) {
   const directories = new Set(input.projectDirectories().map(pathKey))
-  const sessions = input.sessions().filter((session) => directories.has(pathKey(session.directory)))
+  // With no open projects there is no directory to scope by: keep every root
+  // session (the index already drops parented and archived entries) instead
+  // of filtering everything out. Once any project is open, scope as before.
+  const scoped = directories.size > 0
+  const sessions = input.sessions().filter((session) => !scoped || directories.has(pathKey(session.directory)))
   return [...new Map(sessions.map((session) => [session.id, session] as const)).values()]
     .sort((a, b) => (b.time.updated ?? b.time.created) - (a.time.updated ?? a.time.created))
     .flatMap((session) => {
       const directory = pathKey(session.directory)
-      const project =
-        input
-          .projects()
-          .find(
-            (item) =>
-              pathKey(item.worktree) === directory || item.sandboxes?.some((sandbox) => pathKey(sandbox) === directory),
-          ) ?? projectForSession(session, input.projects(), input.projectByID())
+      const project = input
+        .projects()
+        .find(
+          (item) =>
+            pathKey(item.worktree) === directory || item.sandboxes?.some((sandbox) => pathKey(sandbox) === directory),
+        ) ??
+        projectForSession(session, input.projects(), input.projectByID()) ??
+          // No project is open: fall back to a project derived from the session's
+          // own directory so the row (name, avatar) stays renderable.
+          { worktree: session.directory, expanded: false }
       if (!project) return []
       return { session, project, projectName: displayName(project) }
     })
