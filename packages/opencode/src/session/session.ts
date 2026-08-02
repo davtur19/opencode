@@ -38,7 +38,7 @@ import { SessionID, MessageID, PartID } from "./schema"
 
 import type { Provider } from "@/provider/provider"
 import { Global } from "@opencode-ai/core/global"
-import { Effect, Fiber, Layer, Option, Context, Schema, Types } from "effect"
+import { Deferred, Effect, Exit, Fiber, Layer, Option, Context, Schema, Types } from "effect"
 import { NonNegativeInt, optional } from "@opencode-ai/core/schema"
 import { RuntimeFlags } from "@/effect/runtime-flags"
 import { ProviderV2 } from "@opencode-ai/core/provider"
@@ -504,35 +504,72 @@ const layer: Layer.Layer<
     // During a burst only the latest state of each part matters (the projector upserts whole
     // parts), so we debounce per part and persist every part once per short window.
     const PART_FLUSH_INTERVAL = 80 // ms
+    const PART_FLUSH_RETRY_INTERVAL = 250 // ms
     const pendingParts = new Map<string, { part: SessionV1.Part; time: number }>()
     let flushFiber: Fiber.Fiber<void, never> | undefined = undefined
+    // Barrier completing when the currently running flush finishes. `removePart` awaits it
+    // so no PartUpdated committed by an in-flight flush can land after the PartRemoved.
+    let flushBarrier: Deferred.Deferred<void> | undefined = undefined
 
     const partKey = (part: SessionV1.Part) => `${part.sessionID}:${part.messageID}:${part.id}`
 
-    const flushPendingParts = Effect.fn("Session.flushPendingParts")(function* () {
-      flushFiber = undefined
-      if (pendingParts.size === 0) return
-      const entries = Array.from(pendingParts.entries())
-      pendingParts.clear()
-      // `publishBatch` requires every durable event in one batch to share a single
-      // aggregate (session), otherwise `commitDurableEvents` dies with
-      // "Batch durable events must share a single aggregate". The `pendingParts` map
-      // is shared across sessions, so group the pending updates by session before
-      // publishing.
-      const bySession = new Map<string, (typeof entries)[number][]>()
-      for (const entry of entries) {
-        const sessionID = entry[1].part.sessionID
-        const group = bySession.get(sessionID)
-        if (group) group.push(entry)
-        else bySession.set(sessionID, [entry])
-      }
-      for (const group of bySession.values()) {
-        yield* events.publishBatch(
-          group.map(([, { part, time }]) => ({
-            definition: SessionV1.Event.PartUpdated,
-            data: { sessionID: part.sessionID, part, time },
-          })),
-        )
+    const flushPendingParts: () => Effect.Effect<void, never, never> = Effect.fn("Session.flushPendingParts")(function* () {
+      const barrier = yield* Deferred.make<void>()
+      flushBarrier = barrier
+      try {
+        // Drain the buffer. Each iteration snapshots the pending entries, clears the map and
+        // publishes one batch per session. Entries only leave the buffer after a successful
+        // publish; on failure they are restored and a retry with a short backoff is scheduled,
+        // so a failed flush never drops an update.
+        while (pendingParts.size > 0) {
+          const entries = Array.from(pendingParts.entries())
+          pendingParts.clear()
+          // `publishBatch` requires every durable event in one batch to share a single
+          // aggregate (session), otherwise `commitDurableEvents` dies with
+          // "Batch durable events must share a single aggregate". The `pendingParts` map
+          // is shared across sessions, so group the pending updates by session before
+          // publishing.
+          const bySession = new Map<string, (typeof entries)[number][]>()
+          for (const entry of entries) {
+            const sessionID = entry[1].part.sessionID
+            const group = bySession.get(sessionID)
+            if (group) group.push(entry)
+            else bySession.set(sessionID, [entry])
+          }
+          let failed = false
+          for (const group of bySession.values()) {
+            const result = yield* events
+              .publishBatch(
+                group.map(([, { part, time }]) => ({
+                  definition: SessionV1.Event.PartUpdated,
+                  // Deliver a snapshot to subscribers: callers keep mutating the buffered
+                  // object between flushes, so clone at delivery time (not per updatePart).
+                  data: { sessionID: part.sessionID, part: structuredClone(part), time },
+                })),
+              )
+              .pipe(Effect.exit)
+            if (Exit.isFailure(result)) {
+              failed = true
+              for (const [key, entry] of group) {
+                // Keep the newest state if a newer update landed during the failed publish.
+                if (!pendingParts.has(key)) pendingParts.set(key, entry)
+              }
+            }
+          }
+          if (failed) {
+            yield* Effect.logWarning("Session.flushPendingParts failed, scheduling retry", {
+              batch: entries.length,
+            })
+            yield* Effect.forkDetach(
+              Effect.sleep(`${PART_FLUSH_RETRY_INTERVAL} millis`).pipe(Effect.andThen(flushPendingParts)),
+            )
+            break
+          }
+        }
+      } finally {
+        flushBarrier = undefined
+        flushFiber = undefined
+        yield* Deferred.succeed(barrier, undefined).pipe(Effect.ignore)
       }
     })
 
@@ -696,6 +733,11 @@ const layer: Layer.Layer<
       }).pipe(Effect.withSpan("Session.updatePart"))
 
     const getPart: Interface["getPart"] = Effect.fn("Session.getPart")(function* (input) {
+      // Read-through: an updatePart that has not been flushed yet must be visible to reads,
+      // otherwise the processor's tool-call dedup (ensureToolCall/readToolCall) misses the
+      // part and creates a second part with the same tool_call_id.
+      const pending = pendingParts.get(`${input.sessionID}:${input.messageID}:${input.partID}`)
+      if (pending) return pending.part
       const row = yield* db
         .select()
         .from(PartTable)
@@ -919,7 +961,17 @@ const layer: Layer.Layer<
       messageID: MessageID
       partID: PartID
     }) {
-      pendingParts.delete(`${input.sessionID}:${input.messageID}:${input.partID}`)
+      const key = `${input.sessionID}:${input.messageID}:${input.partID}`
+      // Ordering: no PartUpdated for a removed part may commit after its PartRemoved.
+      // 1. Drop any still-buffered update so a future flush cannot publish it.
+      pendingParts.delete(key)
+      // 2. Await any in-flight flush that may have already snapshotted the part, so its
+      //    PartUpdated commits before we publish PartRemoved.
+      const barrier = flushBarrier
+      if (barrier) yield* Deferred.await(barrier).pipe(Effect.ignore)
+      // 3. A failed flush restores entries to the buffer; drop them again before publishing
+      //    PartRemoved, otherwise a scheduled retry would resurrect the removed part.
+      pendingParts.delete(key)
       yield* events.publish(SessionV1.Event.PartRemoved, {
         sessionID: input.sessionID,
         messageID: input.messageID,

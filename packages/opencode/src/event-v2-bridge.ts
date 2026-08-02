@@ -32,6 +32,25 @@ const layer = Layer.effect(
         })
       })
 
+    const publishBatch: EventV2.Interface["publishBatch"] = (input) =>
+      Effect.gen(function* () {
+        const ctx = yield* InstanceRef
+        if (!ctx) return yield* events.publishBatch(input)
+        const workspaceID = yield* WorkspaceRef
+        const location = new Location.Info({
+          directory: AbsolutePath.make(ctx.directory),
+          ...(workspaceID ? { workspaceID } : {}),
+          project: { id: Project.ID.make(ctx.project.id), directory: AbsolutePath.make(ctx.worktree) },
+        })
+        return yield* events.publishBatch(
+          input.map((item) => ({
+            definition: item.definition,
+            data: item.data,
+            options: { ...item.options, location: item.options?.location ?? location },
+          })),
+        )
+      })
+
     const unsubscribe = yield* events.listen((event) =>
       Effect.gen(function* () {
         const ctx = yield* InstanceRef
@@ -62,7 +81,7 @@ const layer = Layer.effect(
     )
     yield* Effect.addFinalizer(() => unsubscribe)
 
-    return Service.of({ ...events, publish })
+    return Service.of({ ...events, publish, publishBatch })
   }),
 )
 
