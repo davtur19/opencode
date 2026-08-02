@@ -83,6 +83,9 @@ export const sessionHandlers = HttpApiBuilder.group(InstanceHttpApi, "session", 
     })
 
     const get = Effect.fn("SessionHttpApi.get")(function* (ctx: { params: { sessionID: SessionID } }) {
+      // Read-your-writes: flush coalesced part updates before serving the session
+      // so its message count/latest update reflect parts still sitting in the buffer.
+      yield* session.flushNow()
       return yield* requireSession(ctx.params.sessionID)
     })
 
@@ -116,6 +119,10 @@ export const sessionHandlers = HttpApiBuilder.group(InstanceHttpApi, "session", 
         })
       }
       yield* requireSession(ctx.params.sessionID)
+      // Read-your-writes: part updates are coalesced in a buffer (Session.updatePart)
+      // and flushed on a debounce, so HTTP message reads could miss the latest parts.
+      // Flush synchronously before serving, mirroring the run loop in prompt.ts.
+      yield* session.flushNow()
       if (ctx.query.limit === undefined || ctx.query.limit === 0) {
         return yield* SessionError.mapStorageNotFound(session.messages({ sessionID: ctx.params.sessionID }))
       }
@@ -147,6 +154,9 @@ export const sessionHandlers = HttpApiBuilder.group(InstanceHttpApi, "session", 
     const message = Effect.fn("SessionHttpApi.message")(function* (ctx: {
       params: { sessionID: SessionID; messageID: MessageID }
     }) {
+      // Read-your-writes: flush coalesced part updates so the returned message
+      // includes the latest parts, not just what was already durable.
+      yield* session.flushNow()
       return yield* SessionError.mapStorageNotFound(
         MessageV2.get({ sessionID: ctx.params.sessionID, messageID: ctx.params.messageID }),
       )
