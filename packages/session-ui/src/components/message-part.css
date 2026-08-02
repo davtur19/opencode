@@ -393,7 +393,8 @@
   width: 100%;
   border: 0.5px solid var(--v2-border-border-base);
   border-radius: 6px;
-  background: transparent;
+  background: var(--bash-bg, #0e1116);
+  color: var(--bash-fg, #d6dbe2);
   position: relative;
   overflow: hidden;
 
@@ -415,7 +416,7 @@
   [data-slot="bash-scroll"] {
     width: 100%;
     overflow-y: auto;
-    overflow-x: hidden;
+    overflow-x: auto;
     max-height: 240px;
 
     scrollbar-width: none;
@@ -429,13 +430,43 @@
     padding: 12px;
   }
 
-  [data-slot="bash-pre"] code {
+  [data-slot="bash-code"] {
     font-family: var(--font-family-mono);
     font-feature-settings: var(--font-family-mono--font-feature-settings);
     font-size: 13px;
     line-height: var(--line-height-large);
     white-space: pre-wrap;
     overflow-wrap: anywhere;
+    color: inherit;
+  }
+
+  [data-slot="bash-prompt"] {
+    color: var(--bash-prompt, #565f89);
+    user-select: none;
+  }
+
+  /* Lightweight command highlighting (fixed palette tuned for the dark surface) */
+  [data-bash-hl="command"] {
+    color: #7dcfff;
+  }
+  [data-bash-hl="flag"] {
+    color: #e0af68;
+  }
+  [data-bash-hl="string"] {
+    color: #9ece6a;
+  }
+  [data-bash-hl="keyword"] {
+    color: #bb9af7;
+  }
+  [data-bash-hl="env"] {
+    color: #7aa2f7;
+  }
+  [data-bash-hl="operator"] {
+    color: #c0caf5;
+  }
+  [data-bash-hl="comment"] {
+    color: #565f89;
+    font-style: italic;
   }
 }
 

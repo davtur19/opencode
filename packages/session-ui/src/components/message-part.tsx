@@ -64,6 +64,7 @@ import { patchFiles } from "./apply-patch-file"
 import { animate } from "motion"
 import { attached, inline, kind, typeLabel } from "./message-file"
 import { readPartText } from "./message-part-text"
+import { highlightCommand, parseAnsi } from "./ansi"
 import { SessionProgressIndicatorV2 } from "../v2/components/session-progress-indicator-v2"
 
 async function writeClipboard(text: string): Promise<boolean> {
@@ -729,6 +730,13 @@ function toolDefaultOpen(tool: string, shell = false, edit = false) {
 
 export function partDefaultOpen(part: PartType, shell = false, edit = false) {
   if (part.type !== "tool") return
+  // Shell tools stay expanded while running (live state) and once they finish
+  // with output, so the command result is visible without an extra click.
+  if (part.tool === "bash" || part.tool === "shell") {
+    if (part.state.status === "pending" || part.state.status === "running") return true
+    if (part.state.status === "completed") return shell || part.state.output.length > 0
+    return shell
+  }
   return toolDefaultOpen(part.tool, shell, edit)
 }
 
@@ -2119,15 +2127,19 @@ ToolRegistry.register({
     const i18n = useI18n()
     const pending = () => props.status === "pending" || props.status === "running"
     const sawPending = pending()
-    const text = createMemo(() => {
-      const cmd = props.input.command ?? props.metadata.command ?? ""
-      const out = stripAnsi(props.output || props.metadata.output || "").replace(/\r\n?/g, "\n")
-      return `$ ${cmd}${out ? "\n\n" + out : ""}`
+    const command = createMemo(() => String(props.input.command ?? props.metadata.command ?? "").replace(/\r\n?/g, "\n"))
+    const output = createMemo(() => String(props.output || props.metadata.output || "").replace(/\r\n?/g, "\n"))
+    const hasOutput = createMemo(() => output().length > 0)
+    const commandSegments = createMemo(() => highlightCommand(command()))
+    const outputSegments = createMemo(() => parseAnsi(output()))
+    const copyText = createMemo(() => {
+      const out = output()
+      return `$ ${command()}${out ? "\n\n" + stripAnsi(out) : ""}`
     })
     const [copied, setCopied] = createSignal(false)
 
     const handleCopy = async () => {
-      const content = text()
+      const content = copyText()
       if (!content) return
       if (await writeClipboard(content)) {
         setCopied(true)
@@ -2174,7 +2186,28 @@ ToolRegistry.register({
             aria-label={i18n.t("ui.scrollView.ariaLabel")}
           >
             <pre data-slot="bash-pre">
-              <code>{text()}</code>
+              <code data-slot="bash-code">
+                <span data-slot="bash-prompt">{"$ "}</span>
+                <For each={commandSegments()}>
+                  {(segment) => <span data-bash-hl={segment.type}>{segment.text}</span>}
+                </For>
+                <Show when={hasOutput()}>
+                  {"\n\n"}
+                  <For each={outputSegments()}>
+                    {(segment) => (
+                      <span
+                        style={
+                          segment.color || segment.bold
+                            ? { color: segment.color, "font-weight": segment.bold ? 600 : undefined }
+                            : undefined
+                        }
+                      >
+                        {segment.text}
+                      </span>
+                    )}
+                  </For>
+                </Show>
+              </code>
             </pre>
           </div>
         </div>
