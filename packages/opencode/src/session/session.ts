@@ -459,6 +459,8 @@ export interface Interface {
     partID: PartID
   }) => Effect.Effect<SessionV1.Part | undefined>
   readonly updatePart: <T extends SessionV1.Part>(part: T) => Effect.Effect<T>
+  /** Flush the coalesced part-update buffer synchronously and await any in-flight flush (read-your-writes). */
+  readonly flushNow: () => Effect.Effect<void>
   readonly updatePartDelta: (input: {
     sessionID: SessionID
     messageID: MessageID
@@ -731,6 +733,29 @@ const layer: Layer.Layer<
         yield* schedulePartFlush()
         return part
       }).pipe(Effect.withSpan("Session.updatePart"))
+
+    const flushNow: Interface["flushNow"] = Effect.fn("Session.flushNow")(function* () {
+      // Read-your-writes for bulk readers. `updatePart` buffers parts to coalesce streaming
+      // chunks, and bulk reads (MessageV2.page/hydrate — the run loop's LLM history) go
+      // straight to the DB, which never sees the buffer. Flush synchronously and await any
+      // in-flight flush so a prompt saved moments ago (e.g. a subagent's first message) is
+      // durable before the next DB read. Only drains when the buffer is non-empty, so
+      // streaming coalescing is preserved: this runs once per turn, not per chunk.
+      while (true) {
+        if (pendingParts.size === 0 && !flushBarrier) return
+        const barrier = flushBarrier
+        if (barrier) {
+          // A flush is in progress; await it. Its drain loop keeps re-checking the buffer,
+          // so it also covers entries added while it was running.
+          yield* Deferred.await(barrier).pipe(Effect.ignore)
+          continue
+        }
+        // Run the flush directly instead of waiting out the debounce. If a debounce flush is
+        // already scheduled (sleeping) it wakes to an empty buffer and no-ops; concurrent
+        // flush runs drain atomically, so no entry is published twice.
+        yield* flushPendingParts()
+      }
+    })
 
     const getPart: Interface["getPart"] = Effect.fn("Session.getPart")(function* (input) {
       // Read-through: an updatePart that has not been flushed yet must be visible to reads,
@@ -1034,6 +1059,7 @@ const layer: Layer.Layer<
       removeMessage,
       removePart,
       updatePart,
+      flushNow,
       getPart,
       updatePartDelta,
       findMessage,

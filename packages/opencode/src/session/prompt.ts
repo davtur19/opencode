@@ -1089,6 +1089,13 @@ const layer = Layer.effect(
           yield* status.set(sessionID, { type: "busy" })
           yield* Effect.logInfo("loop", { "session.id": sessionID, step })
 
+          // Read-your-writes before building the model history: the user message parts
+          // (and the previous assistant parts) are buffered by Session.updatePart and only
+          // flushed on an 80ms debounce. A subagent's prompt is saved via updatePart and its
+          // run loop reads the history milliseconds later — without a synchronous flush the
+          // model would see an empty user message.
+          yield* sessions.flushNow()
+
           let msgs = yield* MessageV2.filterCompactedEffect(sessionID).pipe(
             Effect.provideService(Database.Service, database),
           )
