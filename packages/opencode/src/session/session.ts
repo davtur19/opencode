@@ -1125,7 +1125,7 @@ const layer: Layer.Layer<
       // diffs non-deterministically (a regression of the streaming buffer). Flushing here
       // is a no-op when the buffer is empty (streaming coalescing preserved) and cannot
       // recurse: flushNow never reads messages.
-      if (!(yield* flushNow())) {
+      if (!(yield* flushNow(input.sessionID))) {
         yield* Effect.logWarning("Session.messages: flush failed, returning possibly stale messages", {
           "session.id": input.sessionID,
         })
