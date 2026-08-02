@@ -98,16 +98,19 @@ function summaryDiff(value: SnapshotFileDiff): value is SummaryDiff {
 
 const hidden = new Set(["todowrite"])
 
-function partState(part: PartType) {
+function partState(part: PartType, showReasoningSummaries: boolean) {
   if (part.type === "tool") {
     if (hidden.has(part.tool)) return
     if (part.tool === "question" && (part.state.status === "pending" || part.state.status === "running")) return
     return "visible" as const
   }
   if (part.type === "text") return part.text?.trim() ? ("visible" as const) : undefined
-  // Reasoning parts are always visible as collapsible blocks; the setting only
-  // controls their initial expanded state.
-  if (part.type === "reasoning") return part.text?.trim() ? ("visible" as const) : undefined
+  // Mirrors renderable(): reasoning parts count as visible only while the
+  // setting is on; otherwise they are not rendered at all.
+  if (part.type === "reasoning") {
+    if (showReasoningSummaries && part.text?.trim()) return "visible" as const
+    return
+  }
   if (PART_MAPPING[part.type]) return "visible" as const
   return
 }
@@ -314,9 +317,10 @@ export function SessionTurn(
   })
   const assistantDerived = createMemo(() => {
     let visible = 0
+    const show = showReasoningSummaries()
     for (const message of assistantMessages()) {
       for (const part of list(data.store.part?.[message.id], emptyParts)) {
-        if (partState(part) === "visible") {
+        if (partState(part, show) === "visible") {
           visible++
         }
       }

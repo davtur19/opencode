@@ -721,9 +721,10 @@ export function renderable(part: PartType, showReasoningSummaries = true) {
     return true
   }
   if (part.type === "text") return !!part.text?.trim()
-  // Reasoning parts are always rendered as collapsible blocks; the setting only
-  // controls their initial expanded state, not whether they are visible.
-  if (part.type === "reasoning") return !!part.text?.trim()
+  // The setting is a real filter: with summaries off, reasoning parts are not
+  // rendered at all (upstream behavior). When they are rendered, the block in
+  // ReasoningPartDisplay starts expanded.
+  if (part.type === "reasoning") return showReasoningSummaries && !!part.text?.trim()
   return !!PART_MAPPING[part.type]
 }
 
@@ -734,13 +735,9 @@ function toolDefaultOpen(tool: string, shell = false, edit = false) {
 
 export function partDefaultOpen(part: PartType, shell = false, edit = false) {
   if (part.type !== "tool") return
-  // Shell tools stay expanded while running (live state) and once they finish
-  // with output, so the command result is visible without an extra click.
-  if (part.tool === "bash" || part.tool === "shell") {
-    if (part.state.status === "pending" || part.state.status === "running") return true
-    if (part.state.status === "completed") return shell || part.state.output.length > 0
-    return shell
-  }
+  // Shell tools rely solely on the `shellToolPartsExpanded` setting (default
+  // true), so commands with output stay open by default without duplicating the
+  // setting here.
   return toolDefaultOpen(part.tool, shell, edit)
 }
 
@@ -1795,8 +1792,10 @@ PART_MAPPING["reasoning"] = function ReasoningPartDisplay(props) {
     () => props.message.role === "assistant" && typeof (props.message as AssistantMessage).time.completed !== "number",
   )
   const text = () => readPartText(data.store.part_text_accum_delta, part())
-  // Per-block independent state: the setting only decides the initial state
-  // (true = expanded, false = collapsed but still visible and clickable).
+  // Per-block independent state. Rendered blocks always start expanded, because
+  // renderable() only lets reasoning parts through while the setting is on.
+  // While a block is collapsed, Kobalte unmounts its content, so no markdown is
+  // parsed/streamed for hidden reasoning (only the trigger row stays mounted).
   const [open, setOpen] = createSignal(props.showReasoningSummaries ?? true)
 
   return (

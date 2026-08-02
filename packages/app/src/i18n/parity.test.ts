@@ -43,19 +43,17 @@ const domains = [
 ] as const
 
 describe.skipIf(!!process.env.CI)("i18n parity", () => {
-  test("non-English locales have every English key", async () => {
+  test("non-English locales resolve every English key via translation or the English fallback", async () => {
     for (const domain of domains) {
       const source = await dictionary(domain.source)
       for (const locale of domain.locales) {
         const target = await dictionary(domain.target(locale))
-        const missing = Object.keys(source).filter((key) => !Object.hasOwn(target, key))
+        // Untranslated keys are intentionally absent: the runtime builds
+        // `{...en, ...locale}` (see context/language.tsx `merge`), so a missing
+        // key falls back to the English string instead of rendering an empty
+        // label. Only orphan keys in a locale file are rejected.
         const extra = Object.keys(target).filter((key) => !Object.hasOwn(source, key))
-        expect({ domain: domain.name, locale, missing, extra }).toEqual({
-          domain: domain.name,
-          locale,
-          missing: [],
-          extra: [],
-        })
+        expect({ domain: domain.name, locale, extra }).toEqual({ domain: domain.name, locale, extra: [] })
       }
     }
   })

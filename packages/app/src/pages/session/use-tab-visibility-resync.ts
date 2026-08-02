@@ -30,7 +30,7 @@ export function useTabVisibilityResync(input: { sessionID: Accessor<string | und
       console.info(`[${RESYNC_MARKER}] event stream not connected; reconnecting`)
       void sdk.event.restart()
     }
-    inFlight = sync().session.sync(sessionID, { force: true })
+    inFlight = sync().session.sync(sessionID, { force: true }).catch(() => {})
     void inFlight.finally(() => {
       inFlight = undefined
     })

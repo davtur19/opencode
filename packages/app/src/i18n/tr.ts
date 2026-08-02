@@ -106,7 +106,6 @@ export const dict = {
   "dialog.provider.empty": "Sağlayıcı bulunamadı",
   "dialog.provider.group.popular": "Popüler",
   "dialog.provider.group.other": "Diğer",
-  "dialog.provider.custom.label": "Custom OpenAI-compatible provider",
   "dialog.provider.tag.recommended": "Önerilen",
   "dialog.provider.opencode.note": "Claude, GPT, Gemini ve daha fazlasını içeren seçilmiş modeller",
   "dialog.provider.opencode.tagline": "Güvenilir optimize edilmiş modeller",
@@ -127,7 +126,6 @@ export const dict = {
 
   "dialog.model.unpaid.freeModels.title": "OpenCode tarafından sunulan ücretsiz modeller",
   "dialog.model.unpaid.addMore.title": "Popüler sağlayıcılardan daha fazla model ekleyin",
-  "dialog.model.unpaid.viewMoreProviders": "See 70+ more providers",
 
   "dialog.provider.viewAll": "Daha fazla sağlayıcı göster",
 
@@ -332,7 +330,6 @@ export const dict = {
 
   "dialog.directory.search.placeholder": "Klasör ara",
   "dialog.directory.empty": "Klasör bulunamadı",
-  "dialog.directory.knownDirectories": "Known directories",
   "dialog.directory.action.selectFile": "Dosya seç",
   "dialog.directory.action.selectFolder": "Klasör seç",
   "dialog.directory.root": "Kök",
@@ -607,7 +604,6 @@ export const dict = {
   "home.projects": "Projeler",
   "home.project.add": "Proje ekle",
   "home.recentlyClosed": "Yakın zamanda kapatılanlar",
-  "home.otherDirectories": "Other directories",
   "home.server.collapse": "Sunucu projelerini daralt",
   "home.server.expand": "Sunucu projelerini genişlet",
   "home.sessions.search.placeholder": "Oturum ara",
@@ -1051,9 +1047,6 @@ export const dict = {
   "session.header.open.finder": "Finder",
   "session.header.open.fileExplorer": "Dosya Gezgini",
   "session.header.open.fileManager": "Dosya Yöneticisi",
-  "session.header.reveal.finder": "Reveal in Finder",
-  "session.header.reveal.fileExplorer": "Reveal in File Explorer",
-  "session.header.reveal.containingFolder": "Open containing folder",
   "session.header.open.app.vscode": "VS Code",
   "session.header.open.app.cursor": "Cursor",
   "session.header.open.app.zed": "Zed",

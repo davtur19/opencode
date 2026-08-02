@@ -47,6 +47,22 @@ describe("parseAnsi", () => {
   test("normalizes nothing itself — callers handle \\r / \\r\\n", () => {
     expect(parseAnsi("a\r\nb\rc").map((s) => s.text).join("")).toBe("a\r\nb\rc")
   })
+
+  test("drops OSC sequences like terminal title changes (ESC ] ... BEL)", () => {
+    expect(parseAnsi("a\x1b]0;my-terminal\x07b")).toEqual([{ text: "ab" }])
+  })
+
+  test("drops OSC sequences terminated with ST (ESC ] ... ESC \\)", () => {
+    expect(parseAnsi("a\x1b]0;my-terminal\x1b\\b")).toEqual([{ text: "ab" }])
+  })
+
+  test("drops an OSC sequence with no trailing BEL at end of input", () => {
+    expect(parseAnsi("a\x1b]0;truncated-title")).toEqual([{ text: "a" }])
+  })
+
+  test("drops an incomplete CSI sequence at end of input without leaking or crashing", () => {
+    expect(parseAnsi("red \x1b[31")).toEqual([{ text: "red " }])
+  })
 })
 
 describe("highlightCommand", () => {

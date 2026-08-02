@@ -102,7 +102,6 @@ export const dict = {
   "dialog.provider.empty": "Ingen udbydere fundet",
   "dialog.provider.group.popular": "Populære",
   "dialog.provider.group.other": "Andre",
-  "dialog.provider.custom.label": "Custom OpenAI-compatible provider",
   "dialog.provider.tag.recommended": "Anbefalet",
   "dialog.provider.opencode.note": "Udvalgte modeller inklusive Claude, GPT, Gemini og flere",
   "dialog.provider.opencode.tagline": "Pålidelige optimerede modeller",
@@ -123,7 +122,6 @@ export const dict = {
 
   "dialog.model.unpaid.freeModels.title": "Gratis modeller leveret af OpenCode",
   "dialog.model.unpaid.addMore.title": "Tilføj flere modeller fra populære udbydere",
-  "dialog.model.unpaid.viewMoreProviders": "See 70+ more providers",
 
   "dialog.provider.viewAll": "Vis flere udbydere",
 
@@ -326,7 +324,6 @@ export const dict = {
 
   "dialog.directory.search.placeholder": "Søg mapper",
   "dialog.directory.empty": "Ingen mapper fundet",
-  "dialog.directory.knownDirectories": "Known directories",
   "dialog.directory.action.selectFile": "Vælg fil",
   "dialog.directory.action.selectFolder": "Vælg mappe",
   "dialog.directory.root": "Rod",
@@ -599,7 +596,6 @@ export const dict = {
   "home.projects": "Projekter",
   "home.project.add": "Tilføj projekt",
   "home.recentlyClosed": "Lukket for nylig",
-  "home.otherDirectories": "Other directories",
   "home.server.collapse": "Skjul serverprojekter",
   "home.server.expand": "Udvid serverprojekter",
   "home.sessions.search.placeholder": "Søg i sessioner",
@@ -1036,9 +1032,6 @@ export const dict = {
   "session.header.open.finder": "Finder",
   "session.header.open.fileExplorer": "Stifinder",
   "session.header.open.fileManager": "Filhåndtering",
-  "session.header.reveal.finder": "Reveal in Finder",
-  "session.header.reveal.fileExplorer": "Reveal in File Explorer",
-  "session.header.reveal.containingFolder": "Open containing folder",
   "session.header.open.app.vscode": "VS Code",
   "session.header.open.app.cursor": "Cursor",
   "session.header.open.app.zed": "Zed",

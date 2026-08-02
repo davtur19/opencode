@@ -398,6 +398,13 @@
   position: relative;
   overflow: hidden;
 
+  /* Tokyo Night stays for the dark surface; on light themes use a light slate
+     terminal surface so the box does not look like a dark hole in the page. */
+  @media (prefers-color-scheme: light) {
+    --bash-bg: #f6f7f9;
+    --bash-fg: #1f2332;
+  }
+
   [data-slot="bash-copy"] {
     position: absolute;
     top: 4px;

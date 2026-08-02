@@ -3,9 +3,13 @@
  *
  * - `parseAnsi` interprets a base set of ANSI SGR sequences (foreground colors
  *   30-37 / 90-97, bold, reset) into styled text segments and silently drops all
- *   other control sequences (cursor movement, clear-screen, OSC, extended 24-bit
- *   color modes, ...). Kept dependency-free on purpose: nothing heavier than a
- *   regex is needed for the output rendered by shell tools.
+ *   other control sequences: non-SGR CSI (cursor movement, clear-screen, ...),
+ *   OSC sequences such as `ESC ] 0;title BEL` / `ESC ] ... ESC \` (terminal
+ *   title, hyperlinks, ...), and extended 24-bit color modes. Incomplete escape
+ *   sequences truncated at the end of the input (e.g. a trailing `ESC [ 31`
+ *   with no final byte) are cut off so they never leak control bytes into the
+ *   UI. Kept dependency-free on purpose: nothing heavier than a regex is needed
+ *   for the output rendered by shell tools.
  * - `highlightCommand` colorizes a shell command line (command, flags, strings,
  *   keywords, env assignments, operators, comments) using a simple regex scanner.
  */
@@ -45,6 +49,16 @@ const ANSI_FG: Record<string, string> = {
 // Matches CSI sequences: ESC [ params final-byte
 const CSI_RE = /\x1b\[([0-9;?]*)([A-Za-z])/g
 
+// Matches OSC sequences: ESC ] ... terminated by BEL or ESC \ (ST). Emitted by
+// shells/tmux for terminal titles etc.; stripped from the output entirely.
+const OSC_RE = /\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)/g
+
+// Trailing escape sequence that never received its terminator/final byte
+// (truncated stream, e.g. a CSI with only params like "ESC [ 31" or an OSC
+// with no BEL/ST like "ESC ] 0;title", both at end of input). Cut from the
+// end so no literal control bytes reach the UI.
+const TRAILING_ESC_RE = /\x1b\[[0-9;?]*$|\x1b\][^\x07\x1b]*$/
+
 type SgrState = { bold: boolean; color: string | undefined }
 
 function applySgr(params: string, state: SgrState) {
@@ -83,7 +97,9 @@ function applySgr(params: string, state: SgrState) {
 
 /**
  * Parse ANSI-colored text into styled segments. Non-SGR CSI sequences (e.g.
- * `\x1b[2J`, `\x1b[H`, `\x1b[?25l`) are dropped from the output entirely.
+ * `\x1b[2J`, `\x1b[H`, `\x1b[?25l`), OSC sequences (`\x1b]0;title\x07`,
+ * `\x1b]...\x1b\\`) and incomplete trailing escapes are dropped from the
+ * output entirely.
  */
 export function parseAnsi(input: string): AnsiSegment[] {
   const segments: AnsiSegment[] = []
@@ -101,14 +117,18 @@ export function parseAnsi(input: string): AnsiSegment[] {
     }
   }
 
+  // Strip OSC payloads and any escape left unterminated at the end of the
+  // string before scanning for SGR sequences.
+  const cleaned = input.replace(OSC_RE, "").replace(TRAILING_ESC_RE, "")
+
   CSI_RE.lastIndex = 0
   let match: RegExpExecArray | null
-  while ((match = CSI_RE.exec(input))) {
-    emit(input.slice(cursor, match.index))
+  while ((match = CSI_RE.exec(cleaned))) {
+    emit(cleaned.slice(cursor, match.index))
     if (match[2] === "m") applySgr(match[1], state)
     cursor = match.index + match[0].length
   }
-  emit(input.slice(cursor))
+  emit(cleaned.slice(cursor))
   return segments
 }
 
