@@ -102,6 +102,7 @@ export const dict = {
   "dialog.provider.empty": "No se encontraron proveedores",
   "dialog.provider.group.popular": "Popular",
   "dialog.provider.group.other": "Otro",
+  "dialog.provider.custom.label": "Custom OpenAI-compatible provider",
   "dialog.provider.tag.recommended": "Recomendado",
   "dialog.provider.opencode.note": "Modelos seleccionados incluyendo Claude, GPT, Gemini y más",
   "dialog.provider.opencode.tagline": "Modelos optimizados y fiables",
@@ -122,6 +123,7 @@ export const dict = {
 
   "dialog.model.unpaid.freeModels.title": "Modelos gratuitos proporcionados por OpenCode",
   "dialog.model.unpaid.addMore.title": "Añadir más modelos de proveedores populares",
+  "dialog.model.unpaid.viewMoreProviders": "See 70+ more providers",
 
   "dialog.provider.viewAll": "Ver más proveedores",
 
@@ -325,6 +327,7 @@ export const dict = {
 
   "dialog.directory.search.placeholder": "Buscar carpetas",
   "dialog.directory.empty": "No se encontraron carpetas",
+  "dialog.directory.knownDirectories": "Known directories",
   "dialog.directory.action.selectFile": "Seleccionar archivo",
   "dialog.directory.action.selectFolder": "Seleccionar carpeta",
   "dialog.directory.root": "Raíz",
@@ -600,6 +603,7 @@ export const dict = {
   "home.projects": "Proyectos",
   "home.project.add": "Añadir proyecto",
   "home.recentlyClosed": "Proyectos cerrados recientemente",
+  "home.otherDirectories": "Other directories",
   "home.server.collapse": "Contraer proyectos del servidor",
   "home.server.expand": "Expandir proyectos del servidor",
   "home.sessions.search.placeholder": "Buscar sesiones",
@@ -1048,6 +1052,9 @@ export const dict = {
   "session.header.open.finder": "Finder",
   "session.header.open.fileExplorer": "Explorador de archivos",
   "session.header.open.fileManager": "Gestor de archivos",
+  "session.header.reveal.finder": "Reveal in Finder",
+  "session.header.reveal.fileExplorer": "Reveal in File Explorer",
+  "session.header.reveal.containingFolder": "Open containing folder",
   "session.header.open.app.vscode": "VS Code",
   "session.header.open.app.cursor": "Cursor",
   "session.header.open.app.zed": "Zed",

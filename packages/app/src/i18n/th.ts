@@ -102,6 +102,7 @@ export const dict = {
   "dialog.provider.empty": "ไม่พบผู้ให้บริการ",
   "dialog.provider.group.popular": "ยอดนิยม",
   "dialog.provider.group.other": "อื่น ๆ",
+  "dialog.provider.custom.label": "Custom OpenAI-compatible provider",
   "dialog.provider.tag.recommended": "แนะนำ",
   "dialog.provider.opencode.note": "โมเดลที่คัดสรร รวมถึง Claude, GPT, Gemini และอื่น ๆ",
   "dialog.provider.opencode.tagline": "โมเดลที่เชื่อถือได้และปรับให้เหมาะสม",
@@ -122,6 +123,7 @@ export const dict = {
 
   "dialog.model.unpaid.freeModels.title": "โมเดลฟรีที่จัดหาให้โดย OpenCode",
   "dialog.model.unpaid.addMore.title": "เพิ่มโมเดลเพิ่มเติมจากผู้ให้บริการยอดนิยม",
+  "dialog.model.unpaid.viewMoreProviders": "See 70+ more providers",
 
   "dialog.provider.viewAll": "แสดงผู้ให้บริการเพิ่มเติม",
 
@@ -325,6 +327,7 @@ export const dict = {
 
   "dialog.directory.search.placeholder": "ค้นหาโฟลเดอร์",
   "dialog.directory.empty": "ไม่พบโฟลเดอร์",
+  "dialog.directory.knownDirectories": "Known directories",
   "dialog.directory.action.selectFile": "เลือกไฟล์",
   "dialog.directory.action.selectFolder": "เลือกโฟลเดอร์",
   "dialog.directory.root": "ราก",
@@ -595,6 +598,7 @@ export const dict = {
   "home.projects": "โปรเจกต์",
   "home.project.add": "เพิ่มโปรเจกต์",
   "home.recentlyClosed": "ที่ปิดไปล่าสุด",
+  "home.otherDirectories": "Other directories",
   "home.server.collapse": "ย่อโปรเจกต์ของเซิร์ฟเวอร์",
   "home.server.expand": "ขยายโปรเจกต์ของเซิร์ฟเวอร์",
   "home.sessions.search.placeholder": "ค้นหาเซสชัน",
@@ -1027,6 +1031,9 @@ export const dict = {
   "session.header.open.finder": "Finder",
   "session.header.open.fileExplorer": "File Explorer",
   "session.header.open.fileManager": "File Manager",
+  "session.header.reveal.finder": "Reveal in Finder",
+  "session.header.reveal.fileExplorer": "Reveal in File Explorer",
+  "session.header.reveal.containingFolder": "Open containing folder",
   "session.header.open.app.vscode": "VS Code",
   "session.header.open.app.cursor": "Cursor",
   "session.header.open.app.zed": "Zed",

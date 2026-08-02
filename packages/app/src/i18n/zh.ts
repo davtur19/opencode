@@ -129,6 +129,7 @@ export const dict = {
   "dialog.provider.empty": "未找到提供商",
   "dialog.provider.group.popular": "热门",
   "dialog.provider.group.other": "其他",
+  "dialog.provider.custom.label": "Custom OpenAI-compatible provider",
   "dialog.provider.tag.recommended": "推荐",
   "dialog.provider.opencode.note": "使用 OpenCode Zen 或 API 密钥连接",
   "dialog.provider.opencode.tagline": "可靠的优化模型",
@@ -148,6 +149,7 @@ export const dict = {
   "dialog.model.manage.provider.toggle": "切换所有 {{provider}} 模型",
   "dialog.model.unpaid.freeModels.title": "OpenCode 提供的免费模型",
   "dialog.model.unpaid.addMore.title": "从热门提供商添加更多模型",
+  "dialog.model.unpaid.viewMoreProviders": "See 70+ more providers",
 
   "dialog.provider.viewAll": "查看更多提供商",
 
@@ -345,6 +347,7 @@ export const dict = {
 
   "dialog.directory.search.placeholder": "搜索文件夹",
   "dialog.directory.empty": "未找到文件夹",
+  "dialog.directory.knownDirectories": "Known directories",
   "dialog.directory.action.selectFile": "选择文件",
   "dialog.directory.action.selectFolder": "选择文件夹",
   "dialog.directory.root": "根目录",
@@ -596,6 +599,7 @@ export const dict = {
   "home.projects": "项目",
   "home.project.add": "添加项目",
   "home.recentlyClosed": "最近关闭",
+  "home.otherDirectories": "Other directories",
   "home.server.collapse": "折叠服务器项目",
   "home.server.expand": "展开服务器项目",
   "home.sessions.search.placeholder": "搜索会话",
@@ -1020,6 +1024,9 @@ export const dict = {
   "session.header.open.finder": "访达",
   "session.header.open.fileExplorer": "文件资源管理器",
   "session.header.open.fileManager": "文件管理器",
+  "session.header.reveal.finder": "Reveal in Finder",
+  "session.header.reveal.fileExplorer": "Reveal in File Explorer",
+  "session.header.reveal.containingFolder": "Open containing folder",
   "session.header.open.app.vscode": "VS Code",
   "session.header.open.app.cursor": "Cursor",
   "session.header.open.app.zed": "Zed",

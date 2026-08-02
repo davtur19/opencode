@@ -106,6 +106,7 @@ export const dict = {
   "dialog.provider.empty": "找不到提供者",
   "dialog.provider.group.popular": "熱門",
   "dialog.provider.group.other": "其他",
+  "dialog.provider.custom.label": "Custom OpenAI-compatible provider",
   "dialog.provider.tag.recommended": "推薦",
   "dialog.provider.opencode.note": "精選模型，包含 Claude、GPT、Gemini 等等",
   "dialog.provider.opencode.tagline": "可靠的優化模型",
@@ -126,6 +127,7 @@ export const dict = {
 
   "dialog.model.unpaid.freeModels.title": "OpenCode 提供的免費模型",
   "dialog.model.unpaid.addMore.title": "從熱門提供者新增更多模型",
+  "dialog.model.unpaid.viewMoreProviders": "See 70+ more providers",
 
   "dialog.provider.viewAll": "查看更多提供者",
 
@@ -325,6 +327,7 @@ export const dict = {
 
   "dialog.directory.search.placeholder": "搜尋資料夾",
   "dialog.directory.empty": "找不到資料夾",
+  "dialog.directory.knownDirectories": "Known directories",
   "dialog.directory.action.selectFile": "選擇檔案",
   "dialog.directory.action.selectFolder": "選擇資料夾",
   "dialog.directory.root": "根目錄",
@@ -591,6 +594,7 @@ export const dict = {
   "home.projects": "專案",
   "home.project.add": "新增專案",
   "home.recentlyClosed": "最近關閉",
+  "home.otherDirectories": "Other directories",
   "home.server.collapse": "收合伺服器專案",
   "home.server.expand": "展開伺服器專案",
   "home.sessions.search.placeholder": "搜尋工作階段",
@@ -1016,6 +1020,9 @@ export const dict = {
   "session.header.open.finder": "Finder",
   "session.header.open.fileExplorer": "檔案總管",
   "session.header.open.fileManager": "檔案管理員",
+  "session.header.reveal.finder": "Reveal in Finder",
+  "session.header.reveal.fileExplorer": "Reveal in File Explorer",
+  "session.header.reveal.containingFolder": "Open containing folder",
   "session.header.open.app.vscode": "VS Code",
   "session.header.open.app.cursor": "Cursor",
   "session.header.open.app.zed": "Zed",

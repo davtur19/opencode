@@ -102,6 +102,7 @@ export const dict = {
   "dialog.provider.empty": "Провайдеры не найдены",
   "dialog.provider.group.popular": "Популярные",
   "dialog.provider.group.other": "Другие",
+  "dialog.provider.custom.label": "Custom OpenAI-compatible provider",
   "dialog.provider.tag.recommended": "Рекомендуемые",
   "dialog.provider.opencode.note": "Отобранные модели, включая Claude, GPT, Gemini и другие",
   "dialog.provider.opencode.tagline": "Надежные оптимизированные модели",
@@ -122,6 +123,7 @@ export const dict = {
 
   "dialog.model.unpaid.freeModels.title": "Бесплатные модели от OpenCode",
   "dialog.model.unpaid.addMore.title": "Добавьте больше моделей от популярных провайдеров",
+  "dialog.model.unpaid.viewMoreProviders": "See 70+ more providers",
 
   "dialog.provider.viewAll": "Показать больше провайдеров",
 
@@ -325,6 +327,7 @@ export const dict = {
 
   "dialog.directory.search.placeholder": "Поиск папок",
   "dialog.directory.empty": "Папки не найдены",
+  "dialog.directory.knownDirectories": "Known directories",
   "dialog.directory.action.selectFile": "Выбрать файл",
   "dialog.directory.action.selectFolder": "Выбрать папку",
   "dialog.directory.root": "Корень",
@@ -600,6 +603,7 @@ export const dict = {
   "home.projects": "Проекты",
   "home.project.add": "Добавить проект",
   "home.recentlyClosed": "Недавно закрытые",
+  "home.otherDirectories": "Other directories",
   "home.server.collapse": "Свернуть проекты сервера",
   "home.server.expand": "Развернуть проекты сервера",
   "home.sessions.search.placeholder": "Поиск сессий",
@@ -1043,6 +1047,9 @@ export const dict = {
   "session.header.open.finder": "Finder",
   "session.header.open.fileExplorer": "Проводник",
   "session.header.open.fileManager": "Файловый менеджер",
+  "session.header.reveal.finder": "Reveal in Finder",
+  "session.header.reveal.fileExplorer": "Reveal in File Explorer",
+  "session.header.reveal.containingFolder": "Open containing folder",
   "session.header.open.app.vscode": "VS Code",
   "session.header.open.app.cursor": "Cursor",
   "session.header.open.app.zed": "Zed",

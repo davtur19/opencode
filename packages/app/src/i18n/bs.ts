@@ -102,6 +102,7 @@ export const dict = {
   "dialog.provider.empty": "Nema pronađenih provajdera",
   "dialog.provider.group.popular": "Popularno",
   "dialog.provider.group.other": "Ostalo",
+  "dialog.provider.custom.label": "Custom OpenAI-compatible provider",
   "dialog.provider.tag.recommended": "Preporučeno",
   "dialog.provider.opencode.note": "Kurirani modeli uključujući Claude, GPT, Gemini i druge",
   "dialog.provider.opencode.tagline": "Pouzdani optimizovani modeli",
@@ -122,6 +123,7 @@ export const dict = {
 
   "dialog.model.unpaid.freeModels.title": "Besplatni modeli koje obezbjeđuje OpenCode",
   "dialog.model.unpaid.addMore.title": "Dodaj još modela od popularnih provajdera",
+  "dialog.model.unpaid.viewMoreProviders": "See 70+ more providers",
 
   "dialog.provider.viewAll": "Prikaži više provajdera",
 
@@ -326,6 +328,7 @@ export const dict = {
 
   "dialog.directory.search.placeholder": "Pretraži foldere",
   "dialog.directory.empty": "Nema pronađenih foldera",
+  "dialog.directory.knownDirectories": "Known directories",
   "dialog.directory.action.selectFile": "Odaberi datoteku",
   "dialog.directory.action.selectFolder": "Odaberi folder",
   "dialog.directory.root": "Korijen",
@@ -599,6 +602,7 @@ export const dict = {
   "home.projects": "Projekti",
   "home.project.add": "Dodaj projekat",
   "home.recentlyClosed": "Nedavno zatvoreni projekti",
+  "home.otherDirectories": "Other directories",
   "home.server.collapse": "Sažmi projekte servera",
   "home.server.expand": "Proširi projekte servera",
   "home.sessions.search.placeholder": "Pretraži sesije",
@@ -1040,6 +1044,9 @@ export const dict = {
   "session.header.open.finder": "Finder",
   "session.header.open.fileExplorer": "File Explorer",
   "session.header.open.fileManager": "File Manager",
+  "session.header.reveal.finder": "Reveal in Finder",
+  "session.header.reveal.fileExplorer": "Reveal in File Explorer",
+  "session.header.reveal.containingFolder": "Open containing folder",
   "session.header.open.app.vscode": "VS Code",
   "session.header.open.app.cursor": "Cursor",
   "session.header.open.app.zed": "Zed",
