@@ -104,6 +104,7 @@ import { useUsageExceededDialogs } from "./session/usage-exceeded-dialogs"
 import { createSessionOwnership } from "./session/session-ownership"
 import { createSessionLineage } from "./session/session-lineage"
 import { useTabVisibilityResync } from "./session/use-tab-visibility-resync"
+import { useConnectionResync } from "./session/use-connection-resync"
 
 type FollowupItem = FollowupDraft & { id: string }
 type FollowupEdit = Pick<FollowupItem, "id" | "prompt" | "context">
@@ -378,6 +379,7 @@ export default function Page() {
   const newSessionDesign = createMemo(() => settings.general.newLayoutDesigns())
 
   useTabVisibilityResync({ sessionID: () => params.id })
+  useConnectionResync({ sessionID: () => params.id })
 
   createEffect(() => {
     if (!prompt.ready()) return
