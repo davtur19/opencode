@@ -28,6 +28,7 @@ export function HomeProjects(props: { projects: HomeProjectsController; scroll: 
       onMoveProject={props.projects.project.move}
       onSelectProject={props.projects.project.select}
       onAddProjects={props.projects.project.add}
+      knownDirectories={props.projects.project.knownDirectories}
       onOpenProjectNewSession={props.projects.project.openNewSession}
       onEditProject={props.projects.project.edit}
       onRevealProject={props.projects.project.reveal}

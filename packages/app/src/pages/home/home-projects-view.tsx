@@ -51,6 +51,7 @@ export type HomeProjectsViewProps = {
   onMoveProject: (server: ServerConnection.Any, worktree: string, index: number) => void
   onSelectProject: (server: ServerConnection.Any, directory: string) => void
   onAddProjects: (server: ServerConnection.Any, directories: string[]) => void
+  knownDirectories: Accessor<string[]>
   onOpenProjectNewSession: (server: ServerConnection.Any, directory: string) => void
   onEditProject: (server: ServerConnection.Any, project: LocalProject) => void
   onRevealProject: (server: ServerConnection.Any, project: LocalProject) => void
@@ -113,6 +114,9 @@ export function HomeProjectsView(props: HomeProjectsViewProps) {
                   items={props.projects()}
                 />
               </Show>
+              <Show when={props.knownDirectories().length > 0}>
+                <HomeKnownDirectories {...props} server={props.servers()[0]} />
+              </Show>
             </div>
           }
         >
@@ -136,6 +140,13 @@ export function HomeProjectsView(props: HomeProjectsViewProps) {
                     <Show when={healthy() && hasProjects() && !collapsed()}>
                       <div class="mx-3 h-px bg-v2-border-border-base" />
                       <HomeProjectList {...props} {...contextMenuProps} server={item} items={projects()} />
+                    </Show>
+                    <Show
+                      when={
+                        ServerConnection.key(item) === props.selection().server && props.knownDirectories().length > 0
+                      }
+                    >
+                      <HomeKnownDirectories {...props} server={item} />
                     </Show>
                   </div>
                 )
@@ -611,5 +622,61 @@ function HomeProjectAvatar(props: { project: LocalProject; outline?: boolean }) 
       src={props.outline ? undefined : getProjectAvatarSource(props.project.id, props.project.icon)}
       variant={props.outline ? "outline" : getProjectAvatarVariant(props.project.icon?.color)}
     />
+  )
+}
+
+// Directories that have sessions but are not open projects. They only carry an
+// "open as project" action (via onAddProjects), not the full project context
+// menu, so closing/reordering semantics of real projects stay untouched.
+function HomeKnownDirectories(props: HomeProjectsViewProps & { server: ServerConnection.Any }) {
+  return (
+    <>
+      <div class="mt-3 flex h-7 min-w-0 shrink-0 items-center pl-1.5 pr-3">
+        <div class="text-v2-text-text-faint [font-weight:530]">{props.language.t("home.otherDirectories")}</div>
+      </div>
+      <div class="flex min-w-0 flex-col gap-1">
+        <For each={props.knownDirectories()}>
+          {(directory) => (
+            <HomeKnownDirectoryRow
+              directory={directory}
+              server={props.server}
+              homedir={props.homedir}
+              serverHealth={props.serverHealth}
+              onOpenDirectory={() => props.onAddProjects(props.server, [directory])}
+            />
+          )}
+        </For>
+      </div>
+    </>
+  )
+}
+
+function HomeKnownDirectoryRow(props: {
+  directory: string
+  server: ServerConnection.Any
+  homedir: Accessor<string>
+  serverHealth: HomeProjectsViewProps["serverHealth"]
+  onOpenDirectory: () => void
+}) {
+  const unreachable = () => props.serverHealth(props.server)?.healthy === false
+  const path = () => {
+    const home = props.homedir()
+    const worktree = props.directory
+    if (home && (worktree === home || worktree.startsWith(`${home}/`))) return `~${worktree.slice(home.length)}`
+    return worktree
+  }
+  return (
+    <TooltipV2 placement="right" value={props.directory}>
+      <HomeProjectNavButton
+        type="button"
+        data-component="home-known-directory-row"
+        class="disabled:opacity-60"
+        disabled={unreachable()}
+        onClick={props.onOpenDirectory}
+      >
+        <IconV2 name="folder" size="small" />
+        <span class={HOME_PROJECT_NAV_LABEL}>{path()}</span>
+      </HomeProjectNavButton>
+    </TooltipV2>
   )
 }

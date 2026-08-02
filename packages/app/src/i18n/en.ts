@@ -328,6 +328,7 @@ export const dict = {
 
   "dialog.directory.search.placeholder": "Search folders",
   "dialog.directory.empty": "No folders found",
+  "dialog.directory.knownDirectories": "Known directories",
   "dialog.directory.action.selectFile": "Select file",
   "dialog.directory.action.selectFolder": "Select folder",
   "dialog.directory.root": "Root",
@@ -620,6 +621,7 @@ export const dict = {
   "home.projects": "Projects",
   "home.project.add": "Add project",
   "home.recentlyClosed": "Recently closed",
+  "home.otherDirectories": "Other directories",
   "home.server.collapse": "Collapse server projects",
   "home.server.expand": "Expand server projects",
   "home.sessions.search.placeholder": "Search sessions",

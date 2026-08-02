@@ -8,6 +8,7 @@ import { useNotification } from "@/context/notification"
 import { usePlatform } from "@/context/platform"
 import { ServerConnection } from "@/context/server"
 import { closeHomeProject, errorMessage, homeProjectDirectories } from "@/pages/layout/helpers"
+import { pathKey } from "@/utils/path-key"
 import { Persist, persisted } from "@/utils/persist"
 import { showToast } from "@/utils/toast"
 import { useDialog } from "@opencode-ai/ui/context/dialog"
@@ -106,6 +107,14 @@ export function createHomeProjectsController(home: HomeController) {
       },
       move: (conn: ServerConnection.Any, worktree: string, index: number) => {
         home.server.context(conn).projects.move(worktree, index)
+      },
+      // Directories that carry root sessions but are not open projects: shown in
+      // the sidebar so they are discoverable; clicking one opens it as a project.
+      knownDirectories: () => {
+        const open = new Set(home.project.list().flatMap(directories).map(pathKey))
+        return Array.from(home.session.sessionDirectories())
+          .filter((directory) => !open.has(directory))
+          .sort()
       },
       canReveal: canRevealProject,
       reveal: (conn: ServerConnection.Any, project: LocalProject) => {

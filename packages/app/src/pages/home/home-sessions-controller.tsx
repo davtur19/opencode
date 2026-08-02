@@ -2,16 +2,10 @@ import type { Session } from "@opencode-ai/sdk/v2/client"
 import { preloadMarkdown } from "@opencode-ai/session-ui/markdown-cache"
 import { useDialog } from "@opencode-ai/ui/context/dialog"
 import { useMarked } from "@opencode-ai/ui/context/marked"
-import { useQuery } from "@tanstack/solid-query"
 import { DateTime } from "luxon"
 import { type Accessor, createEffect, createMemo, createRoot, type JSX, startTransition } from "solid-js"
 import { produce } from "solid-js/store"
 import { useCommand } from "@/context/command"
-import {
-  loadHomeSessionIndex,
-  retainHomeSessions,
-  type HomeSessionEvents,
-} from "@/context/global-sync/home-session-index"
 import type { LocalProject } from "@/context/layout"
 import { useLanguage } from "@/context/language"
 import { ServerConnection } from "@/context/server"
@@ -22,9 +16,8 @@ import { pathKey } from "@/utils/path-key"
 import { showToast } from "@/utils/toast"
 import { Binary } from "@opencode-ai/core/util/binary"
 import { archiveHomeSession } from "../home-session-archive"
-import type { HomeController } from "./home-controller"
+import { HOME_SESSION_LIMIT, type HomeController } from "./home-controller"
 
-const HOME_SESSION_LIMIT = 64
 export type HomeSessionRecord = {
   session: Session
   project: LocalProject
@@ -32,7 +25,7 @@ export type HomeSessionRecord = {
 }
 
 export type HomeSessionGroup = {
-  id: "today" | "yesterday" | "older"
+  id: string
   title: string
   sessions: HomeSessionRecord[]
 }
@@ -53,51 +46,23 @@ export function createHomeSessionsController(home: HomeController) {
   const projectByID = createMemo(
     () => new Map(home.project.list().flatMap((project) => (project.id ? [[project.id, project] as const] : []))),
   )
-  const homeSessions = () => home.server.focusedSync().homeSessions
-  const sessionEventLoad = useQuery(() => ({
-    queryKey: homeSessions().eventsKey,
-    queryFn: async (): Promise<HomeSessionEvents> => ({ sequence: 0, entries: [] }),
-    initialData: { sequence: 0, entries: [] } satisfies HomeSessionEvents,
-    enabled: false,
-  }))
-  const sessionLoad = useQuery(() => ({
-    queryKey: homeSessions().indexKey,
-    enabled: !!home.server.focusedContext(),
-    queryFn: async ({ signal }) => {
-      const ctx = home.server.focusedContext()
-      if (!ctx) return { sessions: [], eventSequence: 0 }
-      const cache = homeSessions()
-      const eventSequence = cache.eventSequence()
-      const index = await loadHomeSessionIndex(
-        (input, options) => ctx.sdk.client.v2.session.list(input, options),
-        eventSequence,
-        signal,
-      )
-      cache.complete(eventSequence)
-      return index
-    },
-    retry: false,
-    staleTime: 30_000,
-    refetchOnMount: true,
-    refetchOnReconnect: true,
-  }))
-  const indexedSessions = createMemo(() =>
-    retainHomeSessions(
-      homeSessions().sessions(sessionLoad.data, sessionEventLoad.data),
-      HOME_SESSION_LIMIT,
-      Date.now(),
-    ),
-  )
   const allRecords = createMemo(() =>
     buildHomeSessionRecords({
-      sessions: indexedSessions,
+      sessions: () => home.session.homeSessions(),
+      sessionDirectories: () => home.session.sessionDirectories(),
       projectDirectories,
       projects: home.project.list,
       projectByID,
     }),
   )
   const records = createMemo(() => allRecords().slice(0, HOME_SESSION_LIMIT))
-  const groups = createMemo(() => groupSessions(records(), language))
+  const groups = createMemo(() => {
+    const items = records()
+    if (home.project.selected()) return groupSessions(items, language)
+    // No project is selected: the home spans every directory, so group sessions
+    // per directory (each directory gets its own header) instead of by time.
+    return groupSessionsByDirectory(items)
+  })
   const prefetched = new Set<string>()
 
   createEffect(() => {
@@ -172,7 +137,7 @@ export function createHomeSessionsController(home: HomeController) {
     data: {
       records,
       groups,
-      loading: () => sessionLoad.isLoading,
+      loading: () => home.session.loading(),
       searchRecords: allRecords,
     },
     session: {
@@ -249,31 +214,42 @@ function directories(project: LocalProject) {
 
 function buildHomeSessionRecords(input: {
   sessions: () => Session[]
+  sessionDirectories: () => Set<string>
   projectDirectories: () => string[]
   projects: () => LocalProject[]
   projectByID: () => Map<string, LocalProject>
 }) {
-  const directories = new Set(input.projectDirectories().map(pathKey))
-  // With no open projects there is no directory to scope by: keep every root
-  // session (the index already drops parented and archived entries) instead
-  // of filtering everything out. Once any project is open, scope as before.
+  // Scope by the union of open project directories and every directory that
+  // carries root sessions in the home index: the home always lists all root
+  // sessions (grouped per directory), never only the open project's directory.
+  const directories = new Set([...input.projectDirectories().map(pathKey), ...input.sessionDirectories()])
   const scoped = directories.size > 0
   const sessions = input.sessions().filter((session) => !scoped || directories.has(pathKey(session.directory)))
+  // Sessions without a matching open project fall back to a project derived
+  // from their own directory. Memoized per directory (not per session) so every
+  // session of the same directory shares one project and stays in one group.
+  const fallbackProjects = new Map<string, LocalProject>()
+  const fallbackProject = (worktree: string) => {
+    const key = pathKey(worktree)
+    const existing = fallbackProjects.get(key)
+    if (existing) return existing
+    const next: LocalProject = { worktree, expanded: false }
+    fallbackProjects.set(key, next)
+    return next
+  }
   return [...new Map(sessions.map((session) => [session.id, session] as const)).values()]
     .sort((a, b) => (b.time.updated ?? b.time.created) - (a.time.updated ?? a.time.created))
     .flatMap((session) => {
       const directory = pathKey(session.directory)
-      const project = input
-        .projects()
-        .find(
-          (item) =>
-            pathKey(item.worktree) === directory || item.sandboxes?.some((sandbox) => pathKey(sandbox) === directory),
-        ) ??
+      const project =
+        input
+          .projects()
+          .find(
+            (item) =>
+              pathKey(item.worktree) === directory || item.sandboxes?.some((sandbox) => pathKey(sandbox) === directory),
+          ) ??
         projectForSession(session, input.projects(), input.projectByID()) ??
-          // No project is open: fall back to a project derived from the session's
-          // own directory so the row (name, avatar) stays renderable.
-          { worktree: session.directory, expanded: false }
-      if (!project) return []
+        fallbackProject(session.directory)
       return { session, project, projectName: displayName(project) }
     })
 }
@@ -307,6 +283,24 @@ function groupSessions(records: HomeSessionRecord[], language: ReturnType<typeof
 }
 
 export type HomeSessionsController = ReturnType<typeof createHomeSessionsController>
+
+// The home spans every session directory when no project is selected: group
+// sessions per directory so each directory gets its own header. Records arrive
+// sorted by most recent update, so group order (and within-group order) follows
+// recency.
+function groupSessionsByDirectory(records: HomeSessionRecord[]): HomeSessionGroup[] {
+  const groups = new Map<string, HomeSessionGroup>()
+  for (const record of records) {
+    const directory = pathKey(record.session.directory)
+    const existing = groups.get(directory)
+    if (existing) {
+      existing.sessions.push(record)
+      continue
+    }
+    groups.set(directory, { id: directory, title: directory, sessions: [record] })
+  }
+  return [...groups.values()]
+}
 
 export function HomeSessionStatusController(props: {
   server: Accessor<ServerConnection.Key>
