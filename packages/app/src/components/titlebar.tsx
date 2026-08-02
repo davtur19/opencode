@@ -59,6 +59,7 @@ export function Titlebar(props: { update?: TitlebarUpdate; debugTools?: { visibl
   const params = useParams()
   const useV2Titlebar = createMemo(() => settings.general.newLayoutDesigns())
   const mobile = createMediaQuery("(max-width: 767px)")
+  const touch = createMediaQuery("(hover: none) and (pointer: coarse)")
   const bottom = createMemo(() => useV2Titlebar() && mobile() && settings.general.mobileTitlebarPosition() === "bottom")
 
   const mac = createMemo(() => platform.platform === "desktop" && platform.os === "macos")
@@ -347,8 +348,10 @@ export function Titlebar(props: { update?: TitlebarUpdate; debugTools?: { visibl
               <div
                 class="h-full flex-1 overflow-hidden flex flex-row items-center gap-1.5 px-2 md:pr-3"
                 classList={{
-                  "pt-2": !bottom(),
-                  "pb-2": bottom(),
+                  // On touch devices the tabs grow to fill the titlebar height, so drop the
+                  // vertical padding that normally insets the 28px desktop tabs.
+                  "pt-2": !bottom() && !touch(),
+                  "pb-2": bottom() && !touch(),
                   "md:pl-2": macTrafficLights(),
                   "md:pl-4": !macTrafficLights(),
                 }}

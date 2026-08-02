@@ -114,6 +114,35 @@
   display: none;
 }
 
+/* Touch/mobile: the close button is always visible (hover-reveal forces
+   opacity under `hover: none`), so give the tabs a taller hit area and a
+   minimum width, keeping a clear selectable zone so a tap on the tab does not
+   land on the close button. */
+@media (hover: none) and (pointer: coarse) {
+  [data-titlebar-tab-slot] {
+    min-width: 52px;
+  }
+
+  [data-titlebar-tab] {
+    height: 34px;
+    border-radius: 8px;
+  }
+
+  [data-titlebar-tab] [data-slot="tab-link"] {
+    padding-right: 6px;
+  }
+
+  /* Reserve the close-button zone in the title fade even without hover. */
+  [data-titlebar-tab][data-title-overflow="true"]:not([data-editing="true"]) [data-slot="tab-link"] {
+    --tab-title-fade-offset: 24px;
+  }
+
+  [data-titlebar-tab] [data-slot="tab-close"] {
+    top: 7px;
+    right: 4px;
+  }
+}
+
 @container (max-width: 64px) {
   [data-titlebar-tab-link] {
     justify-content: center;
