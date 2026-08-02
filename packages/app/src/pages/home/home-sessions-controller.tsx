@@ -43,14 +43,23 @@ export function createHomeSessionsController(home: HomeController) {
     if (!project) return home.project.list().flatMap(directories)
     return directories(project)
   })
+  // Scope the session list to the selected project's directories (worktree +
+  // sandboxes). Without a selection the home spans every directory that
+  // carries root sessions, so the scope widens to their union.
+  const scopeDirectories = createMemo(() => {
+    const scoped = new Set(projectDirectories().map(pathKey))
+    if (!home.project.selected()) {
+      for (const directory of home.session.sessionDirectories()) scoped.add(directory)
+    }
+    return scoped
+  })
   const projectByID = createMemo(
     () => new Map(home.project.list().flatMap((project) => (project.id ? [[project.id, project] as const] : []))),
   )
   const allRecords = createMemo(() =>
     buildHomeSessionRecords({
       sessions: () => home.session.homeSessions(),
-      sessionDirectories: () => home.session.sessionDirectories(),
-      projectDirectories,
+      scopeDirectories,
       projects: home.project.list,
       projectByID,
     }),
@@ -214,15 +223,15 @@ function directories(project: LocalProject) {
 
 function buildHomeSessionRecords(input: {
   sessions: () => Session[]
-  sessionDirectories: () => Set<string>
-  projectDirectories: () => string[]
+  scopeDirectories: () => Set<string>
   projects: () => LocalProject[]
   projectByID: () => Map<string, LocalProject>
 }) {
-  // Scope by the union of open project directories and every directory that
-  // carries root sessions in the home index: the home always lists all root
-  // sessions (grouped per directory), never only the open project's directory.
-  const directories = new Set([...input.projectDirectories().map(pathKey), ...input.sessionDirectories()])
+  // Scope by the union of the selected project's directories and, when no
+  // project is selected, every directory that carries root sessions in the
+  // home index. With a project selected the home lists only that project's
+  // sessions; without one it lists all root sessions (grouped per directory).
+  const directories = input.scopeDirectories()
   const scoped = directories.size > 0
   const sessions = input.sessions().filter((session) => !scoped || directories.has(pathKey(session.directory)))
   // Sessions without a matching open project fall back to a project derived
