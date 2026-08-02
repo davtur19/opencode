@@ -567,7 +567,7 @@ const layer: Layer.Layer<
         while (pendingParts.size > 0) {
           const entries = Array.from(pendingParts.entries())
           pendingParts.clear()
-          // The iteration body is wrapped in catchAllDefect so a defect between the
+          // The iteration body is wrapped in catchDefect so a defect between the
           // snapshot+clear above and the restore below can never lose the snapshot: the
           // whole batch is re-buffered (keep-newest) before the defect is rethrown.
           // `publishBatch` requires every durable event in one batch to share a single
@@ -636,7 +636,7 @@ const layer: Layer.Layer<
             }
             return false
           }).pipe(
-            Effect.catchAllDefect((defect) => {
+            Effect.catchDefect((defect) => {
               // Defect-safety: restore the whole snapshot keep-newest before rethrowing,
               // so an abnormal exit between snapshot+clear and the restore path never
               // drops buffered updates silently.
@@ -823,7 +823,7 @@ const layer: Layer.Layer<
         // The part is snapshotted (structuredClone) at buffer time so the buffer holds an
         // immutable copy: the drain delivers it as-is and never clones again, removing the
         // synchronous-throw point that could abandon a drain with the map already cleared
-        // (see the catchAllDefect in flushPendingParts).
+        // (see the catchDefect in flushPendingParts).
         pendingParts.set(key, { part: structuredClone(part), time: Date.now(), eventId: EventV2.ID.create() })
         yield* schedulePartFlush()
         return part
