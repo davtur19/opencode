@@ -3,7 +3,7 @@ import type { Event } from "@opencode-ai/sdk/v2/client"
 import { createSimpleContext } from "@opencode-ai/ui/context"
 import { createGlobalEmitter } from "@solid-primitives/event-bus"
 import { makeEventListener } from "@solid-primitives/event-listener"
-import { type Accessor, batch, createMemo, createResource, onCleanup, onMount } from "solid-js"
+import { type Accessor, batch, createMemo, createResource, createSignal, onCleanup, onMount } from "solid-js"
 import { createApiForServer, createSdkForServer, type ServerApi } from "@/utils/server"
 import { useLanguage } from "./language"
 import { usePlatform } from "./platform"
@@ -180,6 +180,8 @@ type ServerSDKBase = {
     start: () => Promise<void> | undefined
     running: () => boolean
     restart: () => Promise<void> | undefined
+    // Reactive accessor: true while the event stream is connected.
+    connected: () => boolean
   }
   createClient: (
     opts: Omit<Parameters<typeof createSdkForServer>[0], "server" | "fetch">,
@@ -259,7 +261,8 @@ function createServerSdkContextBase(server: ServerConnection.Any, scope: ServerS
   let started = false
   let generation = 0
   // True while the event stream has an established connection and is not between reconnect attempts.
-  let connected = false
+  // Exposed reactively so UI (offline banner, animation pause) can react to connection drops.
+  const [connected, setConnected] = createSignal(false)
 
   const start = () => {
     if (started) return run
@@ -281,7 +284,7 @@ function createServerSdkContextBase(server: ServerConnection.Any, scope: ServerS
             kind === "v1"
               ? (await eventSdk.global.event({ signal: attempt.signal })).stream
               : eventApi.event.subscribe({ signal: attempt.signal })
-          connected = true
+          setConnected(true)
           let yielded = Date.now()
           for await (const event of events) {
             streamErrorLogged = false
@@ -305,7 +308,7 @@ function createServerSdkContextBase(server: ServerConnection.Any, scope: ServerS
             })
           }
         } finally {
-          connected = false
+          setConnected(false)
           abort.signal.removeEventListener("abort", onAbort)
           attempt = undefined
         }
@@ -375,7 +378,8 @@ function createServerSdkContextBase(server: ServerConnection.Any, scope: ServerS
       on: emitter.on.bind(emitter),
       listen: emitter.listen.bind(emitter),
       start,
-      running: () => connected,
+      running: () => connected(),
+      connected: () => connected(),
       restart,
     },
     createClient(opts: Omit<Parameters<typeof createSdkForServer>[0], "server" | "fetch">) {
@@ -419,6 +423,14 @@ export const { use: useServerSDK, provider: ServerSDKProvider } = createSimpleCo
 export function useServerProtocol() {
   const serverSDK = useServerSDK()
   return createMemo(() => serverSDK().protocolKind())
+}
+
+// Reactive connection state for the active server's event stream. True while
+// the stream is established, false while it is down / between reconnect
+// attempts. Drives the offline banner and the app-offline animation pause.
+export function useConnectionState() {
+  const serverSDK = useServerSDK()
+  return createMemo(() => serverSDK().event.connected())
 }
 
 type SDKEventMap = {

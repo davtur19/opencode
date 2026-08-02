@@ -328,3 +328,11 @@
     }
   }
 }
+
+/* When the server connection is down (body.app-offline), freeze agent/thinking
+   spinners and other CSS animations so the UI does not look alive while the
+   backend is unreachable. Play-state is restored automatically once the class
+   is removed on reconnect. */
+.app-offline * {
+  animation-play-state: paused !important;
+}

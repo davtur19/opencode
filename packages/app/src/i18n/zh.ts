@@ -1007,6 +1007,7 @@ export const dict = {
   "app.server.unreachable": "无法连接到 {{server}}",
   "app.server.retrying": "正在自动重试...",
   "app.server.otherServers": "其他服务器",
+  "app.server.offline": "Server offline — reconnecting…",
   "dialog.server.add.usernamePlaceholder": "用户名",
   "dialog.server.add.passwordPlaceholder": "密码",
   "server.row.noUsername": "无用户名",
