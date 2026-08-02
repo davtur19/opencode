@@ -596,13 +596,17 @@ function taskSession(
   agents?: readonly { name: string; color?: string }[],
 ) {
   if (!parentID) return undefined
-  const description = typeof input.description === "string" ? input.description : ""
+  const description = typeof input.description === "string" && input.description ? input.description : undefined
   const agent = taskAgent(input.subagent_type, agents).name
-  return (sessions ?? [])
+  const matches = (sessions ?? [])
     .filter((session) => session.parentID === parentID && !session.time?.archived)
     .filter((session) => (description ? session.title.startsWith(description) : true))
     .filter((session) => (agent ? session.title.includes(`@${agent}`) : true))
-    .sort((a, b) => (b.time.created ?? 0) - (a.time.created ?? 0))[0]?.id
+  // Only trust this fallback when it resolves to a single child. When the parent
+  // ran the same subagent more than once, a fuzzy match could attribute this task
+  // to another session's subagent.
+  if (matches.length !== 1) return undefined
+  return matches[0]?.id
 }
 
 const CONTEXT_GROUP_TOOLS = new Set(["read", "glob", "grep", "list"])
@@ -1576,7 +1580,10 @@ PART_MAPPING["tool"] = function ToolPartDisplay(props) {
     if (part().tool !== "task") return undefined
     const value = input().description
     if (typeof value === "string" && value) return value
-    return taskId()
+    const id = taskId()
+    if (!id) return undefined
+    const childTitle = data.store.session?.find((session) => session.id === id)?.title
+    return childTitle?.replace(/\s+\(@[^)]+ subagent\)$/, "")
   })
 
   const render = createMemo(() => ToolRegistry.render(part().tool) ?? GenericTool)
@@ -2020,11 +2027,17 @@ ToolRegistry.register({
     const title = createMemo(() => agent().name ?? i18n.t("ui.tool.agent.default"))
     const tone = createMemo(() => agent().color)
     const v2Tone = createMemo(() => agent().v2Color)
+    const childSessionTitle = createMemo(() => {
+      const id = childSessionId()
+      if (!id) return
+      const childTitle = data.store.session?.find((session) => session.id === id)?.title
+      return childTitle?.replace(/\s+\(@[^)]+ subagent\)$/, "")
+    })
     const subtitle = createMemo(() => {
       const value =
         typeof props.input.description === "string" && props.input.description
           ? props.input.description
-          : childSessionId()
+          : childSessionTitle()
       if (!value) return value
       if (props.metadata.background === true) return `${value} (background)`
       return value
