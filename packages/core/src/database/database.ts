@@ -45,12 +45,8 @@ export function path() {
     if (Flag.OPENCODE_DB === ":memory:" || isAbsolute(Flag.OPENCODE_DB)) return Flag.OPENCODE_DB
     return join(Global.Path.data, Flag.OPENCODE_DB)
   }
-  // Treat "main" as a stable channel. Hand-built fork binaries report
-  // InstallationChannel "main", which otherwise fell through to the
-  // channel-suffixed path and opened opencode-main.db instead of the real
-  // opencode.db, hiding all existing user sessions.
   if (
-    ["latest", "beta", "prod", "main"].includes(InstallationChannel) ||
+    ["latest", "beta", "prod"].includes(InstallationChannel) ||
     process.env.OPENCODE_DISABLE_CHANNEL_DB === "1" ||
     process.env.OPENCODE_DISABLE_CHANNEL_DB === "true"
   )
