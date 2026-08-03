@@ -1412,6 +1412,7 @@ describe("session.message-v2.fromError", () => {
         name: "APIError",
         data: {
           message: item.message,
+          statusCode: undefined,
           isRetryable: false,
           responseBody: JSON.stringify(input),
         },
@@ -1437,6 +1438,7 @@ describe("session.message-v2.fromError", () => {
       name: "APIError",
       data: {
         message: body.error.message,
+        statusCode: undefined,
         isRetryable: true,
         responseBody: JSON.stringify(body),
       },
