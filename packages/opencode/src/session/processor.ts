@@ -697,9 +697,27 @@ const layer = Layer.effect(
             Effect.ensuring(cleanup()),
           )
 
-          if (ctx.needsCompaction) return "compact"
-          if (ctx.blocked || ctx.assistantMessage.error) return "stop"
-          return "continue"
+          const result: Result = ctx.needsCompaction
+            ? "compact"
+            : ctx.blocked || ctx.assistantMessage.error
+              ? "stop"
+              : "continue"
+
+          // End-of-turn read-your-writes barrier: everything this turn buffered via the
+          // coalescing updatePart (final text parts, tool completions, the step-finish
+          // patch, aborted-tool finalizers) must be durable before process() resolves, so
+          // a reader that runs right after — MessageV2.parts/get in tests and handlers,
+          // compaction, history reload for the next LLM call — sees the full turn. It is a
+          // no-op when the buffer is empty, so the 80ms coalescing inside the turn is
+          // preserved. flushNow returns false only if the DB keeps rejecting the batch;
+          // the scheduled retry then persists it and the caller just logs.
+          if (!(yield* session.flushNow(input.sessionID))) {
+            yield* Effect.logWarning(
+              "process: end-of-turn flush left parts buffered; scheduled retry will persist them",
+              { "session.id": input.sessionID },
+            )
+          }
+          return result
         })
       })
 

@@ -20,6 +20,7 @@ import { NamedError } from "@opencode-ai/core/util/error"
 import { APICallError, convertToModelMessages, LoadAPIKeyError, type ModelMessage, type UIMessage } from "ai"
 import { Database } from "@opencode-ai/core/database/database"
 import { LayerNode } from "@opencode-ai/core/effect/layer-node"
+import { Session } from "./session"
 import { NotFoundError } from "@/storage/storage"
 import { and } from "drizzle-orm"
 import { desc } from "drizzle-orm"
@@ -34,7 +35,7 @@ import { errorMessage } from "@/util/error"
 import { isMedia } from "@/util/media"
 import type { SystemError } from "bun"
 import type { Provider } from "@/provider/provider"
-import { Effect, Schema } from "effect"
+import { Effect, Option, Schema } from "effect"
 
 /** Error shape thrown by Bun's fetch() when gzip/br decompression fails mid-stream */
 interface FetchDecompressionError extends Error {
@@ -94,6 +95,31 @@ const part = (row: typeof PartTable.$inferSelect) =>
 
 const older = (row: Cursor) =>
   or(lt(MessageTable.time_created, row.time), and(eq(MessageTable.time_created, row.time), lt(MessageTable.id, row.id)))
+
+// Read-your-writes barrier for the coalesced updatePart buffer. The MessageV2 read
+// layer (page/get/parts/stream) queries the DB directly, which never sees parts that
+// Session.updatePart is still debouncing (~80ms). A reader that runs right after a
+// writer — the processor's post-turn assertions, HTTP reads, prompt/hydrate — would
+// miss them non-deterministically. Flushing here (a no-op when the buffer is empty,
+// so streaming coalescing is preserved) closes that gap. When `sessionID` is given
+// ONLY that session's pending parts are drained, mirroring Session.flushNow; `parts`
+// (which has no session in scope) drains the whole buffer.
+// The Session is accessed OPTIONALLY (Effect.serviceOption) so these read functions
+// keep R = never — their signature does not change for callers that provide only the
+// Database. When Session is absent from the environment (e.g. pure DB tests), there is
+// no buffered writer in this runtime, so skipping the flush is correct. Best-effort: a
+// `false` result is logged, not fatal — the scheduled flush retry persists eventually.
+const flushBeforeRead = (sessionID?: SessionID) =>
+  Effect.gen(function* () {
+    const maybeSession = yield* Effect.serviceOption(Session.Service)
+    if (Option.isNone(maybeSession)) return
+    const session = maybeSession.value
+    if (!(yield* session.flushNow(sessionID))) {
+      yield* Effect.logWarning("MessageV2.read: flush before read left parts buffered; rowset may be stale", {
+        "session.id": sessionID,
+      })
+    }
+  })
 
 function hydrate(db: Database.Interface["db"], rows: (typeof MessageTable.$inferSelect)[]) {
   const ids = rows.map((row) => row.id)
@@ -427,6 +453,8 @@ export const page = Effect.fn("MessageV2.page")(function* (input: {
   limit: number
   before?: string
 }) {
+  // read-your-writes: drain this session's pending part buffer before querying the DB
+  yield* flushBeforeRead(input.sessionID)
   const { db } = yield* Database.Service
   const before = input.before ? cursor.decode(input.before) : undefined
   const where = before
@@ -491,6 +519,10 @@ export function stream(sessionID: SessionID) {
 
 export function parts(messageID: MessageID) {
   return Effect.gen(function* () {
+    // parts() has no sessionID in scope, so drain the whole pending buffer: any
+    // session's parts may belong to this message's writer (Session.getPart does the
+    // same single-part read-through; here we flush instead so the rowset is complete).
+    yield* flushBeforeRead()
     const { db } = yield* Database.Service
     const rows = yield* db
       .select()
@@ -504,6 +536,7 @@ export function parts(messageID: MessageID) {
 }
 
 export const get = Effect.fn("MessageV2.get")(function* (input: { sessionID: SessionID; messageID: MessageID }) {
+  yield* flushBeforeRead(input.sessionID)
   const { db } = yield* Database.Service
   const row = yield* db
     .select()
