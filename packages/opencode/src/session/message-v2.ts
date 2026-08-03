@@ -717,6 +717,7 @@ export function fromError(
           return new APIError(
             {
               message: parsed.message,
+              statusCode: parsed.statusCode,
               isRetryable: parsed.isRetryable,
               responseBody: parsed.responseBody,
             },

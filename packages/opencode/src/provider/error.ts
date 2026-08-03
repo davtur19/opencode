@@ -95,6 +95,7 @@ export type ParsedStreamError =
   | {
       type: "api_error"
       message: string
+      statusCode?: number
       isRetryable: boolean
       responseBody: string
     }
@@ -105,7 +106,25 @@ export function parseStreamError(input: unknown): ParsedStreamError | undefined 
   if (!body) return
 
   const responseBody = JSON.stringify(body)
-  if (body.type !== "error") return
+  if (body.type !== "error") {
+    // AI SDK surfaces non-2xx streaming failures as plain errors whose message
+    // embeds the HTTP status, e.g. "Streaming response failed: [503] The
+    // request queue is full." Treat [5xx]/[429] as transient so the retry
+    // policy actually kicks in instead of surfacing a non-retryable error.
+    const rawMsg = typeof input === "string" ? input : typeof raw?.message === "string" ? raw.message : undefined
+    const status = rawMsg ? /\[(\d{3})\]/.exec(rawMsg)?.[1] : undefined
+    if (status) {
+      const statusCode = Number(status)
+      return {
+        type: "api_error",
+        message: rawMsg ?? `Streaming response failed with status ${statusCode}`,
+        statusCode,
+        isRetryable: statusCode >= 500 || statusCode === 429,
+        responseBody: rawMsg ?? "",
+      }
+    }
+    return
+  }
 
   switch (body?.error?.code) {
     case "context_length_exceeded":
