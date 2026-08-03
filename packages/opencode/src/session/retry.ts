@@ -27,6 +27,7 @@ export const RETRY_INITIAL_DELAY = 2000
 export const RETRY_BACKOFF_FACTOR = 2
 export const RETRY_MAX_DELAY_NO_HEADERS = 30_000 // 30 seconds
 export const RETRY_MAX_DELAY = 2_147_483_647 // max 32-bit signed integer for setTimeout
+export const RETRY_MAX_ATTEMPTS = 4 // 1 initial attempt + 3 retries
 
 function cap(ms: number) {
   return Math.min(ms, RETRY_MAX_DELAY)
@@ -133,6 +134,17 @@ export function retryable(error: Err, provider: string) {
     ) {
       return { message: msg }
     }
+
+    // Some SDKs embed the HTTP status directly in the message, e.g. "Streaming
+    // response failed: [503] The request queue is full." Surface [5xx]/[429]
+    // as retryable regardless of error type (mirrors provider/error.ts).
+    const status = /\[(\d{3})\]/.exec(msg)?.[1]
+    if (status) {
+      const statusCode = Number(status)
+      if (statusCode >= 500 || statusCode === 429) {
+        return { message: msg }
+      }
+    }
   }
 
   const json = parseJSON(msg)
@@ -180,6 +192,9 @@ export function policy(opts: {
 }) {
   return Schedule.fromStepWithMetadata(
     Effect.succeed((meta: Schedule.InputMetadata<unknown>) => {
+      // Cap total attempts (1 initial + RETRY_MAX_ATTEMPTS - 1 retries) instead
+      // of retrying forever. Returning Cause.done stops the retry loop.
+      if (meta.attempt >= RETRY_MAX_ATTEMPTS) return Cause.done(meta.attempt)
       const error = opts.parse(meta.input)
       const retry = retryable(error, opts.provider)
       if (!retry) return Cause.done(meta.attempt)

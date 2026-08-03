@@ -115,6 +115,38 @@ describe("session.retry.delay", () => {
       })
     }),
   )
+
+  it.instance("caps retries at RETRY_MAX_ATTEMPTS total attempts", () =>
+    Effect.gen(function* () {
+      const sessionID = SessionID.make("session-retry-cap-test")
+      const error = apiError({ "retry-after-ms": "0" })
+      const status = yield* SessionStatus.Service
+
+      let runs = 0
+      yield* Effect.failSync(() => {
+        runs++
+        return error
+      }).pipe(
+        Effect.retry(
+          SessionRetry.policy({
+            provider: "test",
+            parse: Schema.decodeUnknownSync(SessionV1.APIError.Schema),
+            set: (info) =>
+              status.set(sessionID, {
+                type: "retry",
+                attempt: info.attempt,
+                message: info.message,
+                next: info.next,
+              }),
+          }),
+        ),
+        Effect.catch(() => Effect.void),
+      )
+
+      // 1 initial run + (RETRY_MAX_ATTEMPTS - 1) retries; never retries forever.
+      expect(runs).toBe(SessionRetry.RETRY_MAX_ATTEMPTS)
+    }),
+  )
 })
 
 describe("session.retry.retryable", () => {
@@ -142,6 +174,47 @@ describe("session.retry.retryable", () => {
   test("returns undefined for non-json message", () => {
     const error = wrap("not-json")
     expect(SessionRetry.retryable(error, retryProvider)).toBeUndefined()
+  })
+
+  test("retries generic errors that embed [5xx] in the message", () => {
+    const error = wrap("Streaming response failed: [503] The request queue is full.")
+    expect(SessionRetry.retryable(error, retryProvider)).toEqual({
+      message: "Streaming response failed: [503] The request queue is full.",
+    })
+  })
+
+  test("retries generic errors that embed [429] in the message", () => {
+    const error = wrap("Rate limited: [429] too many requests")
+    expect(SessionRetry.retryable(error, retryProvider)).toEqual({ message: "Rate limited: [429] too many requests" })
+  })
+
+  test("does not retry generic errors with [4xx] status in the message", () => {
+    const error = wrap("Bad request: [400] missing param")
+    expect(SessionRetry.retryable(error, retryProvider)).toBeUndefined()
+  })
+
+  test("does not retry generic errors where [000] is not in the message", () => {
+    const error = wrap("Streaming response failed without a status")
+    expect(SessionRetry.retryable(error, retryProvider)).toBeUndefined()
+  })
+
+  test("retries a generic Error through fromError when its message embeds [5xx]", () => {
+    const error = MessageV2.fromError(new Error("Streaming response failed: [503] The request queue is full."), {
+      providerID,
+    })
+    expect(SessionRetry.retryable(error, retryProvider)).toEqual({
+      message: "Streaming response failed: [503] The request queue is full.",
+    })
+  })
+
+  test("does not retry auth, aborted, or output length errors", () => {
+    const auth = new SessionV1.AuthError({ providerID, message: "Authentication failed" }).toObject()
+    const aborted = new SessionV1.AbortedError({ message: "This operation was aborted" }).toObject()
+    const outputLength = new SessionV1.OutputLengthError({}).toObject()
+
+    expect(SessionRetry.retryable(auth, retryProvider)).toBeUndefined()
+    expect(SessionRetry.retryable(aborted, retryProvider)).toBeUndefined()
+    expect(SessionRetry.retryable(outputLength, retryProvider)).toBeUndefined()
   })
 
   test("retries plain text rate limit errors from Alibaba", () => {
