@@ -569,6 +569,11 @@ it.instance("legacy prompt emits message events without session.next events", ()
       noReply: true,
       parts: [{ type: "text", text: "again" }],
     })
+    // Async-coalesced contract (fork, commit 1b82b80e): updatePart buffers parts on an
+    // ~80ms debounce and PartUpdated is published at flush time, never synchronously
+    // inside prompt(). Drive the read-your-writes flush so the event is observable before
+    // we unsubscribe, instead of asserting an impossible synchronous emit.
+    yield* sessions.flushNow(chat.id)
     yield* off
 
     expect(first.info.role).toBe("user")
