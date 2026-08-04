@@ -2,6 +2,7 @@ import type { NamedError } from "@opencode-ai/core/util/error"
 import { SessionV1 } from "@opencode-ai/core/v1/session"
 import { Cause, Clock, Duration, Effect, Schedule } from "effect"
 import { MessageV2 } from "./message-v2"
+import { isRetryableMessage } from "@/provider/error"
 import { iife } from "@/util/iife"
 import { isRecord } from "@/util/record"
 
@@ -144,6 +145,15 @@ export function retryable(error: Err, provider: string) {
       if (statusCode >= 500 || statusCode === 429) {
         return { message: msg }
       }
+    }
+
+    // Some gateways/SDKs omit the bracketed status but embed a known transient
+    // phrase (e.g. "Service Unavailable", "upstream request timed out", "Too
+    // Many Requests"). Treat those as retryable too, even without a statusCode
+    // (mirrors provider/error.ts parseStreamError). 4xx non-429 messages never
+    // match here.
+    if (isRetryableMessage(msg)) {
+      return { message: msg }
     }
   }
 

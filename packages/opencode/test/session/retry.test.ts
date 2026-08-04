@@ -198,6 +198,42 @@ describe("session.retry.retryable", () => {
     expect(SessionRetry.retryable(error, retryProvider)).toBeUndefined()
   })
 
+  test.each([
+    "Service Unavailable",
+    "Internal Server Error",
+    "Gateway Timeout",
+    "Bad Gateway",
+    "request queue is full",
+    "Too Many Requests",
+    "429",
+    "502",
+    "503",
+    "504",
+    "upstream request timed out",
+  ])("retries generic errors that embed transient phrase without [NNN]: %s", (phrase) => {
+    const error = wrap(`Streaming response failed: ${phrase}`)
+    expect(SessionRetry.retryable(error, retryProvider)).toEqual({
+      message: `Streaming response failed: ${phrase}`,
+    })
+  })
+
+  test("retries transient phrases case-insensitively", () => {
+    const error = wrap("gateway reported service unavailable")
+    expect(SessionRetry.retryable(error, retryProvider)).toEqual({
+      message: "gateway reported service unavailable",
+    })
+  })
+
+  test("does not retry generic errors with non-429 4xx status in the message", () => {
+    for (const msg of [
+      "Bad request: 400 invalid request",
+      "404 Not Found: model not found",
+      "Unauthorized: 401 token expired",
+    ]) {
+      expect(SessionRetry.retryable(wrap(msg), retryProvider)).toBeUndefined()
+    }
+  })
+
   test("retries a generic Error through fromError when its message embeds [5xx]", () => {
     const error = MessageV2.fromError(new Error("Streaming response failed: [503] The request queue is full."), {
       providerID,
@@ -508,6 +544,63 @@ describe("session.message-v2.fromError", () => {
     expect(result.data.isRetryable).toBe(true)
     expect(SessionRetry.retryable(result, retryProvider)).toEqual({
       message: "An error occurred while processing your request.",
+    })
+  })
+})
+
+describe("provider.error.parseStreamError broadened retryable fallback", () => {
+  test.each([
+    "Service Unavailable",
+    "Internal Server Error",
+    "Gateway Timeout",
+    "Bad Gateway",
+    "request queue is full",
+    "Too Many Requests",
+    "429",
+    "502",
+    "503",
+    "504",
+    "upstream connection closed",
+  ])("marks stream errors with transient phrase as retryable: %s", (phrase) => {
+    const input = { message: `Streaming response failed: ${phrase}` }
+    const parsed = ProviderError.parseStreamError(input)
+    expect(parsed).toEqual({
+      type: "api_error",
+      message: `Streaming response failed: ${phrase}`,
+      isRetryable: true,
+      responseBody: `Streaming response failed: ${phrase}`,
+    })
+  })
+
+  test("keeps [NNN] stream errors retryable with statusCode", () => {
+    const parsed = ProviderError.parseStreamError({
+      message: "Streaming response failed: [503] The request queue is full.",
+    })
+    expect(parsed).toEqual({
+      type: "api_error",
+      message: "Streaming response failed: [503] The request queue is full.",
+      statusCode: 503,
+      isRetryable: true,
+      responseBody: "Streaming response failed: [503] The request queue is full.",
+    })
+  })
+
+  test("does not mark non-429 4xx stream errors retryable", () => {
+    for (const message of ["Bad request: 400 missing param", "404 model not found", "401 unauthorized"]) {
+      expect(ProviderError.parseStreamError({ message })).toBeUndefined()
+    }
+  })
+
+  test("converts phrase-matched stream errors through fromError to retryable APIError", () => {
+    const result = MessageV2.fromError(
+      { message: "Streaming response failed: Service Unavailable" },
+      { providerID },
+    )
+    expect(SessionV1.APIError.isInstance(result)).toBe(true)
+    if (!SessionV1.APIError.isInstance(result)) throw new Error("expected APIError")
+    expect(result.data.isRetryable).toBe(true)
+    expect(SessionRetry.retryable(result, retryProvider)).toEqual({
+      message: "Streaming response failed: Service Unavailable",
     })
   })
 })

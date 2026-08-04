@@ -27,6 +27,34 @@ function isOpenAiErrorRetryable(e: APICallError) {
   return status === 404 || e.isRetryable
 }
 
+// Phrases that mark a provider/gateway error as transient even when no HTTP
+// status code is attached. SDKs and proxies embed these in plain error strings
+// (with or without a bracketed status like "[503]"); matching them keeps the
+// retry policy from surfacing a non-retryable error for 5xx/429-class failures.
+// Case-insensitive substring match, so only the listed phrases ever match —
+// 4xx (non-429) messages stay non-retryable.
+export const RETRYABLE_MESSAGE_PHRASES = [
+  "service unavailable",
+  "internal server error",
+  "gateway timeout",
+  "bad gateway",
+  "request queue is full",
+  "too many requests",
+  "upstream",
+] as const
+
+// 5xx / 429 statuses embedded without a `[NNN]` wrapper. Must match as standalone
+// tokens (word-boundary), never as a substring of a longer number, so ordinary
+// 4xx codes like 400/401/403/404 never match. e.g. "502" matches "[502]" and
+// "err 502:" but not "1502" or "5021".
+const RETRYABLE_STATUS_CODES = ["429", "502", "503", "504"] as const
+
+export function isRetryableMessage(message: string) {
+  const lower = message.toLowerCase()
+  if (RETRYABLE_MESSAGE_PHRASES.some((phrase) => lower.includes(phrase))) return true
+  return RETRYABLE_STATUS_CODES.some((code) => new RegExp(`\\b${code}\\b`).test(lower))
+}
+
 // Providers not reliably handled in this function:
 // - z.ai: can accept overflow silently (needs token-count/context-window checks)
 function message(providerID: ProviderV2.ID, e: APICallError) {
@@ -121,6 +149,19 @@ export function parseStreamError(input: unknown): ParsedStreamError | undefined 
         statusCode,
         isRetryable: statusCode >= 500 || statusCode === 429,
         responseBody: rawMsg ?? "",
+      }
+    }
+    // No bracketed status, but the message carries a known transient phrase
+    // (e.g. "Service Unavailable", "upstream request timed out", "Too Many
+    // Requests"). Treat it as a retryable api_error even without a statusCode
+    // so the retry policy kicks in (mirrors session/retry.ts). 4xx non-429
+    // messages never match.
+    if (rawMsg && isRetryableMessage(rawMsg)) {
+      return {
+        type: "api_error",
+        message: rawMsg,
+        isRetryable: true,
+        responseBody: rawMsg,
       }
     }
     return

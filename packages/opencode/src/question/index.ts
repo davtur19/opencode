@@ -32,6 +32,7 @@ export class RejectedError extends Schema.TaggedErrorClass<RejectedError>()("Que
 
 export class NotFoundError extends Schema.TaggedErrorClass<NotFoundError>()("Question.NotFoundError", {
   requestID: QuestionID,
+  message: Schema.String,
 }) {}
 
 interface PendingEntry {
@@ -119,7 +120,10 @@ const layer = Layer.effect(
       const existing = pending.get(input.requestID)
       if (!existing) {
         yield* Effect.logWarning("reply for unknown request", { requestID: input.requestID })
-        return yield* new NotFoundError({ requestID: input.requestID })
+        return yield* new NotFoundError({
+          requestID: input.requestID,
+          message: `Question request not found: ${input.requestID} (the service restarted or the request was already answered)`,
+        })
       }
       pending.delete(input.requestID)
       yield* Effect.logInfo("replied", { requestID: input.requestID, answers: input.answers })
@@ -136,7 +140,10 @@ const layer = Layer.effect(
       const existing = pending.get(requestID)
       if (!existing) {
         yield* Effect.logWarning("reject for unknown request", { requestID })
-        return yield* new NotFoundError({ requestID })
+        return yield* new NotFoundError({
+          requestID,
+          message: `Question request not found: ${requestID} (the service restarted or the request was already answered)`,
+        })
       }
       pending.delete(requestID)
       yield* Effect.logInfo("rejected", { requestID })
