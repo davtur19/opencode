@@ -1,3 +1,8 @@
+# TARGETARCH must be declared before the first FROM (global scope) so it is
+# usable in the `FROM build-${TARGETARCH}` below; the upstream file declared
+# it too late, making the build fail with "invalid reference format".
+ARG TARGETARCH
+
 FROM alpine AS base
 
 # Disable the runtime transpiler cache by default inside Docker containers.
@@ -12,7 +17,6 @@ COPY dist/opencode-linux-x64-baseline-musl/bin/opencode /usr/local/bin/opencode
 FROM base AS build-arm64
 COPY dist/opencode-linux-arm64-musl/bin/opencode /usr/local/bin/opencode
 
-ARG TARGETARCH
 FROM build-${TARGETARCH}
 RUN opencode --version
 ENTRYPOINT ["opencode"]
