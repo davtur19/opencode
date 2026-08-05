@@ -1,6 +1,6 @@
 import type { NamedError } from "@opencode-ai/core/util/error"
 import { SessionV1 } from "@opencode-ai/core/v1/session"
-import { Cause, Clock, Duration, Effect, Schedule } from "effect"
+import { Cause, Clock, Data, Duration, Effect, Schedule } from "effect"
 import { MessageV2 } from "./message-v2"
 import { isRetryableMessage } from "@/provider/error"
 import { iife } from "@/util/iife"
@@ -29,6 +29,12 @@ export const RETRY_BACKOFF_FACTOR = 2
 export const RETRY_MAX_DELAY_NO_HEADERS = 30_000 // 30 seconds
 export const RETRY_MAX_DELAY = 2_147_483_647 // max 32-bit signed integer for setTimeout
 export const RETRY_MAX_ATTEMPTS = 4 // 1 initial attempt + 3 retries
+
+// Turn-level retry: when a whole assistant turn fails with a transient provider
+// error (5xx / 429 / upstream JSON parse / request queue full) AFTER the
+// stream-level retry (RETRY_MAX_ATTEMPTS) is exhausted, the turn is reprocessed
+// from scratch up to this many total attempts before being finalized as error.
+export const TURN_RETRY_LIMIT = 3
 
 function cap(ms: number) {
   return Math.min(ms, RETRY_MAX_DELAY)
@@ -215,6 +221,45 @@ export function policy(opts: {
           attempt: meta.attempt,
           message: retry.message,
           action: retry.action,
+          next: now + wait,
+        })
+        return [meta.attempt, Duration.millis(wait)] as [number, Duration.Duration]
+      })
+    }),
+  )
+}
+
+/**
+ * Raised by the session processor when a whole turn fails with a transient
+ * provider error after stream-level retries are exhausted. The run loop catches
+ * it and reprocesses the turn up to TURN_RETRY_LIMIT times before finalizing
+ * the assistant message as error. Permanent errors never produce this.
+ */
+export class TransientTurnError extends Data.TaggedError("TransientTurnError")<{
+  readonly message: string
+  readonly error: unknown
+}> {}
+
+// Turn-level retry policy: re-runs the failed turn (same handle, same input)
+// while the failure is a TransientTurnError, capped at TURN_RETRY_LIMIT total
+// attempts. `set` is invoked before each retry so the attempt can be persisted
+// (e.g. as a RetryPart on the assistant message) and survive a restart.
+export function turnPolicy(opts: {
+  set: (input: { attempt: number; message: string; error: unknown; next: number }) => Effect.Effect<void>
+}) {
+  return Schedule.fromStepWithMetadata(
+    Effect.succeed((meta: Schedule.InputMetadata<unknown>) => {
+      // Cap total attempts at TURN_RETRY_LIMIT instead of retrying forever.
+      if (meta.attempt >= TURN_RETRY_LIMIT) return Cause.done(meta.attempt)
+      const failure = meta.input
+      if (!(failure instanceof TransientTurnError)) return Cause.done(meta.attempt)
+      return Effect.gen(function* () {
+        const wait = delay(meta.attempt, SessionV1.APIError.isInstance(failure.error) ? failure.error : undefined)
+        const now = yield* Clock.currentTimeMillis
+        yield* opts.set({
+          attempt: meta.attempt,
+          message: failure.message,
+          error: failure.error,
           next: now + wait,
         })
         return [meta.attempt, Duration.millis(wait)] as [number, Duration.Duration]

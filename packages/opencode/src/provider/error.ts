@@ -41,6 +41,9 @@ export const RETRYABLE_MESSAGE_PHRASES = [
   "request queue is full",
   "too many requests",
   "upstream",
+  "invalid json response",
+  "upstream request failed",
+  "upstream response was not valid json",
 ] as const
 
 // 5xx / 429 statuses embedded without a `[NNN]` wrapper. Must match as standalone

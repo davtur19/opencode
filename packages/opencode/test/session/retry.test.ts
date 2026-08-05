@@ -149,6 +149,83 @@ describe("session.retry.delay", () => {
   )
 })
 
+describe("session.retry.turnPolicy", () => {
+  it.instance("reprocesses a transient turn failure up to TURN_RETRY_LIMIT total attempts", () =>
+    Effect.gen(function* () {
+      const attempts: number[] = []
+      let runs = 0
+      yield* Effect.failSync(() => {
+        runs++
+        return new SessionRetry.TransientTurnError({
+          message: "boom",
+          error: apiError({ "retry-after-ms": "0" }),
+        })
+      }).pipe(
+        Effect.retry(
+          SessionRetry.turnPolicy({
+            set: (info) =>
+              Effect.sync(() => {
+                attempts.push(info.attempt)
+              }),
+          }),
+        ),
+        Effect.catch(() => Effect.void),
+      )
+
+      // 1 initial run + (TURN_RETRY_LIMIT - 1) retries; never retries forever.
+      expect(runs).toBe(SessionRetry.TURN_RETRY_LIMIT)
+      expect(attempts).toStrictEqual([1, 2])
+    }),
+  )
+
+  it.instance("persists attempt, message and error on each retry", () =>
+    Effect.gen(function* () {
+      const info: Array<{ attempt: number; message: string; error: unknown; next: number }> = []
+      yield* Effect.failSync(() => {
+        return new SessionRetry.TransientTurnError({
+          message: "boom",
+          error: apiError({ "retry-after-ms": "0" }),
+        })
+      }).pipe(
+        Effect.retry(
+          SessionRetry.turnPolicy({
+            set: (input) =>
+              Effect.sync(() => {
+                info.push(input)
+              }),
+          }),
+        ),
+        Effect.catch(() => Effect.void),
+      )
+
+      expect(info).toHaveLength(2)
+      expect(info[0]).toMatchObject({ attempt: 1, message: "boom" })
+      expect(info[1]).toMatchObject({ attempt: 2, message: "boom" })
+      expect(info[0].next).toBeGreaterThan(0)
+    }),
+  )
+
+  it.instance("does not reprocess non-transient failures", () =>
+    Effect.gen(function* () {
+      let runs = 0
+      yield* Effect.failSync(() => {
+        runs++
+        return apiError({ "retry-after-ms": "0" })
+      }).pipe(
+        Effect.retry(
+          SessionRetry.turnPolicy({
+            set: () => Effect.void,
+          }),
+        ),
+        Effect.catch(() => Effect.void),
+      )
+
+      // A non-transient failure is never reprocessed at the turn level.
+      expect(runs).toBe(1)
+    }),
+  )
+})
+
 describe("session.retry.retryable", () => {
   test("maps too_many_requests json messages", () => {
     const error = wrap(JSON.stringify({ type: "error", error: { type: "too_many_requests" } }))
@@ -221,6 +298,27 @@ describe("session.retry.retryable", () => {
     const error = wrap("gateway reported service unavailable")
     expect(SessionRetry.retryable(error, retryProvider)).toEqual({
       message: "gateway reported service unavailable",
+    })
+  })
+
+  test("retries upstream response was not valid json", () => {
+    const error = wrap("upstream response was not valid json")
+    expect(SessionRetry.retryable(error, retryProvider)).toEqual({
+      message: "upstream response was not valid json",
+    })
+  })
+
+  test("retries upstream request failed", () => {
+    const error = wrap("upstream request failed")
+    expect(SessionRetry.retryable(error, retryProvider)).toEqual({
+      message: "upstream request failed",
+    })
+  })
+
+  test("retries invalid json response", () => {
+    const error = wrap("invalid json response")
+    expect(SessionRetry.retryable(error, retryProvider)).toEqual({
+      message: "invalid json response",
     })
   })
 

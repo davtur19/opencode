@@ -46,6 +46,7 @@ type HttpError = {
   type: "http-error"
   status: number
   body: unknown
+  headers?: Record<string, string>
 }
 
 export type Item = Sse | HttpError
@@ -446,6 +447,7 @@ function fail(item: HttpError) {
   return HttpServerResponse.text(JSON.stringify(item.body), {
     status: item.status,
     contentType: "application/json",
+    headers: item.headers,
   })
 }
 
@@ -565,11 +567,12 @@ export function reply() {
   return new Reply()
 }
 
-export function httpError(status: number, body: unknown): Item {
+export function httpError(status: number, body: unknown, headers?: Record<string, string>): Item {
   return {
     type: "http-error",
     status,
     body,
+    headers,
   }
 }
 
@@ -747,8 +750,8 @@ export class TestLLMServer extends Context.Service<TestLLMServer, TestLLMServer.
         fail: Effect.fn("TestLLMServer.fail")(function* (message: unknown = "boom") {
           queue(reply().streamError(message).item())
         }),
-        error: Effect.fn("TestLLMServer.error")(function* (status: number, body: unknown) {
-          queue(httpError(status, body))
+        error: Effect.fn("TestLLMServer.error")(function* (status: number, body: unknown, headers?: Record<string, string>) {
+          queue(httpError(status, body, headers))
         }),
         hang: Effect.gen(function* () {
           queue(reply().hang().item())

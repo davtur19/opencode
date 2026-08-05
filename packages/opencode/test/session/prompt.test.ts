@@ -35,6 +35,7 @@ import { SessionSummary } from "../../src/session/summary"
 import { Instruction } from "../../src/session/instruction"
 import { SessionProcessor } from "../../src/session/processor"
 import { SessionPrompt } from "../../src/session/prompt"
+import { SessionRetry } from "../../src/session/retry"
 import { SessionRevert } from "../../src/session/revert"
 import { SessionRunState } from "../../src/session/run-state"
 import { MessageID, PartID, SessionID } from "../../src/session/schema"
@@ -511,6 +512,45 @@ it.instance("loop calls LLM and returns assistant message", () =>
     const parts = result.parts.filter((p) => p.type === "text")
     expect(parts.some((p) => p.type === "text" && p.text === "world")).toBe(true)
     expect(yield* llm.hits).toHaveLength(1)
+  }),
+)
+
+it.instance("loop reprocesses a transient turn failure up to TURN_RETRY_LIMIT times", () =>
+  Effect.gen(function* () {
+    const { llm } = yield* useServerConfig(providerCfg)
+    const prompt = yield* SessionPrompt.Service
+    const sessions = yield* Session.Service
+    const chat = yield* sessions.create({
+      title: "Pinned",
+      permission: [{ permission: "*", pattern: "*", action: "allow" }],
+    })
+    yield* prompt.prompt({
+      sessionID: chat.id,
+      agent: "build",
+      noReply: true,
+      parts: [{ type: "text", text: "hello" }],
+    })
+
+    // Each turn attempt makes RETRY_MAX_ATTEMPTS=4 LLM calls (1 initial + 3
+    // stream-level retries) before the processor raises TransientTurnError.
+    // The run loop reprocesses the turn at attempts 1 and 2 (TURN_RETRY_LIMIT
+    // total attempts = 3), then finalizes the assistant message as error.
+    for (let i = 0; i < SessionRetry.RETRY_MAX_ATTEMPTS * SessionRetry.TURN_RETRY_LIMIT; i++) {
+      yield* llm.error(503, { error: "boom" }, { "retry-after-ms": "0" })
+    }
+
+    const result = yield* prompt.loop({ sessionID: chat.id })
+    expect(result.info.role).toBe("assistant")
+    if (result.info.role === "assistant") {
+      expect(result.info.error?.name).toBe("APIError")
+      expect(result.info.finish).toBe("error")
+    }
+
+    // One RetryPart persisted per reprocessed attempt (attempts 1 and 2).
+    const retryParts = result.parts.filter((part) => part.type === "retry")
+    expect(retryParts).toHaveLength(2)
+    expect(retryParts.map((part) => (part.type === "retry" ? part.attempt : undefined))).toStrictEqual([1, 2])
+    expect(yield* llm.calls).toBe(SessionRetry.RETRY_MAX_ATTEMPTS * SessionRetry.TURN_RETRY_LIMIT)
   }),
 )
 

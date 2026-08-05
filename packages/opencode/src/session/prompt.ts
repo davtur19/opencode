@@ -31,6 +31,7 @@ import { ConfigMarkdown } from "@/config/markdown"
 import { SessionSummary } from "./summary"
 import { NamedError } from "@opencode-ai/core/util/error"
 import { SessionProcessor } from "./processor"
+import { SessionRetry } from "./retry"
 import { Tool } from "@/tool/tool"
 import { Permission } from "@/permission"
 import { SessionStatus } from "./status"
@@ -1287,21 +1288,60 @@ const layer = Layer.effect(
             ]
             const format = lastUser.format ?? { type: "text" as const }
             if (format.type === "json_schema") system.push(STRUCTURED_OUTPUT_SYSTEM_PROMPT)
-            const result = yield* handle.process({
-              user: lastUser,
-              agent,
-              permission: session.permission,
-              sessionID,
-              parentSessionID: session.parentID,
-              system,
-              messages: [
-                ...modelMsgs,
-                ...(isLastStep ? [{ role: "assistant" as const, content: MAX_STEPS_PROMPT }] : []),
-              ],
-              tools,
-              model,
-              toolChoice: format.type === "json_schema" ? "required" : undefined,
-            })
+            const result = yield* handle
+              .process({
+                user: lastUser,
+                agent,
+                permission: session.permission,
+                sessionID,
+                parentSessionID: session.parentID,
+                system,
+                messages: [
+                  ...modelMsgs,
+                  ...(isLastStep ? [{ role: "assistant" as const, content: MAX_STEPS_PROMPT }] : []),
+                ],
+                tools,
+                model,
+                toolChoice: format.type === "json_schema" ? "required" : undefined,
+              })
+              .pipe(
+                // Turn-level retry: the processor only fails with TransientTurnError
+                // after stream-level retries are exhausted, for transient provider
+                // errors (5xx / 429 / upstream JSON parse / request queue full).
+                // Reprocess the same turn up to TURN_RETRY_LIMIT times, persisting
+                // each attempt as a RetryPart on the assistant message so the count
+                // survives a service restart.
+                Effect.retry(
+                  SessionRetry.turnPolicy({
+                    set: (info) =>
+                      sessions.updatePart({
+                        id: PartID.ascending(),
+                        sessionID,
+                        messageID: msg.id,
+                        type: "retry",
+                        attempt: info.attempt,
+                        error: SessionV1.APIError.isInstance(info.error)
+                          ? info.error
+                          : new SessionV1.APIError({ message: info.message, isRetryable: true }).toObject(),
+                        time: { created: Date.now() },
+                      } satisfies SessionV1.RetryPart).pipe(Effect.asVoid),
+                  }),
+                ),
+                // TURN_RETRY_LIMIT exhausted (or a non-transient failure surfaced):
+                // finalize the assistant message as error, mirroring halt().
+                Effect.catch((e) =>
+                  Effect.gen(function* () {
+                    msg.error = e instanceof SessionRetry.TransientTurnError
+                      ? (e.error as NonNullable<SessionV1.Assistant["error"]>)
+                      : MessageV2.fromError(e, { providerID: msg.providerID })
+                    msg.finish = "error"
+                    yield* sessions.updateMessage(msg)
+                    yield* events.publish(Session.Event.Error, { sessionID, error: msg.error })
+                    yield* status.set(sessionID, { type: "idle" })
+                    return "stop" as const
+                  }),
+                ),
+              )
 
             if (structured !== undefined) {
               handle.message.structured = structured

@@ -385,21 +385,40 @@ const layer = Layer.effect(
         sessionID: input.sessionID,
         model,
       })
-      const result = yield* processor.process({
-        user: userMessage,
-        agent,
-        sessionID: input.sessionID,
-        tools: {},
-        system: [],
-        messages: [
-          ...modelMessages,
-          {
-            role: "user",
-            content: [{ type: "text", text: nextPrompt }],
-          },
-        ],
-        model,
-      })
+      const result = yield* processor
+        .process({
+          user: userMessage,
+          agent,
+          sessionID: input.sessionID,
+          tools: {},
+          system: [],
+          messages: [
+            ...modelMessages,
+            {
+              role: "user",
+              content: [{ type: "text", text: nextPrompt }],
+            },
+          ],
+          model,
+        })
+        .pipe(
+          // Compaction runs outside the turn loop, so there is no turn-level
+          // retry: an exhausted transient provider error finalizes the compaction
+          // message as error and stops, mirroring the processor's halt() path.
+          Effect.catch((e) =>
+            Effect.gen(function* () {
+              const error = e.error as NonNullable<SessionV1.Assistant["error"]>
+              processor.message.error = error
+              processor.message.finish = "error"
+              yield* session.updateMessage(processor.message)
+              yield* events.publish(Session.Event.Error, {
+                sessionID: input.sessionID,
+                error: processor.message.error,
+              })
+              return "stop" as const
+            }),
+          ),
+        )
 
       if (result === "compact") {
         processor.message.error = new SessionV1.ContextOverflowError({

@@ -44,7 +44,9 @@ export interface Handle {
       attachments?: SessionV1.FilePart[]
     },
   ) => Effect.Effect<void>
-  readonly process: (streamInput: LLM.StreamInput) => Effect.Effect<Result>
+  readonly process: (
+    streamInput: LLM.StreamInput,
+  ) => Effect.Effect<Result, SessionRetry.TransientTurnError>
 }
 
 type Input = {
@@ -693,7 +695,25 @@ const layer = Layer.effect(
                 },
               }),
             ),
-            Effect.catch(halt),
+            Effect.catch((e) => {
+              // Stream-level retries are exhausted. If the failure is a transient
+              // provider error (5xx / 429 / upstream JSON parse / request queue
+              // full), don't finalize the turn as error yet: escalate to the
+              // turn-level retry in the run loop, which reprocesses the turn
+              // from scratch up to TURN_RETRY_LIMIT times. Permanent errors and
+              // context overflow still halt (finalize as error / compact).
+              const parsed = parse(e)
+              const retry = SessionRetry.retryable(parsed, input.model.providerID)
+              if (retry) {
+                return Effect.fail(
+                  new SessionRetry.TransientTurnError({
+                    message: retry.message,
+                    error: parsed,
+                  }),
+                )
+              }
+              return halt(e)
+            }),
             Effect.ensuring(cleanup()),
           )
 
