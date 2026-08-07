@@ -173,7 +173,14 @@ export function retryable(error: Err, provider: string) {
     // Many Requests"). Treat those as retryable too, even without a statusCode
     // (mirrors provider/error.ts parseStreamError). 4xx non-429 messages never
     // match here.
-    if (isRetryableMessage(msg)) {
+    // Serialized JSON codes and hyphenated/underscored tokens (e.g.
+    // `{"code":"resource_exhausted"}`, "service-unavailable") map to a
+    // generic overloaded message; readable phrases with spaces fall through
+    // to the retryable-pattern check below and keep their original text.
+    if (!/\s/.test(lower) && (lower.includes("unavailable") || lower.includes("exhausted"))) {
+      return { message: "Provider is overloaded" }
+    }
+    if (matchesRetryableMessage(msg) || isRetryableMessage(msg)) {
       return { message: msg }
     }
   }
