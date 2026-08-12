@@ -196,7 +196,10 @@ function custom(dep: CustomDep): Record<string, CustomLoader> {
 
       return {
         autoload: Object.keys(input.models).length > 0,
-        options: ok ? {} : { apiKey: "public" },
+        options: {
+          headers: { Connection: "close" },
+          ...(ok ? {} : { apiKey: "public" }),
+        },
       }
     }),
     openai: () =>
