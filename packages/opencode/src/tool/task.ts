@@ -67,6 +67,11 @@ function renderOutput(input: {
   summary?: string
   text: string
 }) {
+  // Only wrap the output in <task ...> tags when the task did NOT complete
+  // cleanly: the model needs the sessionID to resume (task_id) after an error,
+  // but a successful result must stay clean — tags break the rendered
+  // formatting and noise up the model context.
+  if (input.state === "completed") return input.text
   const tag = input.state === "error" ? "task_error" : "task_result"
   return [
     `<task id="${input.sessionID}" state="${input.state}">`,
