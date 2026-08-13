@@ -210,7 +210,13 @@ export const TaskTool = Tool.define(
           agent: next.name,
           parts,
         })
-        return result.parts.findLast((item) => item.type === "text")?.text ?? ""
+        // Prefer the last real text part: synthetic parts (e.g. "Called the
+        // Read tool with the following input: ...") are prompt scaffolding, not
+        // user-facing task output, and they break the rendered formatting.
+        const textParts = result.parts.filter(
+          (item): item is SessionV1.TextPart => item.type === "text" && !item.synthetic,
+        )
+        return textParts.at(-1)?.text ?? result.parts.findLast((item) => item.type === "text")?.text ?? ""
       })
 
       const inject = Effect.fn("TaskTool.injectBackgroundResult")(function* (
