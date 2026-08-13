@@ -82,11 +82,17 @@ export function delay(attempt: number, error?: SessionV1.APIError) {
   return cap(Math.min(RETRY_INITIAL_DELAY * Math.pow(RETRY_BACKOFF_FACTOR, attempt - 1), RETRY_MAX_DELAY_NO_HEADERS))
 }
 
-export function retryable(error: Err, provider: string) {
+export function retryable(error: Err, provider: string, opts?: { retry401?: boolean }) {
   // context overflow errors should not be retried
   if (SessionV1.ContextOverflowError.isInstance(error)) return undefined
   if (SessionV1.APIError.isInstance(error)) {
     const status = error.data.statusCode
+    // 401 on an anonymous opencode request is a known gateway flake
+    // (invalid_bearer_credential ~1-2% even with a valid bearer), so the
+    // processor only asks to retry it when no real credential is in use.
+    if (status === 401 && opts?.retry401) {
+      return { message: error.data.message }
+    }
     // 5xx errors are transient server failures and should always be retried,
     // even when the provider SDK doesn't explicitly mark them as retryable.
     if (
@@ -229,6 +235,7 @@ function parseJSON(value: unknown) {
 
 export function policy(opts: {
   provider: string
+  retry401?: boolean
   parse: (error: unknown) => Err
   set: (input: { attempt: number; message: string; action?: Retryable["action"]; next: number }) => Effect.Effect<void>
 }) {
@@ -238,7 +245,7 @@ export function policy(opts: {
       // of retrying forever. Returning Cause.done stops the retry loop.
       if (meta.attempt >= RETRY_MAX_ATTEMPTS) return Cause.done(meta.attempt)
       const error = opts.parse(meta.input)
-      const retry = retryable(error, opts.provider)
+      const retry = retryable(error, opts.provider, { retry401: opts.retry401 })
       if (!retry) return Cause.done(meta.attempt)
       return Effect.gen(function* () {
         const wait = delay(meta.attempt, SessionV1.APIError.isInstance(error) ? error : undefined)

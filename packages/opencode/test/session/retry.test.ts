@@ -491,6 +491,22 @@ describe("session.retry.retryable", () => {
     expect(SessionRetry.retryable(error, retryProvider)).toBeUndefined()
   })
 
+  test("retries 401 only when retry401 is set (anonymous opencode)", () => {
+    const mount = Schema.decodeUnknownSync(SessionV1.APIError.Schema)(
+      new SessionV1.APIError({
+        message: "invalid_bearer_credential",
+        isRetryable: false,
+        statusCode: 401,
+        responseBody: "invalid_bearer_credential",
+      }).toObject(),
+    )
+
+    expect(SessionRetry.retryable(mount, "opencode")).toBeUndefined()
+    expect(SessionRetry.retryable(mount, "opencode", { retry401: true })).toEqual({
+      message: "invalid_bearer_credential",
+    })
+  })
+
   test("retries ZlibError decompression failures", () => {
     const error = Schema.decodeUnknownSync(SessionV1.APIError.Schema)(
       new SessionV1.APIError({

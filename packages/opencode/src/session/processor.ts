@@ -6,6 +6,7 @@ import { Cause, Deferred, Effect, Exit, Layer, Context, Scope, Schema } from "ef
 import * as Stream from "effect/Stream"
 import { Agent } from "@/agent/agent"
 import { Config } from "@/config/config"
+import { Auth } from "@/auth"
 import { Permission } from "@/permission"
 import { Plugin } from "@/plugin"
 import { Snapshot } from "@/snapshot"
@@ -85,6 +86,7 @@ const layer = Layer.effect(
   Effect.gen(function* () {
     const session = yield* Session.Service
     const config = yield* Config.Service
+    const auth = yield* Auth.Service
     const snapshot = yield* Snapshot.Service
     const agents = yield* Agent.Service
     const llm = yield* LLM.Service
@@ -115,6 +117,19 @@ const layer = Layer.effect(
         reasoningMap: {},
       }
       let aborted = false
+
+      // Retry 401s only when the opencode request was truly anonymous: the
+      // gateway intermittently returns invalid_bearer_credential (~1-2%) even
+      // for a valid Bearer "public", and a real credential failure must not be
+      // masked by a retry.
+      const anonymous401 = yield* Effect.gen(function* () {
+        if (input.model.providerID !== "opencode") return false
+        if (globalThis.process.env.OPENCODE_API_KEY) return false
+        const cfg = yield* config.get()
+        if (cfg.provider?.["opencode"]?.options?.apiKey) return false
+        if (yield* auth.get("opencode").pipe(Effect.orElseSucceed(() => undefined))) return false
+        return true
+      })
 
       const parse = (e: unknown) =>
         MessageV2.fromError(e, {
@@ -683,6 +698,7 @@ const layer = Layer.effect(
             Effect.retry(
               SessionRetry.policy({
                 provider: input.model.providerID,
+                retry401: anonymous401,
                 parse,
                 set: (info) => {
                   return status.set(ctx.sessionID, {
@@ -703,7 +719,7 @@ const layer = Layer.effect(
               // from scratch up to TURN_RETRY_LIMIT times. Permanent errors and
               // context overflow still halt (finalize as error / compact).
               const parsed = parse(e)
-              const retry = SessionRetry.retryable(parsed, input.model.providerID)
+              const retry = SessionRetry.retryable(parsed, input.model.providerID, { retry401: anonymous401 })
               if (retry) {
                 return Effect.fail(
                   new SessionRetry.TransientTurnError({
@@ -761,6 +777,7 @@ export const node = LayerNode.make({
   deps: [
     Session.node,
     Config.node,
+    Auth.node,
     Snapshot.node,
     Agent.node,
     LLM.node,
