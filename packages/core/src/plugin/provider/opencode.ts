@@ -88,7 +88,7 @@ export const OpencodePlugin = define<HttpClient.HttpClient | EventV2.Service | S
       const credential = connection
         ? yield* ctx.integration.connection.resolve(connection).pipe(Effect.catch(() => Effect.succeed(undefined)))
         : undefined
-      connected = connection !== undefined
+      connected = credential !== undefined
       providers = credential
         ? yield* fetchProviders(http, credential).pipe(
             Effect.catch((cause) =>
@@ -106,7 +106,12 @@ export const OpencodePlugin = define<HttpClient.HttpClient | EventV2.Service | S
       draft.method.update({ integrationID: "opencode", method: { type: "key", label: "API key (service account)" } })
     })
 
-    connected = (yield* ctx.integration.connection.active("opencode")) !== undefined
+    const active = yield* ctx.integration.connection.active("opencode")
+    connected =
+      active !== undefined &&
+      (yield* ctx.integration.connection
+        .resolve(active)
+        .pipe(Effect.catch(() => Effect.succeed(undefined)))) !== undefined
     yield* ctx.catalog.transform((catalog) => {
       for (const [providerID, item] of Object.entries(providers ?? {})) {
         catalog.provider.update(providerID, (provider) => {
