@@ -29,13 +29,13 @@ export const RETRY_BACKOFF_FACTOR = 2
 export const RETRY_JITTER_FACTOR = 0.25
 export const RETRY_MAX_DELAY_NO_HEADERS = 30_000 // 30 seconds
 export const RETRY_MAX_DELAY = 2_147_483_647 // max 32-bit signed integer for setTimeout
-export const RETRY_MAX_ATTEMPTS = 4 // 1 initial attempt + 3 retries
+export const RETRY_MAX_ATTEMPTS = 6 // 1 initial attempt + 5 retries
 
 // Turn-level retry: when a whole assistant turn fails with a transient provider
 // error (5xx / 429 / upstream JSON parse / request queue full) AFTER the
 // stream-level retry (RETRY_MAX_ATTEMPTS) is exhausted, the turn is reprocessed
 // from scratch up to this many total attempts before being finalized as error.
-export const TURN_RETRY_LIMIT = 3
+export const TURN_RETRY_LIMIT = 4
 
 const RETRYABLE_MESSAGE_PATTERNS = [
   /429|500|502|503|504|524/i,
@@ -97,6 +97,13 @@ export function retryable(error: Err, provider: string, opts?: { retry401?: bool
     // (invalid_bearer_credential ~1-2% even with a valid bearer), so the
     // processor only asks to retry it when no real credential is in use.
     if (status === 401 && opts?.retry401) {
+      return { message: error.data.message }
+    }
+    // 402 from the opencode gateway is a transient free-tier quota flake
+    // ("Payment Required" on free models, e.g. deepseek-v4-flash-free), not a
+    // real billing failure: the same request succeeds moments later. Other
+    // providers' 402s are real billing problems and stay non-retryable.
+    if (status === 402 && provider === "opencode") {
       return { message: error.data.message }
     }
     // 5xx errors are transient server failures and should always be retried,

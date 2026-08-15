@@ -1764,6 +1764,9 @@ const layer = Layer.effect(
             ...opts,
             // @ts-ignore see here: https://github.com/oven-sh/bun/issues/16682
             timeout: false,
+            // Open a fresh TCP connection per request (no keep-alive pool reuse)
+            // so retries egress from a new source IP on the transparent proxy.
+            keepalive: false,
           }).finally(() => headerTimeoutCtl?.clear())
 
           if (!chunkAbortCtl) return res

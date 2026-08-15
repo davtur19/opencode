@@ -43,33 +43,22 @@
 
 ---
 
-## OpenCode fork — improvements over upstream v1.18.11
+## OpenCode fork — improvements over upstream v1.18.13
 
-This fork's default branch (`main`) contains all the changes below on top of upstream opencode v1.18.11.
+This fork's default branch (`main`) contains all the changes below on top of upstream opencode v1.18.13.
 
-### Performance (server)
-- Coalesced part updates: part updates are buffered and flushed every 80ms (`PART_FLUSH_INTERVAL`) to reduce SQLite writes while streaming.
-- `publishBatch` / `commitDurableEvents`: durable events are committed in a single transaction per aggregate.
-- Idempotent event replay in `commitDurableEvents`: a retry after an interrupted flush that finds its event id already committed (same aggregate/type/data) is treated as a no-op instead of a fatal error — the flush buffer can no longer get wedged forever on a legitimate replay.
-- Single-flight flush barrier: concurrent flushes (debounce, `flushNow`, scheduled retry) are serialized on a `Deferred` barrier — no overlapping drains, no deadlock.
-- Multi-session-safe drain: if a publish batch fails mid-drain, every still-unprocessed session group is restored (keep-newest, preserving original event ids) instead of only the failed one — no silent data loss across concurrent sessions (main + subagents).
-- Scoped `flushNow(sessionID?)`: optional session scoping drains only that session's pending parts (used by the run loop and HTTP reads) so streaming coalescing of other sessions is preserved; bounded retries (MAX_ATTEMPTS=3) with exponential backoff and a detached retry cap.
-- First-token visibility: `text-start` and `reasoning-start` force an immediate flush of the empty part snapshot, so the first delta is broadcast only after the part exists and is never dropped by streaming clients.
-- Read-through `getPart`: buffered parts are visible before the flush (fixes duplicate tool-calls on rapid updates).
-- Tombstones for removed parts and messages: `removePart`/`removeMessage` drop buffered keys, wait out in-flight flushes and tombstone them so no late `PartUpdated` can resurrect a removed part/message; `remove` (session) drains its pending parts before tearing down the event log.
-- Defect-safe drain with `Effect.catchDefect` (correct usage for the Effect v4 beta runtime): a defect between snapshot+clear and restore re-buffers the whole batch before rethrowing — the buffer is never lost.
-- HTTP reads (`list`/`get`/`messages`/`message`/`summarize`) return an explicit `503` (with a 5s flush timeout) when the flush fails or times out, instead of silently serving stale data; `Session.messages` warns on stale reads.
-- Read-your-writes on every bulk reader: LLM history in the `prompt` run loop, HTTP session reads, `fork`/`revert`/`summarize`/compaction.
+### Server
+- Coalesced part updates (flushed every 80ms) with single-flight flush barrier, tombstoned removals, and defect-safe drain — no wedged buffers or resurrected parts.
+- Read-your-writes on every bulk reader (LLM history, HTTP reads, fork/revert/compact), explicit `503` on failed flushes, first-token visibility on stream start.
+- Unknown WebSocket upgrades rejected with 400 instead of hanging.
+
+### Provider resilience (retry)
+- Streaming `[5xx]`/`[429]` errors are retried; turn-level retry reprocesses the whole turn on transient failures (5 stream retries + 4 turn attempts) before finalizing as error.
+- 401 retried only on anonymous opencode requests; `Connection: close` forces a fresh TCP connection (new source IP) per request through the transparent proxy.
 
 ### Web UI
-- Collapsible thinking blocks, with reasoning text visible in streaming.
-- Session resync + SSE reconnect when the tab becomes visible again (fixes out-of-sync after a backgrounded tab).
-- Offline banner with reconnecting state; animations paused while offline; auto-resync on reconnect.
-- Subagent task attribution with title fallback when the `sessionId` metadata is missing.
-- Shell tool output rendered as a terminal with ANSI color support (OSC/control-sequence stripping, trailing-escape trimming); shell tool parts expanded by default.
-- Mobile fixes: composer overlap, larger touch targets, responsive titlebar.
-- Home sessions scoped to the selected project directory (memoized filter).
-- i18n parity: 7 missing keys added to all 17 non-English locales.
+- Collapsible thinking blocks, terminal-style shell tool output with ANSI colors, offline/reconnect banner with resync.
+- Mobile fixes, project-scoped home sessions, i18n parity across all locales.
 
 ### Deployment (reference)
 - The fork runs as a systemd user unit (`opencode.service`) serving the HTTP API on `127.0.0.1:4096`.

@@ -27,6 +27,15 @@ function isOpenAiErrorRetryable(e: APICallError) {
   return status === 404 || e.isRetryable
 }
 
+// 402 from the opencode gateway is a transient free-tier quota flake, not a
+// real billing failure: the same request succeeds moments later. Retrying it
+// keeps free-model turns (e.g. opencode/deepseek-v4-flash-free) alive.
+function isOpenCodeErrorRetryable(e: APICallError) {
+  const status = e.statusCode
+  if (!status) return e.isRetryable
+  return status === 402 || e.isRetryable
+}
+
 // Phrases that mark a provider/gateway error as transient even when no HTTP
 // status code is attached. SDKs and proxies embed these in plain error strings
 // (with or without a bracketed status like "[503]"); matching them keeps the
@@ -241,7 +250,11 @@ export function parseAPICallError(input: { providerID: ProviderV2.ID; error: API
     type: "api_error",
     message: m,
     statusCode: input.error.statusCode,
-    isRetryable: input.providerID.startsWith("openai") ? isOpenAiErrorRetryable(input.error) : input.error.isRetryable,
+    isRetryable: input.providerID.startsWith("openai")
+      ? isOpenAiErrorRetryable(input.error)
+      : input.providerID === "opencode"
+        ? isOpenCodeErrorRetryable(input.error)
+        : input.error.isRetryable,
     responseHeaders: input.error.responseHeaders,
     responseBody: input.error.responseBody,
     metadata,

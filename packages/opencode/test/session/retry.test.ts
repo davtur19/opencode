@@ -182,7 +182,9 @@ describe("session.retry.turnPolicy", () => {
 
       // 1 initial run + (TURN_RETRY_LIMIT - 1) retries; never retries forever.
       expect(runs).toBe(SessionRetry.TURN_RETRY_LIMIT)
-      expect(attempts).toStrictEqual([1, 2])
+      expect(attempts).toStrictEqual(
+        Array.from({ length: SessionRetry.TURN_RETRY_LIMIT - 1 }, (_, i) => i + 1),
+      )
     }),
   )
 
@@ -206,7 +208,7 @@ describe("session.retry.turnPolicy", () => {
         Effect.catch(() => Effect.void),
       )
 
-      expect(info).toHaveLength(2)
+      expect(info).toHaveLength(SessionRetry.TURN_RETRY_LIMIT - 1)
       expect(info[0]).toMatchObject({ attempt: 1, message: "boom" })
       expect(info[1]).toMatchObject({ attempt: 2, message: "boom" })
       expect(info[0].next).toBeGreaterThan(0)
@@ -513,6 +515,31 @@ describe("session.retry.retryable", () => {
     expect(SessionRetry.retryable(mount, "opencode", { retry401: true })).toEqual({
       message: "invalid_bearer_credential",
     })
+  })
+
+  test("retries 402 for the opencode gateway (transient free-tier flake)", () => {
+    const error = Schema.decodeUnknownSync(SessionV1.APIError.Schema)(
+      new SessionV1.APIError({
+        message: "Payment Required",
+        isRetryable: false,
+        statusCode: 402,
+        responseBody: JSON.stringify({ model: "deepseek-v4-flash-free" }),
+      }).toObject(),
+    )
+
+    expect(SessionRetry.retryable(error, "opencode")).toEqual({ message: "Payment Required" })
+  })
+
+  test("does not retry 402 for non-opencode providers", () => {
+    const error = Schema.decodeUnknownSync(SessionV1.APIError.Schema)(
+      new SessionV1.APIError({
+        message: "Payment Required",
+        isRetryable: false,
+        statusCode: 402,
+      }).toObject(),
+    )
+
+    expect(SessionRetry.retryable(error, "openai")).toBeUndefined()
   })
 
   test("retries ZlibError decompression failures", () => {

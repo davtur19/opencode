@@ -571,10 +571,10 @@ it.instance("loop reprocesses a transient turn failure up to TURN_RETRY_LIMIT ti
       parts: [{ type: "text", text: "hello" }],
     })
 
-    // Each turn attempt makes RETRY_MAX_ATTEMPTS=4 LLM calls (1 initial + 3
+    // Each turn attempt makes RETRY_MAX_ATTEMPTS LLM calls (1 initial +
     // stream-level retries) before the processor raises TransientTurnError.
-    // The run loop reprocesses the turn at attempts 1 and 2 (TURN_RETRY_LIMIT
-    // total attempts = 3), then finalizes the assistant message as error.
+    // The run loop reprocesses the turn (TURN_RETRY_LIMIT total attempts),
+    // then finalizes the assistant message as error.
     for (let i = 0; i < SessionRetry.RETRY_MAX_ATTEMPTS * SessionRetry.TURN_RETRY_LIMIT; i++) {
       yield* llm.error(503, { error: "boom" }, { "retry-after-ms": "0" })
     }
@@ -586,10 +586,12 @@ it.instance("loop reprocesses a transient turn failure up to TURN_RETRY_LIMIT ti
       expect(result.info.finish).toBe("error")
     }
 
-    // One RetryPart persisted per reprocessed attempt (attempts 1 and 2).
+    // One RetryPart persisted per reprocessed attempt.
     const retryParts = result.parts.filter((part) => part.type === "retry")
-    expect(retryParts).toHaveLength(2)
-    expect(retryParts.map((part) => (part.type === "retry" ? part.attempt : undefined))).toStrictEqual([1, 2])
+    expect(retryParts).toHaveLength(SessionRetry.TURN_RETRY_LIMIT - 1)
+    expect(retryParts.map((part) => (part.type === "retry" ? part.attempt : undefined))).toStrictEqual(
+      Array.from({ length: SessionRetry.TURN_RETRY_LIMIT - 1 }, (_, i) => i + 1),
+    )
     expect(yield* llm.calls).toBe(SessionRetry.RETRY_MAX_ATTEMPTS * SessionRetry.TURN_RETRY_LIMIT)
   }),
 )
