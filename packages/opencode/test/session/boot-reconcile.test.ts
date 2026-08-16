@@ -114,7 +114,10 @@ describe("session.boot-reconcile", () => {
       const before = yield* sessions.findMessage(sid, (msg) => msg.info.role === "assistant").pipe(Effect.orDie)
       expect(Option.isSome(before)).toBe(true)
       if (Option.isSome(before)) {
-        expect(before.value.info.finish).toBeUndefined()
+        const info = before.value.info
+        if (info.role === "assistant") {
+          expect(info.finish).toBeUndefined()
+        }
         const p = before.value.parts.find((x) => x.id === part.id)
         expect(p?.type).toBe("tool")
         if (p?.type === "tool") expect(p.state.status).toBe("running")
@@ -128,15 +131,17 @@ describe("session.boot-reconcile", () => {
       expect(Option.isSome(after)).toBe(true)
       if (Option.isSome(after)) {
         const info = after.value.info
-        expect(info.finish).toBe("error")
-        expect(info.time.completed).toBeDefined()
-        expect(info.error?.name).toBe("MessageAbortedError")
-        expect((info.error as { data?: { message?: string } }).data?.message).toBe(QUESTION_ORPHAN_MESSAGE)
+        if (info.role === "assistant") {
+          expect(info.finish).toBe("error")
+          expect(info.time.completed).toBeDefined()
+          expect(info.error?.name).toBe("MessageAbortedError")
+          expect((info.error as { data?: { message?: string } }).data?.message).toBe(QUESTION_ORPHAN_MESSAGE)
+        }
         const p = after.value.parts.find((x) => x.id === part.id)
         expect(p?.type).toBe("tool")
         if (p?.type === "tool") {
           expect(p.state.status).toBe("error")
-          expect(p.state.metadata?.interrupted).toBe(true)
+          expect("metadata" in p.state && p.state.metadata?.interrupted).toBe(true)
           expect((p.state as { error?: string }).error).toBe(QUESTION_ORPHAN_MESSAGE)
         }
       }
@@ -149,7 +154,10 @@ describe("session.boot-reconcile", () => {
       yield* reconcile.run()
       const again = yield* sessions.findMessage(sid, (msg) => msg.info.role === "assistant").pipe(Effect.orDie)
       expect(Option.isSome(again)).toBe(true)
-      if (Option.isSome(again)) expect(again.value.info.finish).toBe("error")
+      if (Option.isSome(again)) {
+        const info = again.value.info
+        if (info.role === "assistant") expect(info.finish).toBe("error")
+      }
     }),
   )
 
@@ -172,8 +180,11 @@ describe("session.boot-reconcile", () => {
       const after = yield* sessions.findMessage(sid, (msg) => msg.info.role === "assistant").pipe(Effect.orDie)
       expect(Option.isSome(after)).toBe(true)
       if (Option.isSome(after)) {
-        expect(after.value.info.finish).toBe("error")
-        expect((after.value.info.error as { data?: { message?: string } }).data?.message).toBe(GENERIC_ORPHAN_MESSAGE)
+        const info = after.value.info
+        if (info.role === "assistant") {
+          expect(info.finish).toBe("error")
+          expect((info.error as { data?: { message?: string } }).data?.message).toBe(GENERIC_ORPHAN_MESSAGE)
+        }
         const p = after.value.parts.find((x) => x.id === PartID.make("prt_question"))
         expect(p?.type).toBe("tool")
         if (p?.type === "tool") expect(p.state.status).toBe("error")
@@ -205,8 +216,11 @@ describe("session.boot-reconcile", () => {
       expect(Option.isSome(after)).toBe(true)
       if (Option.isSome(after)) {
         // Untouched: still marked complete, no error added, part still completed.
-        expect(after.value.info.finish).toBe("complete")
-        expect(after.value.info.error).toBeUndefined()
+        const info = after.value.info
+        if (info.role === "assistant") {
+          expect(info.finish).toBe("complete")
+          expect(info.error).toBeUndefined()
+        }
         const p = after.value.parts.find((x) => x.id === PartID.make("prt_completed"))
         expect(p?.type).toBe("tool")
         if (p?.type === "tool") expect(p.state.status).toBe("completed")
@@ -273,7 +287,10 @@ describe("session.boot-reconcile", () => {
       const after = yield* sessions.findMessage(sid, (msg) => msg.info.role === "assistant").pipe(Effect.orDie)
       expect(Option.isSome(after)).toBe(true)
       if (Option.isSome(after)) {
-        expect(after.value.info.finish).toBeUndefined()
+        const info = after.value.info
+        if (info.role === "assistant") {
+          expect(info.finish).toBeUndefined()
+        }
         const p = after.value.parts.find((x) => x.id === PartID.make("prt_question"))
         expect(p?.type).toBe("tool")
         if (p?.type === "tool") expect(p.state.status).toBe("running")

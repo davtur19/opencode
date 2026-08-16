@@ -36,7 +36,7 @@ function interruptTool(part: SessionV1.ToolPart, error: string): SessionV1.ToolP
       status: "error",
       input: part.state.input,
       error,
-      metadata: { ...(isRecord(part.state.metadata) ? part.state.metadata : {}), interrupted: true },
+      metadata: { ...("metadata" in part.state && isRecord(part.state.metadata) ? part.state.metadata : {}), interrupted: true },
       time: { start, end },
     },
   }
@@ -90,7 +90,7 @@ const layer = Layer.effect(
         const match = yield* sessions.findMessage(sessionID, (msg) => msg.info.role === "assistant").pipe(
           // A session removed between listGlobal and this read is not an orphan;
           // skip it instead of aborting the whole pass.
-          Effect.catchTag("NotFoundError", () => Option.none()),
+          Effect.catchTag("NotFoundError", () => Effect.succeed(Option.none<SessionV1.WithParts>())),
         )
         if (Option.isNone(match)) continue
         const messageInfo = match.value.info

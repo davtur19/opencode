@@ -1,5 +1,5 @@
 import { Effect } from "effect"
-import { HttpServerRequest, HttpServerResponse } from "effect/unstable/http"
+import { HttpMiddleware, HttpServerRequest, HttpServerResponse } from "effect/unstable/http"
 
 // The opencode server only serves WebSocket upgrades on declared WS routes
 // (currently the PTY connect route). Upgrades to any other path (for example
@@ -11,7 +11,7 @@ const WS_UPGRADE_HEADER = "upgrade"
 const WS_UPGRADE_VALUE = "websocket"
 const KNOWN_WS_PATHS: ReadonlyArray<RegExp> = [/^\/pty\/[^/]+\/connect$/]
 
-export const websocketUpgradeGuard: (effect: Effect.Effect<HttpServerResponse.HttpServerResponse, never>) => Effect.Effect<HttpServerResponse.HttpServerResponse, never> = (effect) =>
+export const websocketUpgradeGuard: HttpMiddleware.HttpMiddleware = (effect) =>
   Effect.gen(function* () {
     const request = yield* HttpServerRequest.HttpServerRequest
     const upgrade = request.headers[WS_UPGRADE_HEADER]
