@@ -17,7 +17,12 @@ export const configHandlers = HttpApiBuilder.group(InstanceHttpApi, "config", (h
 
     const update = Effect.fn("ConfigHttpApi.update")(function* (ctx) {
       yield* configSvc.update(ctx.payload)
-      yield* markInstanceForDisposal(yield* InstanceState.context)
+      const instance = yield* InstanceState.context
+      yield* Effect.logWarning("INSTANCE INVALIDATE SOURCE", {
+        source: "config.update",
+        directory: instance.directory,
+      })
+      yield* markInstanceForDisposal(instance)
       return ctx.payload
     })
 

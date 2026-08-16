@@ -38,6 +38,11 @@ const layer = Layer.effect(
         const runners = new Map<SessionID, Runner.Runner<SessionV1.WithParts>>()
         yield* Effect.addFinalizer(
           Effect.fnUntraced(function* () {
+            if (runners.size > 0) {
+              yield* Effect.logWarning("SESSION RUNNERS CANCELLED BY INSTANCE DISPOSE", {
+                sessions: [...runners.keys()].map((id) => String(id)),
+              })
+            }
             yield* Effect.forEach(runners.values(), (runner) => runner.cancel, {
               concurrency: "unbounded",
               discard: true,

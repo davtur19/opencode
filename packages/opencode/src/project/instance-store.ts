@@ -92,7 +92,7 @@ const layer: Layer.Layer<Service, never, Project.Service | InstanceBootstrap.Ser
       )
 
     const disposeContext = Effect.fn("InstanceStore.disposeContext")(function* (ctx: InstanceContext) {
-      yield* Effect.logInfo("disposing instance", { directory: ctx.directory })
+      yield* Effect.logWarning("INSTANCE DISPOSING", { directory: ctx.directory, project: ctx.project.id })
       yield* Effect.promise(() => runDisposers(ctx.directory))
       yield* emitDisposed({ directory: ctx.directory, project: ctx.project.id })
     })

@@ -25,6 +25,10 @@ export const projectHandlers = HttpApiBuilder.group(InstanceHttpApi, "project", 
       const next = yield* svc.initGit({ directory: ctx.directory, project: ctx.project })
       if (next.id === ctx.project.id && next.vcs === ctx.project.vcs && next.worktree === ctx.project.worktree)
         return next
+      yield* Effect.logWarning("INSTANCE INVALIDATE SOURCE", {
+        source: "project.initGit",
+        directory: ctx.directory,
+      })
       yield* markInstanceForReload(ctx, {
         directory: ctx.directory,
         worktree: ctx.directory,
