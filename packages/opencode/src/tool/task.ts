@@ -67,11 +67,13 @@ function renderOutput(input: {
   summary?: string
   text: string
 }) {
-  // Only wrap the output in <task ...> tags when the task did NOT complete
-  // cleanly: the model needs the sessionID to resume (task_id) after an error,
-  // but a successful result must stay clean — tags break the rendered
-  // formatting and noise up the model context.
-  if (input.state === "completed") return input.text
+  // The model needs the sessionID to resume (task_id) even after a clean
+  // completion — without it the model invents a task_id (typically its own
+  // session) and self-resumes into a deadlock. A completed result stays clean
+  // except for a trailing self-closed tag carrying the sessionID.
+  if (input.state === "completed") {
+    return `${input.text}\n\n<task id="${input.sessionID}" state="completed" />`
+  }
   const tag = input.state === "error" ? "task_error" : "task_result"
   return [
     `<task id="${input.sessionID}" state="${input.state}">`,
@@ -141,6 +143,18 @@ export const TaskTool = Tool.define(
       const session = params.task_id
         ? yield* sessions.get(SessionID.make(params.task_id)).pipe(Effect.catchCause(() => Effect.succeed(undefined)))
         : undefined
+      if (session) {
+        if (session.id === ctx.sessionID || session.parentID !== ctx.sessionID) {
+          return yield* Effect.fail(
+            new Error(`Invalid task_id: expected a direct child session of ${ctx.sessionID}, got ${session.id}`),
+          )
+        }
+        if (session.agent && session.agent !== next.name) {
+          return yield* Effect.fail(
+            new Error(`task_id belongs to @${session.agent}, not @${next.name}`),
+          )
+        }
+      }
       const childPermission = deriveSubagentSessionPermission({
         parentSessionPermission: parent.permission ?? [],
         subagent: next,
