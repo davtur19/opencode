@@ -1,5 +1,6 @@
 import path from "node:path"
 import { pathToFileURL } from "node:url"
+import { existsSync } from "node:fs"
 import { LayerNode } from "@opencode-ai/core/effect/layer-node"
 import { ConfigV1 } from "@opencode-ai/core/v1/config/config"
 import { serviceUse } from "@opencode-ai/core/effect/service-use"
@@ -139,6 +140,16 @@ interface AuthResult {
 
 // --- Effect Service ---
 
+function resolveSetsid(): string | undefined {
+  if (process.platform !== "linux") return undefined
+  for (const dir of (process.env.PATH ?? "").split(path.delimiter)) {
+    if (!dir) continue
+    const candidate = path.join(dir, "setsid")
+    if (existsSync(candidate)) return candidate
+  }
+  return undefined
+}
+
 interface State {
   config: Record<string, ConfigMCPV1.Info>
   status: Record<string, Status>
@@ -208,6 +219,10 @@ const layer = Layer.effect(
     const auth = yield* McpAuth.Service
     const events = yield* EventV2Bridge.Service
     const browser = yield* McpBrowser.Service
+
+    // Resolve setsid once so local servers can be spawned into their own
+    // process group, enabling whole-tree cleanup via process.kill(-pid).
+    const setsidPath = resolveSetsid()
 
     type Transport = StdioClientTransport | StreamableHTTPClientTransport | SSEClientTransport
 
@@ -344,10 +359,14 @@ const layer = Layer.effect(
       const [cmd, ...args] = mcp.command
       const baseDir = yield* InstanceState.directory
       const cwd = mcp.cwd ? path.resolve(baseDir, mcp.cwd) : baseDir
+      // Run local servers in a dedicated process group (setsid) so we can kill the
+      // entire tree (npm -> node -> chromium) via process.kill(-pid) on dispose.
+      // Fall back to the bare command when setsid is unavailable (non-Linux).
+      const wrapSetsid = process.platform === "linux" && setsidPath !== undefined
       const transport = new StdioClientTransport({
         stderr: "pipe",
-        command: cmd,
-        args,
+        command: wrapSetsid ? setsidPath : cmd,
+        args: wrapSetsid ? [cmd, ...args] : args,
         cwd,
         env: {
           ...process.env,
@@ -400,7 +419,7 @@ const layer = Layer.effect(
           } satisfies CreateResult
         }).pipe(
           Effect.catchCause((cause) =>
-            Effect.tryPromise(() => mcpClient.close()).pipe(Effect.ignore, Effect.andThen(Effect.failCause(cause))),
+            terminateLocalMcp(mcpClient).pipe(Effect.ignore, Effect.andThen(Effect.failCause(cause))),
           ),
         )
       },
@@ -438,6 +457,38 @@ const layer = Layer.effect(
       Effect.scoped,
       Effect.catch(() => Effect.succeed([] as number[])),
     )
+
+    // Terminate a local MCP server and its whole process tree. On Linux the
+    // server runs in its own process group (spawned via setsid), so -pid kills
+    // every descendant (npm -> node -> chromium) even after reparenting.
+    // Elsewhere fall back to the pgrep-based descendant walk + client.close().
+    function terminateLocalMcp(client: MCPClient): Effect.Effect<void> {
+      const transport = client.transport
+      const pid = transport instanceof StdioClientTransport ? transport.pid : null
+      if (process.platform === "linux" && setsidPath !== undefined && typeof pid === "number") {
+        return Effect.gen(function* () {
+          try {
+            process.kill(-pid, "SIGTERM")
+          } catch {}
+          yield* Effect.sleep("750 millis")
+          try {
+            process.kill(-pid, "SIGKILL")
+          } catch {}
+          yield* Effect.tryPromise(() => client.close()).pipe(Effect.ignore)
+        })
+      }
+      return Effect.gen(function* () {
+        if (typeof pid === "number") {
+          const pids = yield* descendants(pid)
+          for (const dpid of pids) {
+            try {
+              process.kill(dpid, "SIGTERM")
+            } catch {}
+          }
+        }
+        yield* Effect.tryPromise(() => client.close()).pipe(Effect.ignore)
+      })
+    }
 
     function watch(s: State, name: string, client: MCPClient, bridge: EffectBridge.Shape, timeout?: number) {
       client.onclose = () => {
@@ -536,19 +587,7 @@ const layer = Layer.effect(
             s.instructions = {}
             yield* Effect.forEach(
               clients,
-              (client) =>
-                Effect.gen(function* () {
-                  const pid = client.transport instanceof StdioClientTransport ? client.transport.pid : null
-                  if (typeof pid === "number") {
-                    const pids = yield* descendants(pid)
-                    for (const dpid of pids) {
-                      try {
-                        process.kill(dpid, "SIGTERM")
-                      } catch {}
-                    }
-                  }
-                  yield* Effect.tryPromise(() => client.close()).pipe(Effect.ignore)
-                }),
+              (client) => terminateLocalMcp(client),
               { concurrency: "unbounded" },
             )
             pendingOAuthTransports.clear()
@@ -565,7 +604,7 @@ const layer = Layer.effect(
       delete s.defs[name]
       delete s.instructions[name]
       if (!client) return Effect.void
-      return Effect.tryPromise(() => client.close()).pipe(Effect.ignore)
+      return terminateLocalMcp(client)
     }
 
     const storeClient = Effect.fnUntraced(function* (
@@ -584,7 +623,7 @@ const layer = Layer.effect(
       if (instructions) s.instructions[name] = instructions
       else delete s.instructions[name]
       watch(s, name, client, bridge, timeout)
-      if (previous) yield* Effect.tryPromise(() => previous.close()).pipe(Effect.ignore)
+      if (previous) yield* terminateLocalMcp(previous)
       return s.status[name]
     })
 
