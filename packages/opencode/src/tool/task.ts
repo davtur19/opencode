@@ -23,8 +23,8 @@ export interface TaskPromptOps {
 
 const id = "task"
 const BACKGROUND_DESCRIPTION = [
-  "Background mode: background=true launches the subagent asynchronously and returns immediately.",
-  "Foreground is the default; use it when you need the result before continuing.",
+  "Background mode is the default: tasks launch asynchronously and return immediately.",
+  "Use background=false only when you need the result before continuing.",
   "Use background only for independent work that can run while you continue elsewhere.",
   "You will be notified automatically when it finishes.",
 ].join(" ")
@@ -57,7 +57,7 @@ export const Parameters = Schema.Struct({
   ...BaseParameterFields,
   background: Schema.optional(Schema.Boolean).annotate({
     description:
-      "Run the agent in the background. You will be notified when it completes. DO NOT sleep, poll, or proactively check on its progress",
+      "Run the agent in the background (default: true when OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS is enabled). You will be notified when it completes. DO NOT sleep, poll, or proactively check on its progress. Pass background=false to run synchronously and wait for the result.",
   }),
 })
 
@@ -101,7 +101,9 @@ export const TaskTool = Tool.define(
       ctx: Tool.Context,
     ) {
       const cfg = yield* config.get()
-      const runInBackground = params.background === true
+      const runInBackground = flags.experimentalBackgroundSubagents
+        ? params.background !== false
+        : params.background === true
       if (runInBackground && !flags.experimentalBackgroundSubagents) {
         return yield* Effect.fail(
           new Error("Background subagents require OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS=true"),
