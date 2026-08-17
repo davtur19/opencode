@@ -48,11 +48,13 @@ export function resource(): { serviceName: string; serviceVersion: string; attri
 }
 
 export function loggers() {
+  if (!Flag.OPENCODE_TELEMETRY) return []
   if (!endpoint) return []
   return [OtlpLogger.make({ url: `${endpoint}/v1/logs`, resource: resource(), headers })]
 }
 
 export async function tracingLayer() {
+  if (!Flag.OPENCODE_TELEMETRY) return Layer.empty
   if (!endpoint) return Layer.empty
   const NodeSdk = await import("@effect/opentelemetry/NodeSdk")
   const OTLP = await import("@opentelemetry/exporter-trace-otlp-http")

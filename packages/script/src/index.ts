@@ -1,4 +1,3 @@
-import { $ } from "bun"
 import semver from "semver"
 import path from "path"
 
@@ -23,28 +22,36 @@ const env = {
   OPENCODE_VERSION: process.env["OPENCODE_VERSION"],
   OPENCODE_RELEASE: process.env["OPENCODE_RELEASE"],
 }
+// Fork: build from the release channel by default instead of the current git branch,
+// so local builds look like release builds (proper user-agent, shared DB, sane autoupdate).
 const CHANNEL = await (async () => {
   if (env.OPENCODE_CHANNEL) return env.OPENCODE_CHANNEL
   if (env.OPENCODE_BUMP) return "latest"
   if (env.OPENCODE_VERSION && !env.OPENCODE_VERSION.startsWith("0.0.0-")) return "latest"
-  return await $`git branch --show-current`.text().then((x) => x.trim())
+  return "latest"
 })()
 const IS_PREVIEW = CHANNEL !== "latest"
 
+// Fork: default version follows the latest release synced into packages/opencode/package.json.
+const FORK_VERSION = (await Bun.file(path.resolve(import.meta.dir, "../../opencode/package.json")).json()).version
+
 const VERSION = await (async () => {
   if (env.OPENCODE_VERSION) return env.OPENCODE_VERSION
+  if (env.OPENCODE_BUMP) {
+    const version = await fetch("https://registry.npmjs.org/opencode-ai/latest")
+      .then((res) => {
+        if (!res.ok) throw new Error(res.statusText)
+        return res.json()
+      })
+      .then((data: any) => data.version)
+    const [major, minor, patch] = version.split(".").map((x: string) => Number(x) || 0)
+    const t = env.OPENCODE_BUMP?.toLowerCase()
+    if (t === "major") return `${major + 1}.0.0`
+    if (t === "minor") return `${major}.${minor + 1}.0`
+    return `${major}.${minor}.${patch + 1}`
+  }
   if (IS_PREVIEW) return `0.0.0-${CHANNEL}-${new Date().toISOString().slice(0, 16).replace(/[-:T]/g, "")}`
-  const version = await fetch("https://registry.npmjs.org/opencode-ai/latest")
-    .then((res) => {
-      if (!res.ok) throw new Error(res.statusText)
-      return res.json()
-    })
-    .then((data: any) => data.version)
-  const [major, minor, patch] = version.split(".").map((x: string) => Number(x) || 0)
-  const t = env.OPENCODE_BUMP?.toLowerCase()
-  if (t === "major") return `${major + 1}.0.0`
-  if (t === "minor") return `${major}.${minor + 1}.0`
-  return `${major}.${minor}.${patch + 1}`
+  return FORK_VERSION
 })()
 
 const bot = ["actions-user", "opencode", "opencode-agent[bot]"]

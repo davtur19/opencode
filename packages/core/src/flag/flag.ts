@@ -15,6 +15,8 @@ function enabledByExperimental(key: string) {
 export const Flag = {
   OTEL_EXPORTER_OTLP_ENDPOINT: process.env["OTEL_EXPORTER_OTLP_ENDPOINT"],
   OTEL_EXPORTER_OTLP_HEADERS: process.env["OTEL_EXPORTER_OTLP_HEADERS"],
+  // Fork: telemetry is opt-in; nothing is exported unless explicitly enabled.
+  OPENCODE_TELEMETRY: truthy("OPENCODE_TELEMETRY"),
 
   OPENCODE_AUTO_HEAP_SNAPSHOT: truthy("OPENCODE_AUTO_HEAP_SNAPSHOT"),
   OPENCODE_GIT_BASH_PATH: process.env["OPENCODE_GIT_BASH_PATH"],

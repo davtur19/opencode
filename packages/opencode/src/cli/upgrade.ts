@@ -27,7 +27,9 @@ export async function upgrade() {
 
   const kind = Installation.getReleaseType(InstallationVersion, latest)
 
-  if (config.autoupdate === "notify" || kind !== "patch") {
+  // Fork: never auto-install unless explicitly enabled in config; the default
+  // (unset) only checks for updates and notifies.
+  if (config.autoupdate !== true || kind !== "patch") {
     GlobalBus.emit("event", {
       directory: "global",
       payload: {
