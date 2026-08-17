@@ -406,6 +406,18 @@ describe("session.retry.retryable", () => {
     expect(SessionRetry.retryable(wrap(message), retryProvider)).toEqual({ message })
   })
 
+  test.each([
+    "unknown certificate verification error",
+    "SSL: certificate verification failed (result: 5)",
+    "unable to verify the first certificate",
+    "certificate has expired",
+    "certificate is not yet valid",
+    "self-signed certificate in certificate chain",
+    "TLS handshake failure",
+  ])("retries transient TLS/certificate errors: %s", (message) => {
+    expect(SessionRetry.retryable(wrap(message), retryProvider)).toEqual({ message })
+  })
+
   test("retries hyphenated service-unavailable errors", () => {
     expect(SessionRetry.retryable(wrap("service-unavailable"), retryProvider)).toEqual({
       message: "Provider is overloaded",
