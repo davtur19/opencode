@@ -60,6 +60,14 @@ This fork's default branch (`main`) contains all the changes below on top of ups
 - Collapsible thinking blocks, terminal-style shell tool output with ANSI colors, offline/reconnect banner with resync.
 - Mobile fixes, project-scoped home sessions, i18n parity across all locales.
 
+### Subagents (background)
+- When `OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS=true` is set, subagents launched via the `task` tool run **in the background by default** (async) and notify the parent session when done; pass `background: false` to wait synchronously for the result.
+- Without the env flag, behavior is unchanged (foreground by default).
+
+### Build
+- `packages/opencode/script/build.ts` builds **only the current platform** by default — a single native binary with the embedded web UI, much faster than cross-compiling.
+- Pass `--all` to build all cross-platform targets, `--baseline` for baseline (non-AVX2) variants.
+
 ### Deployment (reference)
 - The fork runs as a systemd user unit (`opencode.service`) serving the HTTP API on `127.0.0.1:4096`.
 - Memory limits raised to `MemoryHigh=8G` / `MemoryMax=9G` so heavy builds/commands spawned from a chat never stall the server at the cgroup watermark.
