@@ -9,6 +9,6 @@ export class Info extends Schema.Class<Info>("Config.Proxy")({
   }),
   domains: Schema.optional(Schema.mutable(Schema.Array(Schema.String))).annotate({
     description:
-      "Hostnames routed through the proxy. A leading `*.` matches subdomains. Defaults to opencode's cloud model gateway domains (zenmux.ai, gateway.opencode.ai).",
+      "Hostnames routed through the proxy. A leading `*.` matches subdomains. Defaults to opencode's domains (opencode.ai and its subdomains, zenmux.ai, gateway.opencode.ai). The OPENCODE_CLOUD_PROXY_DOMAINS env var (comma-separated) overrides this.",
   }),
 }) {}

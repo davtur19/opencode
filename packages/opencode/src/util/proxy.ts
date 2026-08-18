@@ -5,11 +5,22 @@ export * as FetchProxy from "./proxy"
 // domain (model providers, the opencode console, github, telemetry, ...) is
 // left untouched so Bun's env-based proxy (HTTP(S)_PROXY / NO_PROXY) still
 // applies to them as before.
-const OPENCODE_DOMAINS = ["zenmux.ai", "gateway.opencode.ai"]
+const OPENCODE_DOMAINS = [
+  "opencode.ai",
+  "www.opencode.ai",
+  "models.opencode.ai",
+  "zenmux.ai",
+  "gateway.opencode.ai",
+  "api.opencode.ai",
+  "app.opencode.ai",
+  "console.opencode.ai",
+  "dev.opencode.ai",
+]
 
-// Env var for the cloud-model proxy, independent of the config file. It takes
+// Env vars for the cloud-model proxy, independent of the config file. They take
 // precedence over `proxy` in opencode.json.
 const CLOUD_PROXY_ENV = "OPENCODE_CLOUD_PROXY"
+const CLOUD_PROXY_DOMAINS_ENV = "OPENCODE_CLOUD_PROXY_DOMAINS"
 
 export interface Config {
   url: string
@@ -23,9 +34,17 @@ export function setConfig(next: Config | undefined) {
 }
 
 function effectiveConfig() {
-  const url = process.env[CLOUD_PROXY_ENV]
-  if (url) return { url }
-  return config
+  const envUrl = process.env[CLOUD_PROXY_ENV]
+  const envDomains = parseDomains(process.env[CLOUD_PROXY_DOMAINS_ENV])
+  if (envUrl) return { url: envUrl, domains: envDomains }
+  if (!config) return undefined
+  return envDomains ? { ...config, domains: envDomains } : config
+}
+
+function parseDomains(value: string | undefined) {
+  if (!value) return undefined
+  const domains = value.split(",").map((domain) => domain.trim()).filter(Boolean)
+  return domains.length ? domains : undefined
 }
 
 export function getProxyForHostname(hostname: string) {
