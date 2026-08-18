@@ -29,6 +29,7 @@ import { DbCommand } from "./cli/cmd/db"
 import { errorMessage } from "./util/error"
 import { PluginCommand } from "./cli/cmd/plug"
 import { Heap } from "./cli/heap"
+import { FetchProxy } from "./util/proxy"
 
 const args = hideBin(process.argv)
 
@@ -71,6 +72,8 @@ const cli = yargs(args)
     }
 
     Heap.start()
+
+    FetchProxy.install()
 
     process.env.AGENT = "1"
     process.env.OPENCODE = "1"

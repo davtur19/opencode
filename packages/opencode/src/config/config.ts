@@ -35,6 +35,7 @@ import { ConfigPlugin } from "./plugin"
 import { ConfigVariable } from "./variable"
 import { Npm } from "@opencode-ai/core/npm"
 import { withTransientReadRetry } from "@/util/effect-http-client"
+import { FetchProxy } from "@/util/proxy"
 
 // Custom merge function that concatenates array fields instead of replacing them
 // Keep remeda's deep conditional merge type out of hot config-loading paths; TS profiling showed it dominates here.
@@ -280,6 +281,7 @@ const layer = Layer.effect(
 
     const [cachedGlobal, invalidateGlobal] = yield* Effect.cachedInvalidateWithTTL(
       loadGlobal().pipe(
+        Effect.tap((info) => Effect.sync(() => FetchProxy.setConfig(info.proxy))),
         Effect.tapError((error) =>
           Effect.logError("failed to load global config, using defaults", { error: String(error) }),
         ),
@@ -599,7 +601,10 @@ const layer = Layer.effect(
 
     const state = yield* InstanceState.make<State>(
       Effect.fn("Config.state")(function* (ctx) {
-        return yield* loadInstanceState(ctx).pipe(Effect.orDie)
+        return yield* loadInstanceState(ctx).pipe(
+          Effect.tap((s) => Effect.sync(() => FetchProxy.setConfig(s.config.proxy))),
+          Effect.orDie,
+        )
       }),
     )
 

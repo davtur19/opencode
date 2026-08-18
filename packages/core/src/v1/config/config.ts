@@ -3,6 +3,7 @@ export * as ConfigV1 from "./config"
 import { Schema } from "effect"
 import { NonNegativeInt, PositiveInt, type DeepMutable } from "../../schema"
 import { ConfigExperimental } from "../../config/experimental"
+import { ConfigProxy } from "../../config/proxy"
 import { ConfigReference } from "../../config/reference"
 import { ConfigAgentV1 } from "./agent"
 import { ConfigAttachmentV1 } from "./attachment"
@@ -109,6 +110,10 @@ export const Info = Schema.Struct({
   ).annotate({ description: "Agent configuration, see https://opencode.ai/docs/agents" }),
   provider: Schema.optional(Schema.Record(Schema.String, ConfigProviderV1.Info)).annotate({
     description: "Custom provider configurations and model overrides",
+  }),
+  proxy: Schema.optional(ConfigProxy.Info).annotate({
+    description:
+      "Route requests to specific domains (defaults to opencode's cloud model gateway domains) through an HTTP proxy, leaving all other traffic untouched",
   }),
   mcp: Schema.optional(
     Schema.Record(Schema.String, Schema.Union([ConfigMCPV1.Info, Schema.Struct({ enabled: Schema.Boolean })])),

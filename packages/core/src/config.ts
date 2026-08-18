@@ -19,6 +19,7 @@ import { ConfigFormatter } from "./config/formatter"
 import { ConfigLSP } from "./config/lsp"
 import { ConfigMCP } from "./config/mcp"
 import { ConfigPlugin } from "./config/plugin"
+import { ConfigProxy } from "./config/proxy"
 import { ConfigProvider } from "./config/provider"
 import { ConfigReference } from "./config/reference"
 import { ConfigToolOutput } from "./config/tool-output"
@@ -104,6 +105,7 @@ export class Info extends Schema.Class<Info>("Config.Info")({
   }),
   experimental: ConfigExperimental.Experimental.pipe(Schema.optional),
   providers: Schema.Record(Schema.String, ConfigProvider.Info).pipe(Schema.optional),
+  proxy: ConfigProxy.Info.pipe(Schema.optional),
 }) {}
 
 export class Document extends Schema.Class<Document>("Config.Document")({
