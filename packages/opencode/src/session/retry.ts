@@ -49,6 +49,7 @@ const RETRYABLE_MESSAGE_PATTERNS = [
   /unknown certificate verification error|certificate verification failed|certificate verify failed|certificate has expired|certificate is not yet valid|certificate not yet valid|self-signed certificate|certificate chain|cannot be verified|unable to verify the first certificate|handshake failure/i,
   /^timeout$|\b(?:request|response|connection|network|stream|read) (?:timeout|timed out|time out)\b/i,
   /try your request again|retry your request|resource exhausted|resource_exhausted/i,
+  /\btry again (?:later|in\b)|\b(?:currently|temporarily) at capacity\b/i,
 ]
 
 function cap(ms: number) {
