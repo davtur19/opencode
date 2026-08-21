@@ -3,7 +3,7 @@ import { SessionV1 } from "@opencode-ai/core/v1/session"
 import { Database } from "@opencode-ai/core/database/database"
 import { LayerNode } from "@opencode-ai/core/effect/layer-node"
 import { SessionProjector } from "@opencode-ai/core/session/projector"
-import { Deferred, Effect, Exit, Fiber, Layer } from "effect"
+import { Cause, Deferred, Effect, Exit, Fiber, Layer } from "effect"
 import { Agent } from "../../src/agent/agent"
 import { BackgroundJob } from "@/background/job"
 import { EventV2Bridge } from "@/event-v2-bridge"
@@ -100,6 +100,8 @@ function stubOps(opts?: {
   onPrompt?: (input: SessionPrompt.PromptInput) => void
   text?: string
   synthetic?: string
+  error?: NonNullable<SessionV1.Assistant["error"]>
+  toolError?: string
 }): TaskPromptOps {
   return {
     cancel: () => Effect.void,
@@ -107,12 +109,18 @@ function stubOps(opts?: {
     prompt: (input) =>
       Effect.sync(() => {
         opts?.onPrompt?.(input)
-        return reply(input, opts?.text ?? "done", opts?.synthetic)
+        return reply(input, opts?.text ?? "done", opts?.synthetic, opts?.error, opts?.toolError)
       }),
   }
 }
 
-function reply(input: SessionPrompt.PromptInput, text: string, synthetic?: string): SessionV1.WithParts {
+function reply(
+  input: SessionPrompt.PromptInput,
+  text: string,
+  synthetic?: string,
+  error?: NonNullable<SessionV1.Assistant["error"]>,
+  toolError?: string,
+): SessionV1.WithParts {
   const id = MessageID.ascending()
   return {
     info: {
@@ -129,6 +137,7 @@ function reply(input: SessionPrompt.PromptInput, text: string, synthetic?: strin
       providerID: input.model?.providerID ?? ref.providerID,
       time: { created: Date.now() },
       finish: "stop",
+      error,
     },
     parts: [
       ...(synthetic
@@ -150,6 +159,24 @@ function reply(input: SessionPrompt.PromptInput, text: string, synthetic?: strin
         type: "text",
         text,
       },
+      ...(toolError
+        ? [
+            {
+              id: PartID.ascending(),
+              messageID: id,
+              sessionID: input.sessionID,
+              type: "tool" as const,
+              tool: "read",
+              callID: "call-1",
+              state: {
+                status: "error" as const,
+                input: { filePath: "/external" },
+                error: toolError,
+                time: { start: Date.now(), end: Date.now() },
+              },
+            },
+          ]
+        : []),
     ],
   }
 }
@@ -269,6 +296,93 @@ describe("tool.task", () => {
       expect(result.output).toContain("resumed")
       expect(seen?.sessionID).toBe(child.id)
       expect(seen?.variant).toBe("xhigh")
+    }),
+  )
+
+  it.instance("execute surfaces child errors with a resumable task_id", () =>
+    Effect.gen(function* () {
+      const sessions = yield* Session.Service
+      const { chat, assistant } = yield* seed()
+      const tool = yield* TaskTool
+      const def = yield* tool.init()
+
+      const exit = yield* def
+        .execute(
+          {
+            description: "inspect bug",
+            prompt: "look into the cache key path",
+            subagent_type: "general",
+          },
+          {
+            sessionID: chat.id,
+            messageID: assistant.id,
+            agent: "build",
+            abort: new AbortController().signal,
+            extra: {
+              promptOps: stubOps({
+                text: "",
+                error: new SessionV1.APIError({ message: "Network connection lost", isRetryable: false }).toObject(),
+              }),
+            },
+            messages: [],
+            metadata: () => Effect.void,
+            ask: () => Effect.void,
+          },
+        )
+        .pipe(Effect.exit)
+
+      expect(Exit.isFailure(exit)).toBe(true)
+      if (Exit.isSuccess(exit)) throw new Error("expected task failure")
+      const child = (yield* sessions.children(chat.id))[0]
+      expect(child).toBeDefined()
+      const failure = Cause.squash(exit.cause)
+      expect(failure).toBeInstanceOf(Error)
+      if (!(failure instanceof Error)) throw new Error("expected Error defect")
+      expect(failure.message).toBe(`Subagent failed (task_id: ${child?.id}): Network connection lost`)
+    }),
+  )
+
+  it.instance("execute surfaces terminal child tool errors with a resumable task_id", () =>
+    Effect.gen(function* () {
+      const sessions = yield* Session.Service
+      const { chat, assistant } = yield* seed()
+      const tool = yield* TaskTool
+      const def = yield* tool.init()
+
+      const exit = yield* def
+        .execute(
+          {
+            description: "inspect external directory",
+            prompt: "read the external directory",
+            subagent_type: "general",
+          },
+          {
+            sessionID: chat.id,
+            messageID: assistant.id,
+            agent: "build",
+            abort: new AbortController().signal,
+            extra: {
+              promptOps: stubOps({
+                text: "I will inspect the directory.",
+                toolError: "The user rejected permission to use this specific tool call.",
+              }),
+            },
+            messages: [],
+            metadata: () => Effect.void,
+            ask: () => Effect.void,
+          },
+        )
+        .pipe(Effect.exit)
+
+      expect(Exit.isFailure(exit)).toBe(true)
+      if (Exit.isSuccess(exit)) throw new Error("expected task failure")
+      const child = (yield* sessions.children(chat.id))[0]
+      const failure = Cause.squash(exit.cause)
+      expect(failure).toBeInstanceOf(Error)
+      if (!(failure instanceof Error)) throw new Error("expected Error defect")
+      expect(failure.message).toBe(
+        `Subagent failed (task_id: ${child?.id}): The user rejected permission to use this specific tool call.`,
+      )
     }),
   )
 

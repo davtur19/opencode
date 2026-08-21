@@ -231,13 +231,24 @@ export const TaskTool = Tool.define(
           agent: next.name,
           parts,
         })
+        if (result.info.role === "assistant" && result.info.error) {
+          const message =
+            "message" in result.info.error.data && typeof result.info.error.data.message === "string"
+              ? result.info.error.data.message
+              : result.info.error.name
+          return yield* Effect.fail(new Error(`Subagent failed (task_id: ${nextSession.id}): ${message}`))
+        }
+        const failed = result.parts.findLast((item) => item.type === "tool" && item.state.status === "error")
+        if (failed?.type === "tool" && failed.state.status === "error") {
+          return yield* Effect.fail(new Error(`Subagent failed (task_id: ${nextSession.id}): ${failed.state.error}`))
+        }
         // Prefer the last real text part: synthetic parts (e.g. "Called the
         // Read tool with the following input: ...") are prompt scaffolding, not
         // user-facing task output, and they break the rendered formatting.
         const textParts = result.parts.filter(
           (item): item is SessionV1.TextPart => item.type === "text" && !item.synthetic,
         )
-        return textParts.at(-1)?.text ?? result.parts.findLast((item) => item.type === "text")?.text ?? ""
+        return textParts.at(-1)?.text ?? ""
       })
 
       const inject = Effect.fn("TaskTool.injectBackgroundResult")(function* (
