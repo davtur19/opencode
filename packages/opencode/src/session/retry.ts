@@ -43,9 +43,11 @@ export const TURN_RETRY_LIMIT = 4
 // are per-request upstream failures on their side and the next attempt usually
 // lands on a healthy backend, so these get a tighter and more insistent
 // schedule than generic transient errors: a fixed short interval kept up for a
-// bounded window (NETWORK_STREAM_RETRY_MAX_ATTEMPTS * interval ~= 30s).
+// bounded wall-clock window. The deadline (not just the attempt cap) stops the
+// loop even when every attempt itself takes seconds before failing.
 export const NETWORK_STREAM_RETRY_INTERVAL = 500
-export const NETWORK_STREAM_RETRY_MAX_ATTEMPTS = 60 // 60 x 500ms ~= 30 seconds
+export const NETWORK_STREAM_RETRY_WINDOW = 30_000
+export const NETWORK_STREAM_RETRY_MAX_ATTEMPTS = 60 // hard cap; window above usually binds first
 export const NETWORK_STREAM_TURN_RETRY_LIMIT = 6
 
 const GATEWAY_UPSTREAM_ERROR_PATTERNS = [
@@ -284,18 +286,29 @@ export function policy(opts: {
   parse: (error: unknown) => Err
   set: (input: { attempt: number; message: string; action?: Retryable["action"]; next: number }) => Effect.Effect<void>
 }) {
+  // Wall-clock deadline for gateway-upstream failures: bounds total time spent
+  // in the tight loop even when every attempt itself takes seconds to fail.
+  let streamRetryDeadline: number | undefined
   return Schedule.fromStepWithMetadata(
     Effect.succeed((meta: Schedule.InputMetadata<unknown>) => {
       const error = opts.parse(meta.input)
+      const networkStream = isNetworkStreamError(error)
+      if (!networkStream) streamRetryDeadline = undefined
       // Cap total attempts (1 initial + N - 1 retries) instead of retrying
       // forever. Returning Cause.done stops the retry loop. Gateway
       // network_error streams get their own, more insistent cap.
-      const maxAttempts = isNetworkStreamError(error) ? NETWORK_STREAM_RETRY_MAX_ATTEMPTS : RETRY_MAX_ATTEMPTS
+      const maxAttempts = networkStream ? NETWORK_STREAM_RETRY_MAX_ATTEMPTS : RETRY_MAX_ATTEMPTS
       if (meta.attempt >= maxAttempts) return Cause.done(meta.attempt)
+      if (networkStream && streamRetryDeadline !== undefined && Date.now() >= streamRetryDeadline)
+        return Cause.done(meta.attempt)
       const retry = retryable(error, opts.provider, { retry401: opts.retry401 })
       if (!retry) return Cause.done(meta.attempt)
       return Effect.gen(function* () {
-        const wait = delay(meta.attempt, SessionV1.APIError.isInstance(error) ? error : undefined)
+        if (networkStream && streamRetryDeadline === undefined)
+          streamRetryDeadline = Date.now() + NETWORK_STREAM_RETRY_WINDOW
+        const wait = networkStream
+          ? NETWORK_STREAM_RETRY_INTERVAL
+          : delay(meta.attempt, SessionV1.APIError.isInstance(error) ? error : undefined)
         const now = yield* Clock.currentTimeMillis
         yield* opts.set({
           attempt: meta.attempt,
