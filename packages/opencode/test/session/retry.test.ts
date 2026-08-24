@@ -28,6 +28,16 @@ function apiError(headers?: Record<string, string>): SessionV1.APIError {
   )
 }
 
+function networkStreamError(headers?: Record<string, string>): SessionV1.APIError {
+  return Schema.decodeUnknownSync(SessionV1.APIError.Schema)(
+    new SessionV1.APIError({
+      message: "Provider finish_reason: network_error",
+      isRetryable: true,
+      responseHeaders: headers,
+    }).toObject(),
+  )
+}
+
 function wrap(message: unknown): ReturnType<NamedError["toObject"]> {
   return { name: "", data: { message } }
 }
@@ -37,6 +47,17 @@ describe("session.retry.delay", () => {
     const error = apiError()
     const delays = Array.from({ length: 10 }, (_, index) => SessionRetry.delay(index + 1, error, 0))
     expect(delays).toStrictEqual([2000, 4000, 8000, 16000, 30000, 30000, 30000, 30000, 30000, 30000])
+  })
+  test("retries gateway network_error streams on a fixed interval", () => {
+    const error = networkStreamError()
+    expect(SessionRetry.NETWORK_STREAM_RETRY_MAX_ATTEMPTS * SessionRetry.NETWORK_STREAM_RETRY_INTERVAL).toBe(30000)
+    expect(SessionRetry.delay(1, error)).toBe(500)
+    expect(SessionRetry.delay(10, error)).toBe(500)
+    expect(SessionRetry.delay(59, error)).toBe(500)
+  })
+  test("ignores server retry hints on gateway network_error streams", () => {
+    expect(SessionRetry.delay(1, networkStreamError({ "retry-after": "120" }))).toBe(500)
+    expect(SessionRetry.delay(3, networkStreamError({ "retry-after-ms": "250" }))).toBe(500)
   })
 
   test("adds jitter to exponential delays", () => {

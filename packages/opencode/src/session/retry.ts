@@ -37,6 +37,21 @@ export const RETRY_MAX_ATTEMPTS = 6 // 1 initial attempt + 5 retries
 // from scratch up to this many total attempts before being finalized as error.
 export const TURN_RETRY_LIMIT = 4
 
+// The opencode zen gateway sometimes dies mid-generation and reports it as a
+// final SSE chunk with finish_reason "network_error" instead of dropping the
+// connection. The failure is per-request and the next attempt usually lands on
+// a healthy upstream, so this specific error gets a tighter and more insistent
+// schedule than generic transient errors: a fixed short interval kept up for a
+// bounded window (NETWORK_STREAM_RETRY_MAX_ATTEMPTS * interval ~= 30s).
+export const NETWORK_STREAM_RETRY_INTERVAL = 500
+export const NETWORK_STREAM_RETRY_MAX_ATTEMPTS = 60 // 60 x 500ms ~= 30 seconds
+export const NETWORK_STREAM_TURN_RETRY_LIMIT = 6
+
+export function isNetworkStreamError(error: unknown) {
+  if (!SessionV1.APIError.isInstance(error)) return false
+  return /finish_reason:\s*network_error/i.test(error.data.message)
+}
+
 const RETRYABLE_MESSAGE_PATTERNS = [
   /429|500|502|503|504|524/i,
   /rate increased too quickly|rate limit|rate-limit|rate_limit|too many requests/i,
@@ -57,6 +72,10 @@ function cap(ms: number) {
 }
 
 export function delay(attempt: number, error?: SessionV1.APIError, random = Math.random()) {
+  // Gateway network_error streams get a fixed tight interval. The gateway never
+  // sends retry hints for these (verified empirically), so server headers are
+  // deliberately ignored here rather than slowing recovery.
+  if (error && isNetworkStreamError(error)) return NETWORK_STREAM_RETRY_INTERVAL
   if (error) {
     const headers = error.data.responseHeaders
     if (headers) {
@@ -260,10 +279,12 @@ export function policy(opts: {
 }) {
   return Schedule.fromStepWithMetadata(
     Effect.succeed((meta: Schedule.InputMetadata<unknown>) => {
-      // Cap total attempts (1 initial + RETRY_MAX_ATTEMPTS - 1 retries) instead
-      // of retrying forever. Returning Cause.done stops the retry loop.
-      if (meta.attempt >= RETRY_MAX_ATTEMPTS) return Cause.done(meta.attempt)
       const error = opts.parse(meta.input)
+      // Cap total attempts (1 initial + N - 1 retries) instead of retrying
+      // forever. Returning Cause.done stops the retry loop. Gateway
+      // network_error streams get their own, more insistent cap.
+      const maxAttempts = isNetworkStreamError(error) ? NETWORK_STREAM_RETRY_MAX_ATTEMPTS : RETRY_MAX_ATTEMPTS
+      if (meta.attempt >= maxAttempts) return Cause.done(meta.attempt)
       const retry = retryable(error, opts.provider, { retry401: opts.retry401 })
       if (!retry) return Cause.done(meta.attempt)
       return Effect.gen(function* () {
@@ -301,9 +322,14 @@ export function turnPolicy(opts: {
 }) {
   return Schedule.fromStepWithMetadata(
     Effect.succeed((meta: Schedule.InputMetadata<unknown>) => {
-      // Cap total attempts at TURN_RETRY_LIMIT instead of retrying forever.
-      if (meta.attempt >= TURN_RETRY_LIMIT) return Cause.done(meta.attempt)
+      // Cap total attempts instead of retrying forever. Gateway network_error
+      // streams get their own, more insistent cap.
       const failure = meta.input
+      const maxAttempts =
+        failure instanceof TransientTurnError && isNetworkStreamError(failure.error)
+          ? NETWORK_STREAM_TURN_RETRY_LIMIT
+          : TURN_RETRY_LIMIT
+      if (meta.attempt >= maxAttempts) return Cause.done(meta.attempt)
       if (!(failure instanceof TransientTurnError)) return Cause.done(meta.attempt)
       return Effect.gen(function* () {
         const wait = delay(meta.attempt, SessionV1.APIError.isInstance(failure.error) ? failure.error : undefined)
