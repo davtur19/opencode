@@ -38,18 +38,25 @@ export const RETRY_MAX_ATTEMPTS = 6 // 1 initial attempt + 5 retries
 export const TURN_RETRY_LIMIT = 4
 
 // The opencode zen gateway sometimes dies mid-generation and reports it as a
-// final SSE chunk with finish_reason "network_error" instead of dropping the
-// connection. The failure is per-request and the next attempt usually lands on
-// a healthy upstream, so this specific error gets a tighter and more insistent
+// final SSE chunk with finish_reason "network_error", or refuses the request
+// outright with 503 "Upstream request failed: Endpoint is unavailable". Both
+// are per-request upstream failures on their side and the next attempt usually
+// lands on a healthy backend, so these get a tighter and more insistent
 // schedule than generic transient errors: a fixed short interval kept up for a
 // bounded window (NETWORK_STREAM_RETRY_MAX_ATTEMPTS * interval ~= 30s).
 export const NETWORK_STREAM_RETRY_INTERVAL = 500
 export const NETWORK_STREAM_RETRY_MAX_ATTEMPTS = 60 // 60 x 500ms ~= 30 seconds
 export const NETWORK_STREAM_TURN_RETRY_LIMIT = 6
 
+const GATEWAY_UPSTREAM_ERROR_PATTERNS = [
+  /finish_reason:\s*network_error/i,
+  /upstream request failed/i,
+  /endpoint is unavailable/i,
+]
+
 export function isNetworkStreamError(error: unknown) {
   if (!SessionV1.APIError.isInstance(error)) return false
-  return /finish_reason:\s*network_error/i.test(error.data.message)
+  return GATEWAY_UPSTREAM_ERROR_PATTERNS.some((pattern) => pattern.test(error.data.message))
 }
 
 const RETRYABLE_MESSAGE_PATTERNS = [
