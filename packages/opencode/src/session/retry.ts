@@ -61,6 +61,21 @@ export function isNetworkStreamError(error: unknown) {
   return GATEWAY_UPSTREAM_ERROR_PATTERNS.some((pattern) => pattern.test(error.data.message))
 }
 
+const RATE_LIMIT_ERROR_PATTERNS = [/rate_limit_exceeded/i, /rate limit exceeded/i]
+
+export function isRateLimitError(error: unknown) {
+  if (!SessionV1.APIError.isInstance(error)) return false
+  return RATE_LIMIT_ERROR_PATTERNS.some((pattern) => pattern.test(error.data.message))
+}
+
+// Rate-limit errors (e.g. "[rate_limit_exceeded] Rate limit exceeded") get the
+// same tight fixed-interval treatment as gateway network errors. The zen gateway
+// clears these quickly so aggressive retry lands a success within the window.
+export const RATE_LIMIT_RETRY_INTERVAL = 1000
+export const RATE_LIMIT_RETRY_WINDOW = 60_000
+export const RATE_LIMIT_RETRY_MAX_ATTEMPTS = 30
+export const RATE_LIMIT_TURN_RETRY_LIMIT = 5
+
 const RETRYABLE_MESSAGE_PATTERNS = [
   /429|500|502|503|504|524/i,
   /rate increased too quickly|rate limit|rate-limit|rate_limit|too many requests/i,
@@ -81,6 +96,11 @@ function cap(ms: number) {
 }
 
 export function delay(attempt: number, error?: SessionV1.APIError, random = Math.random()) {
+  // Rate limit errors get a tight fixed-interval treatment: the zen gateway
+  // clears these quickly and server retry hints are unreliable here. Checked
+  // before network stream errors because rate limit messages also contain
+  // "upstream request failed" which would otherwise match first.
+  if (error && isRateLimitError(error)) return RATE_LIMIT_RETRY_INTERVAL
   // Gateway network_error streams get a fixed tight interval. The gateway never
   // sends retry hints for these (verified empirically), so server headers are
   // deliberately ignored here rather than slowing recovery.
@@ -289,26 +309,45 @@ export function policy(opts: {
   // Wall-clock deadline for gateway-upstream failures: bounds total time spent
   // in the tight loop even when every attempt itself takes seconds to fail.
   let streamRetryDeadline: number | undefined
+  // Rate limit errors get their own deadline: the zen gateway clears these
+  // quickly so we keep a tight loop for up to RATE_LIMIT_RETRY_WINDOW.
+  let rateLimitDeadline: number | undefined
   return Schedule.fromStepWithMetadata(
     Effect.succeed((meta: Schedule.InputMetadata<unknown>) => {
       const error = opts.parse(meta.input)
-      const networkStream = isNetworkStreamError(error)
+      // Rate limit errors must be checked before network stream errors because
+      // rate limit messages also contain "upstream request failed" which would
+      // otherwise match isNetworkStreamError first.
+      const rateLimit = isRateLimitError(error)
+      const networkStream = !rateLimit && isNetworkStreamError(error)
       if (!networkStream) streamRetryDeadline = undefined
+      if (!rateLimit) rateLimitDeadline = undefined
       // Cap total attempts (1 initial + N - 1 retries) instead of retrying
-      // forever. Returning Cause.done stops the retry loop. Gateway
-      // network_error streams get their own, more insistent cap.
-      const maxAttempts = networkStream ? NETWORK_STREAM_RETRY_MAX_ATTEMPTS : RETRY_MAX_ATTEMPTS
+      // forever. Returning Cause.done stops the retry loop. Rate limit errors
+      // and gateway network_error streams each get their own, more insistent
+      // cap.
+      const maxAttempts = rateLimit
+        ? RATE_LIMIT_RETRY_MAX_ATTEMPTS
+        : networkStream
+          ? NETWORK_STREAM_RETRY_MAX_ATTEMPTS
+          : RETRY_MAX_ATTEMPTS
       if (meta.attempt >= maxAttempts) return Cause.done(meta.attempt)
       if (networkStream && streamRetryDeadline !== undefined && Date.now() >= streamRetryDeadline)
+        return Cause.done(meta.attempt)
+      if (rateLimit && rateLimitDeadline !== undefined && Date.now() >= rateLimitDeadline)
         return Cause.done(meta.attempt)
       const retry = retryable(error, opts.provider, { retry401: opts.retry401 })
       if (!retry) return Cause.done(meta.attempt)
       return Effect.gen(function* () {
         if (networkStream && streamRetryDeadline === undefined)
           streamRetryDeadline = Date.now() + NETWORK_STREAM_RETRY_WINDOW
-        const wait = networkStream
-          ? NETWORK_STREAM_RETRY_INTERVAL
-          : delay(meta.attempt, SessionV1.APIError.isInstance(error) ? error : undefined)
+        if (rateLimit && rateLimitDeadline === undefined)
+          rateLimitDeadline = Date.now() + RATE_LIMIT_RETRY_WINDOW
+        const wait = rateLimit
+          ? RATE_LIMIT_RETRY_INTERVAL
+          : networkStream
+            ? NETWORK_STREAM_RETRY_INTERVAL
+            : delay(meta.attempt, SessionV1.APIError.isInstance(error) ? error : undefined)
         const now = yield* Clock.currentTimeMillis
         yield* opts.set({
           attempt: meta.attempt,
@@ -343,12 +382,14 @@ export function turnPolicy(opts: {
   return Schedule.fromStepWithMetadata(
     Effect.succeed((meta: Schedule.InputMetadata<unknown>) => {
       // Cap total attempts instead of retrying forever. Gateway network_error
-      // streams get their own, more insistent cap.
+      // streams and rate limit errors each get their own, more insistent cap.
       const failure = meta.input
       const maxAttempts =
         failure instanceof TransientTurnError && isNetworkStreamError(failure.error)
           ? NETWORK_STREAM_TURN_RETRY_LIMIT
-          : TURN_RETRY_LIMIT
+          : failure instanceof TransientTurnError && isRateLimitError(failure.error)
+            ? RATE_LIMIT_TURN_RETRY_LIMIT
+            : TURN_RETRY_LIMIT
       if (meta.attempt >= maxAttempts) return Cause.done(meta.attempt)
       if (!(failure instanceof TransientTurnError)) return Cause.done(meta.attempt)
       return Effect.gen(function* () {

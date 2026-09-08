@@ -38,6 +38,16 @@ function networkStreamError(headers?: Record<string, string>): SessionV1.APIErro
   )
 }
 
+function rateLimitError(headers?: Record<string, string>): SessionV1.APIError {
+  return Schema.decodeUnknownSync(SessionV1.APIError.Schema)(
+    new SessionV1.APIError({
+      message: "Upstream request failed: [rate_limit_exceeded] Rate limit exceeded. Please retry after a brief wait.",
+      isRetryable: true,
+      responseHeaders: headers,
+    }).toObject(),
+  )
+}
+
 function wrap(message: unknown): ReturnType<NamedError["toObject"]> {
   return { name: "", data: { message } }
 }
@@ -66,6 +76,16 @@ describe("session.retry.delay", () => {
   test("ignores server retry hints on gateway network_error streams", () => {
     expect(SessionRetry.delay(1, networkStreamError({ "retry-after": "120" }))).toBe(500)
     expect(SessionRetry.delay(3, networkStreamError({ "retry-after-ms": "250" }))).toBe(500)
+  })
+  test("retries rate limit errors on a fixed interval", () => {
+    expect(SessionRetry.RATE_LIMIT_RETRY_WINDOW).toBe(60000)
+    expect(SessionRetry.delay(1, rateLimitError())).toBe(1000)
+    expect(SessionRetry.delay(10, rateLimitError())).toBe(1000)
+    expect(SessionRetry.delay(29, rateLimitError())).toBe(1000)
+  })
+  test("ignores server retry hints on rate limit errors", () => {
+    expect(SessionRetry.delay(1, rateLimitError({ "retry-after": "120" }))).toBe(1000)
+    expect(SessionRetry.delay(3, rateLimitError({ "retry-after-ms": "250" }))).toBe(1000)
   })
 
   test("adds jitter to exponential delays", () => {
@@ -692,6 +712,20 @@ describe("session.retry.retryable", () => {
     expect(SessionRetry.retryable(error, "opencode-go")?.action?.message).toBe(
       "Usage limit reached. It will reset in 15 minutes. To continue using this model now, enable usage from your available balance",
     )
+  })
+
+  test("retries rate_limit_exceeded gateway errors", () => {
+    const error = rateLimitError()
+    expect(SessionRetry.retryable(error, retryProvider)).toEqual({
+      message: "Upstream request failed: [rate_limit_exceeded] Rate limit exceeded. Please retry after a brief wait.",
+    })
+  })
+
+  test("isRateLimitError detects rate_limit_exceeded pattern", () => {
+    expect(SessionRetry.isRateLimitError(rateLimitError())).toBe(true)
+    expect(SessionRetry.isRateLimitError(apiError())).toBe(false)
+    expect(SessionRetry.isRateLimitError(networkStreamError())).toBe(false)
+    expect(SessionRetry.isRateLimitError(wrap("random error"))).toBe(false)
   })
 })
 
