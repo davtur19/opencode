@@ -35,24 +35,27 @@ describe("Runner", () => {
   )
 
   it.live(
-    "concurrent callers share the same run",
+    "concurrent callers each run their own work in FIFO order",
     Effect.gen(function* () {
       const s = yield* Scope.Scope
       const runner = Runner.make<string>(s)
       const calls = yield* Ref.make(0)
-      const work = Effect.gen(function* () {
-        yield* Ref.update(calls, (n) => n + 1)
-        yield* Effect.sleep("10 millis")
-        return "shared"
-      })
+      const work = (name: string) =>
+        Effect.gen(function* () {
+          yield* Ref.update(calls, (n) => n + 1)
+          yield* Effect.sleep("10 millis")
+          return name
+        })
 
-      const [a, b] = yield* Effect.all([runner.ensureRunning(work), runner.ensureRunning(work)], {
+      const [a, b] = yield* Effect.all([runner.ensureRunning(work("a")), runner.ensureRunning(work("b"))], {
         concurrency: "unbounded",
       })
 
-      expect(a).toBe("shared")
-      expect(b).toBe("shared")
-      expect(yield* Ref.get(calls)).toBe(1)
+      // Every caller's work runs exactly once and resolves with its own result —
+      // no work is silently dropped while another run is active.
+      expect(a).toBe("a")
+      expect(b).toBe("b")
+      expect(yield* Ref.get(calls)).toBe(2)
     }),
   )
 
@@ -87,7 +90,7 @@ describe("Runner", () => {
   )
 
   it.live(
-    "second ensureRunning ignores new work if already running",
+    "second ensureRunning queues behind running work instead of dropping it",
     Effect.gen(function* () {
       const s = yield* Scope.Scope
       const runner = Runner.make<string>(s)
@@ -108,8 +111,115 @@ describe("Runner", () => {
       })
 
       expect(a).toBe("first-result")
-      expect(b).toBe("first-result")
-      expect(yield* Ref.get(ran)).toEqual(["first"])
+      expect(b).toBe("second-result")
+      expect(yield* Ref.get(ran)).toEqual(["first", "second"])
+    }),
+  )
+
+  it.live(
+    "queued runs execute strictly FIFO and idle fires once the queue drains",
+    Effect.gen(function* () {
+      const s = yield* Scope.Scope
+      const order = yield* Ref.make<string[]>([])
+      const idles = yield* Ref.make(0)
+      const runner = Runner.make<string>(s, { onIdle: Ref.update(idles, (n) => n + 1) })
+      const gate = yield* Deferred.make<void>()
+
+      const head = yield* runner
+        .ensureRunning(
+          Effect.gen(function* () {
+            yield* Ref.update(order, (a) => [...a, "head"])
+            yield* Deferred.await(gate)
+            return "head"
+          }),
+        )
+        .pipe(Effect.forkChild)
+      yield* waitForState(runner, "Running")
+
+      const tail = ["one", "two", "three"].map((name) =>
+        runner
+          .ensureRunning(
+            Effect.gen(function* () {
+              yield* Ref.update(order, (a) => [...a, name])
+              return name
+            }),
+          )
+          .pipe(Effect.forkChild),
+      )
+      const fibers = yield* Effect.all(tail)
+      yield* Effect.yieldNow
+      // Still on the head run: nothing queued has started, runner still busy.
+      expect(yield* Ref.get(order)).toEqual(["head"])
+      expect(runner.busy).toBe(true)
+
+      yield* Deferred.succeed(gate, undefined)
+      const results = yield* Effect.all(fibers.map((fiber) => Fiber.join(fiber)))
+      expect(yield* Fiber.join(head)).toBe("head")
+      expect(results).toEqual(["one", "two", "three"])
+      expect(yield* Ref.get(order)).toEqual(["head", "one", "two", "three"])
+      expect(runner.state._tag).toBe("Idle")
+      expect(runner.busy).toBe(false)
+      expect(yield* Ref.get(idles)).toBe(1)
+    }),
+  )
+
+  it.live(
+    "interrupted queued waiter is removed and starts no orphan run",
+    Effect.gen(function* () {
+      const s = yield* Scope.Scope
+      const ran = yield* Ref.make<string[]>([])
+      const runner = Runner.make<string>(s)
+      const gate = yield* Deferred.make<void>()
+
+      const head = yield* runner
+        .ensureRunning(
+          Effect.gen(function* () {
+            yield* Deferred.await(gate)
+            return "head"
+          }),
+        )
+        .pipe(Effect.forkChild)
+      yield* waitForState(runner, "Running")
+
+      const orphan = yield* runner
+        .ensureRunning(
+          Effect.gen(function* () {
+            yield* Ref.update(ran, (a) => [...a, "orphan"])
+            return "orphan"
+          }),
+        )
+        .pipe(Effect.forkChild)
+      yield* Effect.yieldNow
+      yield* Fiber.interrupt(orphan)
+
+      yield* Deferred.succeed(gate, undefined)
+      expect(yield* Fiber.join(head)).toBe("head")
+      // The interrupted waiter dequeued itself: nothing else ever ran.
+      expect(yield* Ref.get(ran)).toEqual([])
+      expect(runner.state._tag).toBe("Idle")
+    }),
+  )
+
+  it.live(
+    "queued run failure reaches only its own caller",
+    Effect.gen(function* () {
+      const s = yield* Scope.Scope
+      const runner = Runner.make<string, string>(s)
+      const gate = yield* Deferred.make<void>()
+
+      const head = yield* runner
+        .ensureRunning(Deferred.await(gate).pipe(Effect.as("head")))
+        .pipe(Effect.forkChild)
+      yield* waitForState(runner, "Running")
+
+      const bad = yield* runner.ensureRunning(Effect.fail("boom")).pipe(Effect.exit, Effect.forkChild)
+      const good = yield* runner.ensureRunning(Effect.succeed("good")).pipe(Effect.forkChild)
+
+      yield* Deferred.succeed(gate, undefined)
+      expect(yield* Fiber.join(head)).toBe("head")
+      expect(Exit.isFailure(yield* Fiber.join(bad))).toBe(true)
+      expect(yield* Fiber.join(good)).toBe("good")
+      expect(runner.state._tag).toBe("Idle")
     }),
   )
 
@@ -185,6 +295,43 @@ describe("Runner", () => {
       expect(Exit.isSuccess(exitB)).toBe(true)
       if (Exit.isSuccess(exitA)) expect(exitA.value).toBe("fallback")
       if (Exit.isSuccess(exitB)) expect(exitB.value).toBe("fallback")
+    }),
+  )
+
+  it.live(
+    "cancel drains a multi-item queue and resolves every waiter",
+    Effect.gen(function* () {
+      const s = yield* Scope.Scope
+      const runner = Runner.make<string>(s, { onInterrupt: Effect.succeed("fallback") })
+      const ran = yield* Ref.make<string[]>([])
+
+      const head = yield* runner.ensureRunning(Effect.never.pipe(Effect.as("x"))).pipe(Effect.forkChild)
+      yield* waitForState(runner, "Running")
+      const queued = yield* Effect.all(
+        ["one", "two"].map((name) =>
+          runner
+            .ensureRunning(
+              Effect.gen(function* () {
+                yield* Ref.update(ran, (a) => [...a, name])
+                return name
+              }),
+            )
+            .pipe(Effect.forkChild),
+        ),
+      )
+      yield* Effect.yieldNow
+
+      yield* runner.cancel
+      expect(runner.busy).toBe(false)
+      expect(runner.state._tag).toBe("Idle")
+
+      const exits = yield* Effect.all([head, ...queued].map((fiber) => Fiber.await(fiber)))
+      for (const exit of exits) {
+        expect(Exit.isSuccess(exit)).toBe(true)
+        if (Exit.isSuccess(exit)) expect(exit.value).toBe("fallback")
+      }
+      // No queued work ever started.
+      expect(yield* Ref.get(ran)).toEqual([])
     }),
   )
 
@@ -382,7 +529,7 @@ describe("Runner", () => {
   )
 
   it.live(
-    "multiple ensureRunning callers share the queued run behind shell",
+    "multiple ensureRunning callers each run queued work behind shell",
     Effect.gen(function* () {
       const s = yield* Scope.Scope
       const runner = Runner.make<string>(s)
@@ -392,12 +539,13 @@ describe("Runner", () => {
       const sh = yield* runner.startShell(Deferred.await(gate).pipe(Effect.as("shell"))).pipe(Effect.forkChild)
       yield* waitForState(runner, "Shell")
 
-      const work = Effect.gen(function* () {
-        yield* Ref.update(calls, (n) => n + 1)
-        return "run"
-      })
-      const a = yield* runner.ensureRunning(work).pipe(Effect.forkChild)
-      const b = yield* runner.ensureRunning(work).pipe(Effect.forkChild)
+      const work = (name: string) =>
+        Effect.gen(function* () {
+          yield* Ref.update(calls, (n) => n + 1)
+          return name
+        })
+      const a = yield* runner.ensureRunning(work("a")).pipe(Effect.forkChild)
+      const b = yield* runner.ensureRunning(work("b")).pipe(Effect.forkChild)
       yield* waitForState(runner, "ShellThenRun")
 
       yield* Deferred.succeed(gate, undefined)
@@ -406,7 +554,10 @@ describe("Runner", () => {
       const [exitA, exitB] = yield* Effect.all([Fiber.await(a), Fiber.await(b)])
       expect(Exit.isSuccess(exitA)).toBe(true)
       expect(Exit.isSuccess(exitB)).toBe(true)
-      expect(yield* Ref.get(calls)).toBe(1)
+      if (Exit.isSuccess(exitA)) expect(exitA.value).toBe("a")
+      if (Exit.isSuccess(exitB)) expect(exitB.value).toBe("b")
+      expect(yield* Ref.get(calls)).toBe(2)
+      expect(runner.state._tag).toBe("Idle")
     }),
   )
 

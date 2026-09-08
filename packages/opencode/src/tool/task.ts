@@ -10,7 +10,7 @@ import { Agent } from "../agent/agent"
 import { deriveSubagentSessionPermission } from "../agent/subagent-permissions"
 import type { SessionPrompt } from "../session/prompt"
 import { Config } from "@/config/config"
-import { Effect, Exit, Schema, Scope } from "effect"
+import { Effect, Exit, Schema, Scope, Cause } from "effect"
 import { EffectBridge } from "@/effect/bridge"
 import { RuntimeFlags } from "@/effect/runtime-flags"
 import { Database } from "@opencode-ai/core/database/database"
@@ -277,7 +277,19 @@ export const TaskTool = Tool.define(
               },
             ],
           })
-          .pipe(Effect.ignore, Effect.forkIn(scope, { startImmediately: true }))
+          // The runner now queues this behind any active turn, so injection is
+          // only lost on genuine failure (deleted session, defect): log those
+          // loudly instead of swallowing them into Effect.ignore.
+          .pipe(
+            Effect.tapCause((cause: Cause.Cause<never>) =>
+              Effect.logError("background task result injection failed", {
+                taskId: nextSession.id,
+                cause: Cause.pretty(cause),
+              }),
+            ),
+            Effect.ignore,
+            Effect.forkIn(scope, { startImmediately: true }),
+          )
       })
 
       const notify = Effect.fn("TaskTool.notifyBackgroundResult")(function* (jobID: string) {
