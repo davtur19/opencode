@@ -297,7 +297,14 @@ export const TaskTool = Tool.define(
           Effect.flatMap((result) => {
             if (result.info?.status === "completed") return inject("completed", result.info.output ?? "")
             if (result.info?.status === "error") return inject("error", result.info.error ?? "")
-            return Effect.void
+            // A cancelled job (or one that vanished, e.g. service restart wiped
+            // the process-local registry) must still report back: dropping it
+            // here leaves the orchestrator waiting on a result that never comes.
+            const reason =
+              result.info?.status === "cancelled"
+                ? `Background task was cancelled (job ${jobID})`
+                : `Background task did not complete (job ${jobID} not found)`
+            return inject("error", reason)
           }),
           Effect.forkIn(scope, { startImmediately: true }),
         )
@@ -377,6 +384,10 @@ export const TaskTool = Tool.define(
             if (result?.metadata?.background === true) return backgroundResult()
             if (result?.status === "error") return yield* Effect.fail(new Error(result.error ?? "Task failed"))
             if (result?.status === "cancelled") return yield* Effect.fail(new Error("Task cancelled"))
+            // The job vanished (e.g. service restart wiped the process-local
+            // registry): fail loudly instead of reporting an empty success.
+            if (!result)
+              return yield* Effect.fail(new Error(`Task did not complete (job ${nextSession.id} not found)`))
             return {
               title: params.description,
               metadata,

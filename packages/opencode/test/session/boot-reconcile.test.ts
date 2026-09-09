@@ -10,6 +10,7 @@ import {
   SessionBootReconcile,
   QUESTION_ORPHAN_MESSAGE,
   GENERIC_ORPHAN_MESSAGE,
+  BACKGROUND_TASK_ORPHAN_MESSAGE,
 } from "@/session/boot-reconcile"
 import { MessageID, PartID, SessionID } from "@/session/schema"
 import { Question, NotFoundError } from "@/question"
@@ -53,6 +54,7 @@ function toolPart(
   messageID: string,
   id: string,
   state: SessionV1.ToolPart["state"],
+  tool = "question",
 ): SessionV1.ToolPart {
   return {
     id: PartID.make(id),
@@ -60,7 +62,7 @@ function toolPart(
     messageID: MessageID.make(messageID),
     type: "tool",
     callID: "call_1",
-    tool: "question",
+    tool,
     state,
   } as unknown as SessionV1.ToolPart
 }
@@ -91,6 +93,56 @@ function completedPart(sid: SessionID, messageID: string, id: string): SessionV1
     metadata: {},
     time: { start: 0, end: 1 },
   })
+}
+
+function backgroundTaskPlaceholderPart(
+  sid: SessionID,
+  messageID: string,
+  id: string,
+  childID: SessionID,
+): SessionV1.ToolPart {
+  return toolPart(
+    sid,
+    messageID,
+    id,
+    {
+      status: "completed",
+      input: { prompt: "do work", description: "bg task", subagent_type: "subagent" },
+      output: `<task id="${childID}" state="running">\n<summary>Background task started</summary>\n</task>`,
+      title: "bg task",
+      metadata: { parentSessionId: sid, sessionId: childID, background: true, jobId: childID },
+      time: { start: 0, end: 1 },
+    },
+    "task",
+  )
+}
+
+function finalizedAssistant(
+  sid: SessionID,
+  id: string,
+  parentID: string,
+  created = 0,
+): SessionV1.Assistant {
+  return {
+    ...assistantInfo(sid, id, parentID, created),
+    time: { created, completed: created + 1 },
+    finish: "stop",
+  } as unknown as SessionV1.Assistant
+}
+
+function textPart(
+  sid: SessionID,
+  messageID: string,
+  id: string,
+  text: string,
+): SessionV1.TextPart {
+  return {
+    id: PartID.make(id),
+    sessionID: sid,
+    messageID: MessageID.make(messageID),
+    type: "text",
+    text,
+  } as unknown as SessionV1.TextPart
 }
 
 describe("session.boot-reconcile", () => {
@@ -294,6 +346,137 @@ describe("session.boot-reconcile", () => {
         const p = after.value.parts.find((x) => x.id === PartID.make("prt_question"))
         expect(p?.type).toBe("tool")
         if (p?.type === "tool") expect(p.state.status).toBe("running")
+      }
+    }),
+  )
+
+  it.instance("recovers an orphaned background task from a completed child session", () =>
+    Effect.gen(function* () {
+      const sessions = yield* Session.Service
+      const reconcile = yield* SessionBootReconcile.Service
+
+      const parent = yield* sessions.create({ title: "bg parent" })
+      const child = yield* sessions.create({ parentID: parent.id, title: "bg child (@subagent subagent)" })
+
+      yield* sessions.updateMessage(finalizedAssistant(parent.id, "msg_parent", "msg_user"))
+      yield* sessions.updatePart(backgroundTaskPlaceholderPart(parent.id, "msg_parent", "prt_bgtask", child.id))
+      yield* sessions.updateMessage(finalizedAssistant(child.id, "msg_child", "msg_child_user"))
+      yield* sessions.updatePart(textPart(child.id, "msg_child", "prt_child_text", "child result here"))
+      yield* sessions.flushNow(parent.id)
+      yield* sessions.flushNow(child.id)
+
+      yield* reconcile.run()
+      yield* sessions.flushNow(parent.id)
+
+      const after = yield* sessions.messages({ sessionID: parent.id }).pipe(Effect.orDie)
+      const p = after.flatMap((m) => m.parts).find((x) => x.id === PartID.make("prt_bgtask"))
+      expect(p?.type).toBe("tool")
+      if (p?.type === "tool" && p.state.status === "completed") {
+        expect(p.state.output).toContain("child result here")
+        expect(p.state.output).toContain(`<task id="${child.id}" state="completed" />`)
+        expect(p.state.output).not.toContain('state="running"')
+      } else {
+        expect("expected a completed tool part").toBe("but got something else")
+      }
+
+      // Idempotent: a second pass finds no running placeholder left to recover.
+      yield* reconcile.run()
+      yield* sessions.flushNow(parent.id)
+      const again = yield* sessions.messages({ sessionID: parent.id }).pipe(Effect.orDie)
+      const q = again.flatMap((m) => m.parts).find((x) => x.id === PartID.make("prt_bgtask"))
+      expect(q?.type).toBe("tool")
+      if (q?.type === "tool" && q.state.status === "completed") {
+        expect(q.state.output).toContain("child result here")
+      }
+    }),
+  )
+
+  it.instance("marks an orphaned background task as error when the child session is missing", () =>
+    Effect.gen(function* () {
+      const sessions = yield* Session.Service
+      const reconcile = yield* SessionBootReconcile.Service
+
+      const parent = yield* sessions.create({ title: "bg parent missing child" })
+      const child = yield* sessions.create({ parentID: parent.id, title: "bg child gone" })
+
+      yield* sessions.updateMessage(finalizedAssistant(parent.id, "msg_parent", "msg_user"))
+      yield* sessions.updatePart(backgroundTaskPlaceholderPart(parent.id, "msg_parent", "prt_bgtask", child.id))
+      yield* sessions.flushNow(parent.id)
+
+      yield* sessions.remove(child.id)
+
+      yield* reconcile.run()
+      yield* sessions.flushNow(parent.id)
+
+      const after = yield* sessions.messages({ sessionID: parent.id }).pipe(Effect.orDie)
+      const p = after.flatMap((m) => m.parts).find((x) => x.id === PartID.make("prt_bgtask"))
+      expect(p?.type).toBe("tool")
+      if (p?.type === "tool") {
+        expect(p.state.status).toBe("error")
+        if (p.state.status === "error") {
+          expect(p.state.error).toContain(BACKGROUND_TASK_ORPHAN_MESSAGE)
+        }
+      }
+    }),
+  )
+
+  it.instance("marks an orphaned background task as error when the child turn failed", () =>
+    Effect.gen(function* () {
+      const sessions = yield* Session.Service
+      const reconcile = yield* SessionBootReconcile.Service
+
+      const parent = yield* sessions.create({ title: "bg parent failed child" })
+      const child = yield* sessions.create({ parentID: parent.id, title: "bg child failed" })
+
+      yield* sessions.updateMessage(finalizedAssistant(parent.id, "msg_parent", "msg_user"))
+      yield* sessions.updatePart(backgroundTaskPlaceholderPart(parent.id, "msg_parent", "prt_bgtask", child.id))
+      yield* sessions.updateMessage({
+        ...finalizedAssistant(child.id, "msg_child", "msg_child_user"),
+        finish: "error",
+        error: new SessionV1.AbortedError({ message: "rate limited into oblivion" }).toObject(),
+      } as unknown as SessionV1.Assistant)
+      yield* sessions.flushNow(parent.id)
+      yield* sessions.flushNow(child.id)
+
+      yield* reconcile.run()
+      yield* sessions.flushNow(parent.id)
+
+      const after = yield* sessions.messages({ sessionID: parent.id }).pipe(Effect.orDie)
+      const p = after.flatMap((m) => m.parts).find((x) => x.id === PartID.make("prt_bgtask"))
+      expect(p?.type).toBe("tool")
+      if (p?.type === "tool") {
+        expect(p.state.status).toBe("error")
+        if (p.state.status === "error") {
+          expect(p.state.error).toContain(BACKGROUND_TASK_ORPHAN_MESSAGE)
+          expect(p.state.error).toContain("rate limited into oblivion")
+        }
+      }
+    }),
+  )
+
+  it.instance("leaves background task placeholders created after boot untouched", () =>
+    Effect.gen(function* () {
+      const sessions = yield* Session.Service
+      const reconcile = yield* SessionBootReconcile.Service
+
+      yield* reconcile.run()
+
+      const parent = yield* sessions.create({ title: "bg parent live" })
+      const child = yield* sessions.create({ parentID: parent.id, title: "bg child live" })
+      const now = Date.now()
+
+      yield* sessions.updateMessage(finalizedAssistant(parent.id, "msg_parent", "msg_user", now))
+      yield* sessions.updatePart(backgroundTaskPlaceholderPart(parent.id, "msg_parent", "prt_bgtask", child.id))
+      yield* sessions.flushNow(parent.id)
+
+      yield* reconcile.run()
+      yield* sessions.flushNow(parent.id)
+
+      const after = yield* sessions.messages({ sessionID: parent.id }).pipe(Effect.orDie)
+      const p = after.flatMap((m) => m.parts).find((x) => x.id === PartID.make("prt_bgtask"))
+      expect(p?.type).toBe("tool")
+      if (p?.type === "tool" && p.state.status === "completed") {
+        expect(p.state.output).toContain('state="running"')
       }
     }),
   )
