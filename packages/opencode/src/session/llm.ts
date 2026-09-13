@@ -4,7 +4,7 @@ import { PermissionV1 } from "@opencode-ai/core/v1/permission"
 import { Provider } from "@/provider/provider"
 import { SessionV1 } from "@opencode-ai/core/v1/session"
 import { serviceUse } from "@opencode-ai/core/effect/service-use"
-import { Context, Effect, Layer } from "effect"
+import { Context, Duration, Effect, Layer } from "effect"
 import * as Stream from "effect/Stream"
 import * as Cause from "effect/Cause"
 import { streamText, wrapLanguageModel, type ModelMessage, type Tool } from "ai"
@@ -15,7 +15,8 @@ import { GitLabWorkflowLanguageModel } from "gitlab-ai-provider"
 import { ProviderTransform } from "@/provider/transform"
 import { Config } from "@/config/config"
 import type { Agent } from "@/agent/agent"
-import type { MessageV2 } from "./message-v2"
+import { MessageV2 } from "./message-v2"
+import { SessionRetry } from "./retry"
 import { Plugin } from "@/plugin"
 import { Permission } from "@/permission"
 import { EventV2Bridge } from "@/event-v2-bridge"
@@ -510,21 +511,57 @@ const live: Layer.Layer<
             const first = yield* makeStream()
             if (first.type === "native") return first.stream
 
-            let retried = false
-            return first.stream.pipe(
-              Stream.catchCause((cause) => {
-                if (!retried && isEncryptedContentError(Cause.squash(cause))) {
-                  retried = true
-                  return Stream.unwrap(
-                    Effect.gen(function* () {
-                      const retry = yield* makeStream()
-                      return retry.stream
-                    }),
-                  )
-                }
-                return Stream.failCause(cause)
-              }),
-            )
+            // Stream-level safety net for failures the processor's retry
+            // policy cannot see: it only retries failures that surface as a
+            // parsed APIError through its own `parse`. Anything else — a raw
+            // Error, a NamedError.Unknown wrapping a response.failed envelope,
+            // a defect from streamText construction — skips stream-level AND
+            // turn-level retry entirely and lands on the message as a terminal
+            // error. Retry those here, from scratch, before handing the stream
+            // to the processor.
+            //
+            // Muse-class 500s (response.failed/server_error, "model failed to
+            // generate a response") arrive in bursts: one retry 10s later
+            // usually lands on a healthy backend, while hammering it tight
+            // keeps hitting the sick one. So: one immediate retry, then one
+            // delayed retry after a cooldown, then the original cause.
+            // Non-retryable failures skip both and fail fast.
+            const SAFETY_NET_COOLDOWN_MS = 10_000
+            let attempts = 0
+            const safetyNet = (cause: Cause.Cause<unknown>): Stream.Stream<LLMEvent, unknown> => {
+              if (attempts >= 2) return Stream.failCause(cause)
+              const squashed = Cause.squash(cause)
+              if (isEncryptedContentError(squashed)) {
+                attempts += 1
+                return Stream.unwrap(
+                  Effect.gen(function* () {
+                    const retry = yield* makeStream()
+                    return retry.stream
+                  }),
+                )
+              }
+              const parsed = MessageV2.fromError(squashed, { providerID: input.model.providerID })
+              const retry = SessionRetry.retryable(parsed, input.model.providerID)
+              if (!retry) return Stream.failCause(cause)
+              attempts += 1
+              const wait = attempts === 2 ? SAFETY_NET_COOLDOWN_MS : 0
+              return Stream.unwrap(
+                Effect.gen(function* () {
+                  yield* Effect.logInfo("llm stream safety-net retry", {
+                    providerID: input.model.providerID,
+                    modelID: input.model.id,
+                    "session.id": input.sessionID,
+                    attempt: attempts,
+                    cooldownMs: wait,
+                    message: retry.message,
+                  })
+                  if (wait > 0) yield* Effect.sleep(Duration.millis(wait))
+                  const retriedStream = yield* makeStream()
+                  return retriedStream.stream.pipe(Stream.catchCause(safetyNet))
+                }),
+              )
+            }
+            return first.stream.pipe(Stream.catchCause(safetyNet))
           }),
         ),
       )
