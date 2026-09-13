@@ -28,6 +28,17 @@ import { Database } from "@opencode-ai/core/database/database"
 import { Usage, type LLMEvent } from "@opencode-ai/llm"
 
 const DOOM_LOOP_THRESHOLD = 3
+
+// Wall-clock ceiling for one process() call. The retry schedule is
+// attempt-capped, but attempts can stall without failing (a provider stream
+// that goes silent mid-generation never resolves nor rejects), leaving the
+// session busy forever: only a manual stop + resend recovers. A fresh turn
+// (what the user gets by resending) succeeds because the backend recovered
+// meanwhile — so cap the whole call and let the run loop's turn-level retry
+// start that fresh turn automatically. Surfaced as TransientTurnError so the
+// existing turnPolicy (persisted RetryPart per attempt) applies unchanged.
+// 10 minutes: comfortably above a healthy long turn, far below "forever".
+const TURN_WALL_CLOCK_TIMEOUT_MS = 10 * 60 * 1000
 export type Result = "compact" | "stop" | "continue"
 
 export interface Handle {
@@ -695,6 +706,38 @@ const layer = Layer.effect(
               Stream.tap((event) => handleEvent(event)),
               Stream.takeUntil(() => ctx.needsCompaction),
               Stream.runDrain,
+              // Wall-clock ceiling for the whole drain (stream + in-turn
+              // stream-level retries). A silent provider stream never fails,
+              // so attempt caps can't fire and the turn — and the session's
+              // busy state — would hang until the user stops it manually. The
+              // timeout interrupts the drain; the turn-level retry in the run
+              // loop then starts a fresh turn automatically: the exact
+              // recovery a manual stop + resend performs today. Raced via a
+              // Deferred marker (not timeoutOption) so the sleep branch is
+              // interrupted immediately when the drain wins instead of
+              // keeping a 10-minute timer fiber alive per turn.
+              (drain) =>
+                Effect.gen(function* () {
+                  const done = yield* Deferred.make<void>()
+                  const outcome = yield* Effect.raceFirst(
+                    drain.pipe(Effect.as("drained" as const), Effect.ensuring(Deferred.succeed(done, undefined))),
+                    Deferred.await(done).pipe(
+                      Effect.andThen(Effect.sleep(TURN_WALL_CLOCK_TIMEOUT_MS)),
+                      Effect.as("timed-out" as const),
+                    ),
+                  )
+                  if (outcome === "timed-out") {
+                    return yield* Effect.fail(
+                      new SessionRetry.TransientTurnError({
+                        message: `Turn stalled with no response for ${TURN_WALL_CLOCK_TIMEOUT_MS / 60000} minutes; retrying with a fresh turn`,
+                        error: new SessionV1.APIError({
+                          message: "Turn timed out waiting for provider response",
+                          isRetryable: true,
+                        }).toObject(),
+                      }),
+                    )
+                  }
+                }),
             )
           }).pipe(
             Effect.onInterrupt(() =>
