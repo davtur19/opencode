@@ -107,30 +107,10 @@ function removeEncryptedContentKeys(value: unknown): unknown {
 function stripEncryptedFromModelMessages(msgs: ModelMessage[]): ModelMessage[] {
   const json = JSON.stringify(msgs)
   if (!json.includes("encrypted_content")) return msgs
-  console.error("[strip] pre-stream: removing encrypted_content keys from messages")
   return removeEncryptedContentKeys(structuredClone(msgs)) as ModelMessage[]
 }
 
 function stripEncryptedFromReasoning(args: Record<string, unknown>): void {
-  // Diagnostic: dump include, store, and providerOptions keys to trace what reaches the SDK
-  const includeVal = args.include
-  if (Array.isArray(includeVal)) {
-    if (includeVal.some((v: unknown) => String(v).includes("encrypted_content"))) {
-      console.error("[strip] middleware: found args.include with encrypted_content:", JSON.stringify(includeVal))
-    }
-  }
-  const po = args.providerOptions as Record<string, unknown> | undefined
-  if (po && typeof po === "object" && !Array.isArray(po)) {
-    for (const k of Object.keys(po)) {
-      const sub = po[k] as Record<string, unknown> | undefined
-      if (sub && typeof sub === "object") {
-        if ("store" in sub) console.error(`[strip] middleware: providerOptions.${k}.store =`, JSON.stringify((sub as any).store))
-        if ("include" in sub) console.error(`[strip] middleware: providerOptions.${k}.include =`, JSON.stringify((sub as any).include))
-      }
-    }
-    if ("store" in po) console.error("[strip] middleware: providerOptions.store =", JSON.stringify((po as any).store))
-    if ("include" in po) console.error("[strip] middleware: providerOptions.include =", JSON.stringify((po as any).include))
-  }
   let stripped = false
   for (const field of ["prompt", "input"]) {
     const val = args[field]
@@ -140,10 +120,10 @@ function stripEncryptedFromReasoning(args: Record<string, unknown>): void {
     args[field] = removeEncryptedContentKeys(structuredClone(val))
     stripped = true
   }
-  const po2 = args.providerOptions as Record<string, unknown> | undefined
-  if (po2) {
-    for (const key of Object.keys(po2)) {
-      const v = po2[key] as Record<string, unknown> | undefined
+  const po = args.providerOptions as Record<string, unknown> | undefined
+  if (po) {
+    for (const key of Object.keys(po)) {
+      const v = po[key] as Record<string, unknown> | undefined
       if (v && typeof v === "object") {
         const cleaned = removeEncryptedContentKeys(structuredClone(v))
         Object.assign(v, cleaned)
@@ -157,8 +137,6 @@ function stripEncryptedFromReasoning(args: Record<string, unknown>): void {
       }
     }
   }
-  // The AI SDK extracts `include` from providerOptions and places it at the
-  // top level of the request params. Remove it when it references encrypted_content.
   if (Array.isArray(args.include)) {
     const hasEncrypted = args.include.some((v: unknown) => String(v).includes("encrypted_content"))
     if (hasEncrypted) {
@@ -166,7 +144,6 @@ function stripEncryptedFromReasoning(args: Record<string, unknown>): void {
       stripped = true
     }
   }
-  if (stripped) console.error("[strip] middleware: stripped encrypted_content from request")
 }
 
 const live: Layer.Layer<
@@ -490,20 +467,6 @@ const live: Layer.Layer<
                       }
                       if ((po as Record<string, unknown>).store === false) {
                         delete (po as Record<string, unknown>).store
-                      }
-                    }
-                    // Diagnostic: log final state of providerOptions before SDK processes
-                    const finalPo = (args.params as Record<string, unknown>).providerOptions
-                    if (finalPo && typeof finalPo === "object") {
-                      console.error("[middleware] final providerOptions keys:", JSON.stringify(Object.keys(finalPo as Record<string, unknown>)))
-                      for (const fk of Object.keys(finalPo as Record<string, unknown>)) {
-                        const fv = (finalPo as Record<string, unknown>)[fk]
-                        if (fv && typeof fv === "object" && !Array.isArray(fv)) {
-                          const fvk = Object.keys(fv as Record<string, unknown>)
-                          console.error(`[middleware] final providerOptions.${fk} keys:`, JSON.stringify(fvk))
-                          if ("include" in (fv as Record<string, unknown>)) console.error(`[middleware] WARNING: providerOptions.${fk}.include still present!`)
-                          if ("store" in (fv as Record<string, unknown>)) console.error(`[middleware] WARNING: providerOptions.${fk}.store still present:`, JSON.stringify((fv as Record<string, unknown>).store))
-                        }
                       }
                     }
                   }
