@@ -89,6 +89,13 @@ const RETRYABLE_MESSAGE_PATTERNS = [
   /^timeout$|\b(?:request|response|connection|network|stream|read) (?:timeout|timed out|time out)\b/i,
   /try your request again|retry your request|resource exhausted|resource_exhausted/i,
   /\btry again (?:later|in\b)|\b(?:currently|temporarily) at capacity\b/i,
+  // The zen gateway pools upstream callers per request: encrypted reasoning
+  // blocks issued to one backend are rejected with "[invalid_request_error]
+  // reasoning encrypted_content was not issued to this caller" when an
+  // attempt lands on a different caller. A fresh attempt usually routes
+  // consistently, so this gets the generic bounded schedule — not the
+  // insistent loops, so genuinely stale blocks still terminate and report.
+  /encrypted_content was not issued/i,
 ]
 
 function cap(ms: number) {

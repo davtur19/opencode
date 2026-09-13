@@ -568,6 +568,27 @@ describe("session.retry.retryable", () => {
     expect(SessionRetry.retryable(error, retryProvider)).toBeUndefined()
   })
 
+  test("retries zen encrypted_content caller-mismatch errors despite 400", () => {
+    const error = Schema.decodeUnknownSync(SessionV1.APIError.Schema)(
+      new SessionV1.APIError({
+        message:
+          "Upstream request failed: [invalid_request_error] reasoning encrypted_content was not issued to this caller",
+        isRetryable: false,
+        statusCode: 400,
+      }).toObject(),
+    )
+
+    expect(SessionRetry.retryable(error, retryProvider)).toEqual({
+      message:
+        "Upstream request failed: [invalid_request_error] reasoning encrypted_content was not issued to this caller",
+    })
+  })
+
+  test("retries encrypted_content mismatch without any status code", () => {
+    const message = "reasoning encrypted_content was not issued to this caller"
+    expect(SessionRetry.retryable(wrap(message), retryProvider)).toEqual({ message })
+  })
+
   test("retries 401 only when retry401 is set (anonymous opencode)", () => {
     const mount = Schema.decodeUnknownSync(SessionV1.APIError.Schema)(
       new SessionV1.APIError({
