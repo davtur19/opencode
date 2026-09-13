@@ -84,6 +84,29 @@ function isEncryptedContentError(error: unknown): boolean {
   return false
 }
 
+/** Deep-copy messages and remove encrypted_content from reasoning parts. */
+function stripEncryptedFromModelMessages(msgs: ModelMessage[]): ModelMessage[] {
+  return msgs.map((msg) => {
+    if (typeof msg.content === "string") return msg
+    if (!Array.isArray(msg.content)) return msg
+    const copied = msg.content.map((part) => {
+      if (part.type !== "reasoning") return part
+      const pm = (part as any).providerMetadata as Record<string, unknown> | undefined
+      if (!pm?.openai || typeof pm.openai !== "object") return part
+      if (!("encrypted_content" in (pm.openai as Record<string, unknown>))) return part
+      const { encrypted_content: _, ...rest } = pm.openai as Record<string, unknown>
+      return {
+        ...part,
+        providerMetadata: {
+          ...pm,
+          openai: Object.keys(rest).length > 0 ? rest : undefined,
+        },
+      }
+    })
+    return { ...msg, content: copied }
+  })
+}
+
 function stripEncryptedFromReasoning(args: Record<string, unknown>): void {
   const prompt = args.prompt
   if (!Array.isArray(prompt)) return
@@ -281,7 +304,7 @@ const live: Layer.Layer<
           provider: item,
           auth: info,
           llmClient,
-          messages: prepared.messages,
+          messages: input._stripEncrypted ? stripEncryptedFromModelMessages(prepared.messages) : prepared.messages,
           tools: prepared.tools,
           toolChoice: input.toolChoice,
           temperature: prepared.params.temperature,
@@ -327,6 +350,13 @@ const live: Layer.Layer<
       })
       // Default runtime path: AI SDK owns provider execution and tool dispatch;
       // LLMAISDK.toLLMEvents below normalizes fullStream parts for the processor.
+      // When retrying after an encrypted_content rejection, strip the blocks from
+      // a deep copy of the messages *before* handing them to streamText — the
+      // middleware strip alone is unreliable because the AI SDK may serialize the
+      // request body before transformParams runs.
+      const streamMessages = input._stripEncrypted
+        ? stripEncryptedFromModelMessages(prepared.messages)
+        : prepared.messages
       return {
         type: "ai-sdk" as const,
         result: streamText({
@@ -373,7 +403,7 @@ const live: Layer.Layer<
           abortSignal: input.abort,
           headers: prepared.headers,
           maxRetries: input.retries ?? 0,
-          messages: prepared.messages,
+          messages: streamMessages,
           model: wrapLanguageModel({
             model: language,
             middleware: [
