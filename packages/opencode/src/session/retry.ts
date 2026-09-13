@@ -46,7 +46,7 @@ export const TURN_RETRY_LIMIT = 4
 // bounded wall-clock window. The deadline (not just the attempt cap) stops the
 // loop even when every attempt itself takes seconds before failing.
 export const NETWORK_STREAM_RETRY_INTERVAL = 500
-export const NETWORK_STREAM_RETRY_WINDOW = 30_000
+export const NETWORK_STREAM_RETRY_WINDOW = 60_000
 export const NETWORK_STREAM_RETRY_MAX_ATTEMPTS = 60 // hard cap; window above usually binds first
 export const NETWORK_STREAM_TURN_RETRY_LIMIT = 6
 
@@ -80,6 +80,10 @@ const RETRYABLE_MESSAGE_PATTERNS = [
   /429|500|502|503|504|524/i,
   /rate increased too quickly|rate limit|rate-limit|rate_limit|too many requests/i,
   /overloaded|service unavailable|service_unavailable|service-unavailable|internal error|internal_error|internal server error|server error|server_error|server-error|provider returned error|provider_returned_error|provider-returned-error/i,
+  // Zen wraps upstream 500s as response.failed/server_error with "The model
+  // failed to generate a response" and no statusCode — match the envelope and
+  // the body so these classify transient instead of permanent.
+  /response\.failed|server_error|failed to generate(?: a)? response|model failed/i,
   /terminated|fetch failed|failed to fetch|network[-_\s]error|upstream connect|connection error|connection refused|connection lost|socket connection was closed|socket hang up|reset before headers|getaddrinfo|enotfound|eai_again|econnrefused|econnreset|etimedout/i,
   // Transport-level TLS/certificate failures (e.g. Bun's "unknown certificate
   // verification error" when a MITM proxy or stale CA chain fails verification)

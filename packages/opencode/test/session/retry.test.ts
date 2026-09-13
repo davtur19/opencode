@@ -67,7 +67,7 @@ describe("session.retry.delay", () => {
       }).toObject(),
     )
     for (const error of [networkStreamError(), unavailable]) {
-      expect(SessionRetry.NETWORK_STREAM_RETRY_WINDOW).toBe(30000)
+      expect(SessionRetry.NETWORK_STREAM_RETRY_WINDOW).toBe(60000)
       expect(SessionRetry.delay(1, error)).toBe(500)
       expect(SessionRetry.delay(10, error)).toBe(500)
       expect(SessionRetry.delay(59, error)).toBe(500)

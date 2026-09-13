@@ -260,13 +260,21 @@ export const TaskTool = Tool.define(
         if (failed?.type === "tool" && failed.state.status === "error") {
           return yield* Effect.fail(new Error(`Subagent failed (task_id: ${nextSession.id}): ${failed.state.error}`))
         }
-        // Prefer the last real text part: synthetic parts (e.g. "Called the
-        // Read tool with the following input: ...") are prompt scaffolding, not
-        // user-facing task output, and they break the rendered formatting.
+        // An empty text result means the loop ended without producing anything
+        // usable (e.g. every turn errored transiently but below the retry cap,
+        // or the run was cut short). Returning "" would look like a clean but
+        // content-free completion and the orchestrator would move on. Fail so
+        // it retries or re-scopes instead.
         const textParts = result.parts.filter(
           (item): item is SessionV1.TextPart => item.type === "text" && !item.synthetic,
         )
-        return textParts.at(-1)?.text ?? ""
+        const output = textParts.at(-1)?.text ?? ""
+        if (!output.trim()) {
+          return yield* Effect.fail(
+            new Error(`Subagent produced no output (task_id: ${nextSession.id}): incomplete, retry or re-scope the task`),
+          )
+        }
+        return output
       })
 
       const inject = Effect.fn("TaskTool.injectBackgroundResult")(function* (
@@ -311,21 +319,39 @@ export const TaskTool = Tool.define(
       })
 
       const notify = Effect.fn("TaskTool.notifyBackgroundResult")(function* (jobID: string) {
-        yield* background.wait({ id: jobID }).pipe(
-          Effect.flatMap((result) => {
-            if (result.info?.status === "completed") return inject("completed", result.info.output ?? "")
-            if (result.info?.status === "error") return inject("error", result.info.error ?? "")
-            // A cancelled job (or one that vanished, e.g. service restart wiped
-            // the process-local registry) must still report back: dropping it
-            // here leaves the orchestrator waiting on a result that never comes.
-            const reason =
-              result.info?.status === "cancelled"
-                ? `Background task was cancelled (job ${jobID})`
-                : `Background task did not complete (job ${jobID} not found)`
-            return inject("error", reason)
-          }),
-          Effect.forkIn(scope, { startImmediately: true }),
+        const result = yield* background.wait({ id: jobID }).pipe(
+          // wait() only resolves when the job settles; a defect in the wait
+          // itself (interrupted fiber, registry failure) would otherwise drop
+          // the notification silently. Fall back to an error injection so the
+          // orchestrator always hears back about this job.
+          Effect.catchCause((cause: Cause.Cause<never>) =>
+            Effect.succeed({ info: undefined as never, cause } as const),
+          ),
         )
+        if (!("info" in result) || result.info === undefined) {
+          const cause = (result as { cause: Cause.Cause<never> }).cause
+          yield* inject("error", `Background task failed while waiting for result (job ${jobID}): ${Cause.pretty(cause)}`).pipe(
+            Effect.forkIn(scope, { startImmediately: true }),
+          )
+          return
+        }
+        const info = result.info
+        if (info?.status === "completed") {
+          yield* inject("completed", info.output ?? "").pipe(Effect.forkIn(scope, { startImmediately: true }))
+          return
+        }
+        if (info?.status === "error") {
+          yield* inject("error", info.error ?? "").pipe(Effect.forkIn(scope, { startImmediately: true }))
+          return
+        }
+        // A cancelled job (or one that vanished, e.g. service restart wiped
+        // the process-local registry) must still report back: dropping it
+        // here leaves the orchestrator waiting on a result that never comes.
+        const reason =
+          info?.status === "cancelled"
+            ? `Background task was cancelled (job ${jobID})`
+            : `Background task did not complete (job ${jobID} not found)`
+        yield* inject("error", reason).pipe(Effect.forkIn(scope, { startImmediately: true }))
       })
 
       if (yield* background.extend({ id: nextSession.id, run: runTask() })) {
