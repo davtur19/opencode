@@ -29,16 +29,15 @@ import { Usage, type LLMEvent } from "@opencode-ai/llm"
 
 const DOOM_LOOP_THRESHOLD = 3
 
-// Wall-clock ceiling for one process() call. The retry schedule is
-// attempt-capped, but attempts can stall without failing (a provider stream
-// that goes silent mid-generation never resolves nor rejects), leaving the
-// session busy forever: only a manual stop + resend recovers. A fresh turn
-// (what the user gets by resending) succeeds because the backend recovered
-// meanwhile — so cap the whole call and let the run loop's turn-level retry
-// start that fresh turn automatically. Surfaced as TransientTurnError so the
-// existing turnPolicy (persisted RetryPart per attempt) applies unchanged.
-// 10 minutes: comfortably above a healthy long turn, far below "forever".
-const TURN_WALL_CLOCK_TIMEOUT_MS = 10 * 60 * 1000
+// Stall watchdog: a provider stream that goes silent mid-turn (no events, no
+// error — the muse 500-burst shape, where the connection hangs instead of
+// failing) never trips attempt caps, so the turn would hang until the user
+// stops it manually. A fresh turn (what the user gets by stop + resend)
+// succeeds because the backend recovered meanwhile. 90s of complete silence:
+// a healthy turn emits deltas continuously, and slow tool executions still
+// emit completion events, so only a truly dead stream trips it.
+const STALL_TIMEOUT_MS = 90 * 1000
+const STALL_CHECK_INTERVAL_MS = 5 * 1000
 export type Result = "compact" | "stop" | "continue"
 
 export interface Handle {
@@ -86,6 +85,9 @@ interface ProcessorContext extends Input {
   needsCompaction: boolean
   currentText: SessionV1.TextPart | undefined
   reasoningMap: Record<string, SessionV1.ReasoningPart>
+  // Monotonic timestamp (ms) of the last event received from the provider
+  // stream. Updated on every event; the stall watchdog compares against it.
+  lastEventAt: number
 }
 
 type StreamEvent = LLMEvent
@@ -126,6 +128,7 @@ const layer = Layer.effect(
         needsCompaction: false,
         currentText: undefined,
         reasoningMap: {},
+        lastEventAt: Date.now(),
       }
       let aborted = false
 
@@ -304,6 +307,7 @@ const layer = Layer.effect(
       }
 
       const handleEvent = Effect.fnUntraced(function* (value: StreamEvent) {
+        ctx.lastEventAt = Date.now()
         switch (value.type) {
           case "reasoning-start":
             if (value.id in ctx.reasoningMap) return
@@ -706,30 +710,35 @@ const layer = Layer.effect(
               Stream.tap((event) => handleEvent(event)),
               Stream.takeUntil(() => ctx.needsCompaction),
               Stream.runDrain,
-              // Wall-clock ceiling for the whole drain (stream + in-turn
-              // stream-level retries). A silent provider stream never fails,
-              // so attempt caps can't fire and the turn — and the session's
-              // busy state — would hang until the user stops it manually. The
-              // timeout interrupts the drain; the turn-level retry in the run
-              // loop then starts a fresh turn automatically: the exact
-              // recovery a manual stop + resend performs today. Raced via a
-              // Deferred marker (not timeoutOption) so the sleep branch is
-              // interrupted immediately when the drain wins instead of
-              // keeping a 10-minute timer fiber alive per turn.
+              // Stall watchdog: a provider stream that goes silent mid-turn
+              // (no events, no error — the muse 500-burst shape) never fails,
+              // so attempt caps can't fire and the turn would hang until the
+              // user stops it manually. The watchdog interrupts the drain;
+              // the turn-level retry in the run loop then starts a fresh turn
+              // automatically: the exact recovery a manual stop + resend
+              // performs. It only fires after STALL_TIMEOUT of complete
+              // silence — a healthy turn emits deltas continuously, and each
+              // in-turn stream-level retry resets the clock by emitting new
+              // events. Raced via a Deferred marker so the sleep branch is
+              // interrupted immediately when the drain wins.
               (drain) =>
                 Effect.gen(function* () {
                   const done = yield* Deferred.make<void>()
                   const outcome = yield* Effect.raceFirst(
                     drain.pipe(Effect.as("drained" as const), Effect.ensuring(Deferred.succeed(done, undefined))),
-                    Deferred.await(done).pipe(
-                      Effect.andThen(Effect.sleep(TURN_WALL_CLOCK_TIMEOUT_MS)),
-                      Effect.as("timed-out" as const),
-                    ),
+                    Effect.gen(function* () {
+                      while (true) {
+                        yield* Effect.sleep(STALL_CHECK_INTERVAL_MS)
+                        if (Date.now() - ctx.lastEventAt >= STALL_TIMEOUT_MS) return "timed-out" as const
+                      }
+                      // Unreachable: the while loop only exits via return.
+                      throw new Error("unreachable")
+                    }),
                   )
                   if (outcome === "timed-out") {
                     return yield* Effect.fail(
                       new SessionRetry.TransientTurnError({
-                        message: `Turn stalled with no response for ${TURN_WALL_CLOCK_TIMEOUT_MS / 60000} minutes; retrying with a fresh turn`,
+                        message: `Turn stalled with no provider events for ${STALL_TIMEOUT_MS / 1000}s; retrying with a fresh turn`,
                         error: new SessionV1.APIError({
                           message: "Turn timed out waiting for provider response",
                           isRetryable: true,
