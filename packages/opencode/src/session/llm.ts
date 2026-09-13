@@ -376,9 +376,7 @@ const live: Layer.Layer<
       // a deep copy of the messages *before* handing them to streamText — the
       // middleware strip alone is unreliable because the AI SDK may serialize the
       // request body before transformParams runs.
-      const streamMessages = input._stripEncrypted
-        ? stripEncryptedFromModelMessages(prepared.messages)
-        : prepared.messages
+      const streamMessages = stripEncryptedFromModelMessages(prepared.messages)
       return {
         type: "ai-sdk" as const,
         result: streamText({
@@ -417,7 +415,31 @@ const live: Layer.Layer<
           temperature: prepared.params.temperature,
           topP: prepared.params.topP,
           topK: prepared.params.topK,
-          providerOptions: ProviderTransform.providerOptions(input.model, prepared.params.options),
+          providerOptions: (() => {
+            const po = ProviderTransform.providerOptions(input.model, prepared.params.options)
+            // Unconditionally strip `include` arrays referencing encrypted_content.
+            // The proxy gateway rejects these and the error recurs on every new
+            // request — not just retries — so stripping only on retry is insufficient.
+            if (po) {
+              // Top-level include (e.g. po.include = ["reasoning.encrypted_content"])
+              if (Array.isArray(po.include) && po.include.some((x: unknown) => String(x).includes("encrypted_content"))) {
+                delete po.include
+              }
+              // Provider-specific sub-objects (e.g. po.openai.include)
+              for (const key of Object.keys(po)) {
+                const v = po[key]
+                if (v && typeof v === "object" && !Array.isArray(v)) {
+                  if (Array.isArray((v as Record<string, unknown>).include)) {
+                    const inc = (v as Record<string, unknown>).include as unknown[]
+                    if (inc.some((x: unknown) => String(x).includes("encrypted_content"))) {
+                      delete (v as Record<string, unknown>).include
+                    }
+                  }
+                }
+              }
+            }
+            return po
+          })(),
           activeTools: Object.keys(prepared.tools).filter((x) => x !== "invalid"),
           tools: prepared.tools,
           toolChoice: input.toolChoice,
@@ -439,9 +461,7 @@ const live: Layer.Layer<
                       input.model,
                       prepared.messageTransformOptions,
                     )
-                    if (input._stripEncrypted) {
-                      stripEncryptedFromReasoning(args.params as Record<string, unknown>)
-                    }
+                    stripEncryptedFromReasoning(args.params as Record<string, unknown>)
                   }
                   return args.params
                 },
