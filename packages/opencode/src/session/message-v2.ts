@@ -53,6 +53,30 @@ function truncateToolOutput(text: string, maxChars?: number) {
   return `${text.slice(0, maxChars)}\n[Tool output truncated for compaction: omitted ${omitted} chars]`
 }
 
+// Strip encrypted reasoning tokens from provider metadata.
+// The server rejects them on replay when the encryption was issued to a
+// different caller (load-balancer or multi-key pool).  The reasoning text
+// itself is already captured; the opaque encrypted blob is never useful for
+// re-sending.
+function stripEncryptedReasoning(
+  metadata: Record<string, any> | undefined,
+): Record<string, any> | undefined {
+  if (!metadata) return undefined
+  const clean: Record<string, any> = {}
+  for (const [key, value] of Object.entries(metadata)) {
+    if (key === "openai" && value != null && typeof value === "object" && !Array.isArray(value)) {
+      const openaiClean: Record<string, unknown> = {}
+      for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
+        if (k !== "encrypted_content") openaiClean[k] = v
+      }
+      if (Object.keys(openaiClean).length > 0) clean[key] = openaiClean
+    } else {
+      clean[key] = value
+    }
+  }
+  return Object.keys(clean).length === 0 ? undefined : clean
+}
+
 export const Event = {
   Updated: SessionV1.Event.MessageUpdated,
   Removed: SessionV1.Event.MessageRemoved,

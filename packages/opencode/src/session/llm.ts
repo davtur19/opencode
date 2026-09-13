@@ -84,34 +84,76 @@ function isEncryptedContentError(error: unknown): boolean {
   return false
 }
 
+/** Recursively remove all keys containing `encrypted_content` from any JSON-like value. */
+function removeEncryptedContentKeys(value: unknown): unknown {
+  if (Array.isArray(value)) {
+    for (let i = 0; i < value.length; i++) {
+      value[i] = removeEncryptedContentKeys(value[i])
+    }
+    return value
+  }
+  if (value !== null && typeof value === "object") {
+    const obj = value as Record<string, unknown>
+    for (const key of Object.keys(obj)) {
+      if (key.includes("encrypted_content")) delete obj[key]
+      else obj[key] = removeEncryptedContentKeys(obj[key])
+    }
+    return obj
+  }
+  return value
+}
+
 /** Deep-copy messages and remove encrypted_content from reasoning parts. */
 function stripEncryptedFromModelMessages(msgs: ModelMessage[]): ModelMessage[] {
-  // Brute-force approach: serialize to JSON, remove all encrypted_content keys, parse back.
-  // This is format-agnostic and handles any nesting the AI SDK might use.
   const json = JSON.stringify(msgs)
   if (!json.includes("encrypted_content")) return msgs
-  const stripped = json.replace(/"encrypted_content"\s*:\s*"[^"]*"/g, "")
-  try {
-    return JSON.parse(stripped)
-  } catch {
-    return msgs
-  }
+  console.error("[strip] pre-stream: removing encrypted_content keys from messages")
+  return removeEncryptedContentKeys(structuredClone(msgs)) as ModelMessage[]
 }
 
 function stripEncryptedFromReasoning(args: Record<string, unknown>): void {
-  // Strip from both prompt (chat completions) and input (responses API) fields
+  const keys = Object.keys(args)
+  const includeVal = args.include
+  if (Array.isArray(includeVal) && includeVal.some((v: unknown) => String(v).includes("encrypted_content"))) {
+    console.error("[strip] middleware: found args.include with encrypted_content:", JSON.stringify(includeVal))
+  }
+  let stripped = false
   for (const field of ["prompt", "input"]) {
     const val = args[field]
     if (!val) continue
     const json = JSON.stringify(val)
     if (!json?.includes("encrypted_content")) continue
-    const stripped = json.replace(/"encrypted_content"\s*:\s*"[^"]*"/g, "")
-    try {
-      args[field] = JSON.parse(stripped)
-    } catch {
-      // leave untouched
+    args[field] = removeEncryptedContentKeys(structuredClone(val))
+    stripped = true
+  }
+  const po = args.providerOptions as Record<string, unknown> | undefined
+  if (po) {
+    for (const key of Object.keys(po)) {
+      const v = po[key] as Record<string, unknown> | undefined
+      if (v && typeof v === "object") {
+        const cleaned = removeEncryptedContentKeys(structuredClone(v))
+        Object.assign(v, cleaned)
+        stripped = true
+        // Also remove `include` arrays referencing encrypted_content from sub-objects
+        if (Array.isArray(cleaned.include)) {
+          const has = cleaned.include.some((x: unknown) => String(x).includes("encrypted_content"))
+          if (has) {
+            delete (v as Record<string, unknown>).include
+          }
+        }
+      }
     }
   }
+  // The AI SDK extracts `include` from providerOptions and places it at the
+  // top level of the request params. Remove it when it references encrypted_content.
+  if (Array.isArray(args.include)) {
+    const hasEncrypted = args.include.some((v: unknown) => String(v).includes("encrypted_content"))
+    if (hasEncrypted) {
+      delete args.include
+      stripped = true
+    }
+  }
+  if (stripped) console.error("[strip] middleware: stripped encrypted_content from request")
 }
 
 const live: Layer.Layer<
