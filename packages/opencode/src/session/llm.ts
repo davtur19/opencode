@@ -46,7 +46,6 @@ export type StreamInput = {
   tools: Record<string, Tool>
   retries?: number
   toolChoice?: "auto" | "required" | "none"
-  _stripEncrypted?: boolean
 }
 
 export type StreamRequest = StreamInput & {
@@ -312,7 +311,7 @@ const live: Layer.Layer<
           provider: item,
           auth: info,
           llmClient,
-          messages: input._stripEncrypted ? stripEncryptedFromModelMessages(prepared.messages) : prepared.messages,
+          messages: prepared.messages,
           tools: prepared.tools,
           toolChoice: input.toolChoice,
           temperature: prepared.params.temperature,
@@ -358,10 +357,10 @@ const live: Layer.Layer<
       })
       // Default runtime path: AI SDK owns provider execution and tool dispatch;
       // LLMAISDK.toLLMEvents below normalizes fullStream parts for the processor.
-      // When retrying after an encrypted_content rejection, strip the blocks from
-      // a deep copy of the messages *before* handing them to streamText — the
-      // middleware strip alone is unreliable because the AI SDK may serialize the
-      // request body before transformParams runs.
+      // Encrypted-content defense lives at the fetch boundary
+      // (FetchProxy.sanitizeBody): the SDK rebuilds `input[].encrypted_content`
+      // from conversation history after every strip point here, so stripping
+      // locally is best-effort only.
       const streamMessages = stripEncryptedFromModelMessages(prepared.messages)
       return {
         type: "ai-sdk" as const,
@@ -493,8 +492,8 @@ const live: Layer.Layer<
               (ctrl) => Effect.sync(() => ctrl.abort()),
             )
 
-            const makeStream = Effect.fn("LLM.makeStream")(function* (strip: boolean) {
-              const result = yield* run({ ...input, abort: ctrl.signal, _stripEncrypted: strip })
+            const makeStream = Effect.fn("LLM.makeStream")(function* () {
+              const result = yield* run({ ...input, abort: ctrl.signal })
               if (result.type === "native") return { type: "native" as const, stream: result.stream }
               const state = LLMAISDK.adapterState()
               return {
@@ -508,17 +507,7 @@ const live: Layer.Layer<
               }
             })
 
-            const first = yield* makeStream(false).pipe(
-              Effect.catchDefect((defect) => {
-                if (isEncryptedContentError(defect)) {
-                  return Effect.gen(function* () {
-                    yield* Effect.logDebug("encrypted_content error during streamText creation, retrying")
-                    return yield* makeStream(true)
-                  })
-                }
-                return Effect.die(defect)
-              }),
-            )
+            const first = yield* makeStream()
             if (first.type === "native") return first.stream
 
             let retried = false
@@ -528,7 +517,7 @@ const live: Layer.Layer<
                   retried = true
                   return Stream.unwrap(
                     Effect.gen(function* () {
-                      const retry = yield* makeStream(true)
+                      const retry = yield* makeStream()
                       return retry.stream
                     }),
                   )
