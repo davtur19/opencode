@@ -32,10 +32,13 @@ const DOOM_LOOP_THRESHOLD = 3
 
 // Stall watchdog: a provider stream that goes silent mid-turn (no events, no
 // error) never trips attempt caps, so the turn would hang until the user
-// stops it manually. 20s of complete silence: a healthy turn emits deltas
+// stops it manually. 90s of complete silence: a healthy turn emits deltas
 // continuously, and slow tool executions still emit completion events, so
-// only a truly dead stream trips it.
-const STALL_TIMEOUT_MS = 20 * 1000
+// only a truly dead stream trips it. NOTE: the silence clock starts at the
+// first provider event, not at turn start — model TTFT plus prompt
+// processing on a loaded backend routinely exceeds tens of seconds, and
+// treating that as a stall aborts healthy turns.
+const STALL_TIMEOUT_MS = 90 * 1000
 const STALL_CHECK_INTERVAL_MS = 5 * 1000
 
 // Muse burst workaround: response.failed/server_error bursts reject the
@@ -115,8 +118,11 @@ interface ProcessorContext extends Input {
   currentText: SessionV1.TextPart | undefined
   reasoningMap: Record<string, SessionV1.ReasoningPart>
   // Monotonic timestamp (ms) of the last event received from the provider
-  // stream. Updated on every event; the stall watchdog compares against it.
-  lastEventAt: number
+  // stream, or undefined until the first event arrives. Updated on every
+  // event; the stall watchdog compares against it. Starts undefined (not
+  // turn-start) so model TTFT + prompt processing on a loaded backend —
+  // routinely tens of seconds with zero events — never trips the watchdog.
+  lastEventAt: number | undefined
 }
 
 type StreamEvent = LLMEvent
@@ -157,7 +163,7 @@ const layer = Layer.effect(
         needsCompaction: false,
         currentText: undefined,
         reasoningMap: {},
-        lastEventAt: Date.now(),
+        lastEventAt: undefined,
       }
       let aborted = false
 
@@ -761,6 +767,9 @@ const layer = Layer.effect(
                     Effect.gen(function* () {
                       while (true) {
                         yield* Effect.sleep(STALL_CHECK_INTERVAL_MS)
+                        // No events yet: the model is still producing its
+                        // first token (TTFT) — not a stall.
+                        if (ctx.lastEventAt === undefined) continue
                         if (Date.now() - ctx.lastEventAt >= STALL_TIMEOUT_MS) return "timed-out" as const
                       }
                       // Unreachable: the while loop only exits via return.
