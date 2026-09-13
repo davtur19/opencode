@@ -61,6 +61,39 @@ export class Service extends Context.Service<Service, Interface>()("@opencode/LL
 
 export const use = serviceUse(Service)
 
+// Error shapes that mean "this request is poisoned, retrying it identically
+// is pointless": the encrypted reasoning blocks were issued to a different
+// upstream caller (load-balancer / multi-key pool), so every identical replay
+// is rejected the same way. response.failed/server_error bursts on muse
+// are the same poison in practice: the stale blocks ride along on each
+// attempt and the backend keeps refusing them. A stop + resend works because
+// the new turn rebuilds history without the stale blocks. Matches ONLY these
+// shapes — every other model and every other error keeps the normal path.
+function isPoisonedRequestError(error: unknown): boolean {
+  const str =
+    typeof error === "string"
+      ? error
+      : error instanceof Error
+        ? error.message
+        : error && typeof error === "object" && "message" in error
+          ? String((error as { message: unknown }).message)
+          : ""
+  if (/encrypted_content[`\s]+was not issued/i.test(str)) return true
+  if (/response\.failed/i.test(str)) return true
+  if (/server_error/i.test(str) && /failed to generate(?: a)? response/i.test(str)) return true
+  if (error instanceof Error && "data" in error) {
+    const data = (error as { data: unknown }).data
+    if (data && typeof data === "object" && "message" in data) {
+      const dataMsg = String((data as { message: unknown }).message)
+      if (/encrypted_content was not issued/i.test(dataMsg)) return true
+      if (/response\.failed/i.test(dataMsg)) return true
+      if (/server_error/i.test(dataMsg) && /failed to generate(?: a)? response/i.test(dataMsg)) return true
+    }
+  }
+  if (error instanceof Error && error.cause) return isPoisonedRequestError(error.cause)
+  return false
+}
+
 function isEncryptedContentError(error: unknown): boolean {
   const str =
     typeof error === "string"
@@ -520,17 +553,52 @@ const live: Layer.Layer<
             // error. Retry those here, from scratch, before handing the stream
             // to the processor.
             //
-            // Muse-class 500s (response.failed/server_error, "model failed to
-            // generate a response") arrive in bursts: one retry 10s later
-            // usually lands on a healthy backend, while hammering it tight
-            // keeps hitting the sick one. So: one immediate retry, then one
-            // delayed retry after a cooldown, then the original cause.
-            // Non-retryable failures skip both and fail fast.
+            // Poisoned-request fast path (muse only): when the request itself
+            // is rejected — stale encrypted reasoning blocks, or the
+            // response.failed/server_error burst shape that carries them —
+            // ONE retry with a clean input (reasoning blocks dropped, text
+            // survives in persisted parts), then the original cause. Zero
+            // identical retries: replaying the poison fails deterministically,
+            // and each one burns wall-clock. Every other error keeps the
+            // generic path below (one immediate retry, one after a cooldown).
             const SAFETY_NET_COOLDOWN_MS = 10_000
+            const isSpark = input.model.id.startsWith("muse-spark")
             let attempts = 0
+            let workaroundUsed = false
+            const cleanInput = () => ({
+              ...input,
+              abort: ctrl.signal,
+              messages: stripEncryptedFromModelMessages(input.messages),
+            })
             const safetyNet = (cause: Cause.Cause<unknown>): Stream.Stream<LLMEvent, unknown> => {
               if (attempts >= 2) return Stream.failCause(cause)
               const squashed = Cause.squash(cause)
+              if (isSpark && !workaroundUsed && isPoisonedRequestError(squashed)) {
+                workaroundUsed = true
+                attempts += 1
+                return Stream.unwrap(
+                  Effect.gen(function* () {
+                    yield* Effect.logInfo("llm stream poisoned-request workaround", {
+                      providerID: input.model.providerID,
+                      modelID: input.model.id,
+                      "session.id": input.sessionID,
+                    })
+                    const result = yield* run(cleanInput())
+                    if (result.type === "native") return result.stream
+                    const state = LLMAISDK.adapterState()
+                    const retry = {
+                      type: "ai-sdk" as const,
+                      stream: Stream.fromAsyncIterable(result.result.fullStream, (e) =>
+                        e instanceof Error ? e : new Error(String(e)),
+                      ).pipe(
+                        Stream.mapEffect((event) => LLMAISDK.toLLMEvents(state, event)),
+                        Stream.flatMap((events) => Stream.fromIterable(events)),
+                      ),
+                    }
+                    return retry.stream.pipe(Stream.catchCause(safetyNet))
+                  }),
+                )
+              }
               if (isEncryptedContentError(squashed)) {
                 attempts += 1
                 return Stream.unwrap(
