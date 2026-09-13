@@ -1219,12 +1219,16 @@ export function options(input: {
   }
 
   // openai and providers using openai package should set store to false by default.
+  // Exception: opencode provider models go through a proxy that rejects
+  // include: ["reasoning.encrypted_content"] which the SDK auto-adds when
+  // store === false. Skip store:false for opencode to prevent the auto-add.
   if (
-    input.model.providerID === "openai" ||
+    (input.model.providerID === "openai" ||
     input.model.api.npm === "@ai-sdk/openai" ||
     input.model.api.npm === "@ai-sdk/github-copilot" ||
     input.model.api.npm === "@ai-sdk/amazon-bedrock/mantle" ||
-    input.model.api.npm === "@ai-sdk/xai"
+    input.model.api.npm === "@ai-sdk/xai") &&
+    !input.model.providerID.startsWith("opencode")
   ) {
     result["store"] = false
   }
@@ -1366,7 +1370,7 @@ export function options(input: {
 
     if (input.model.providerID.startsWith("opencode") && input.providerOptions?.setCacheKey !== false) {
       result["promptCacheKey"] = input.sessionID
-      result["include"] = INCLUDE_ENCRYPTED_REASONING
+      // Do NOT set include: INCLUDE_ENCRYPTED_REASONING — the proxy rejects it.
       result["reasoningSummary"] = "auto"
     }
   }
@@ -1806,8 +1810,10 @@ function reasoningEffort(model: Provider.Model, effort: string) {
       return { reasoningEffort: effort, reasoningSummary: "auto", include: INCLUDE_ENCRYPTED_REASONING }
     case "@ai-sdk/openai":
     case "@ai-sdk/amazon-bedrock/mantle":
+      if (model.providerID.startsWith("opencode")) return { reasoningEffort: effort, reasoningSummary: "auto" }
       return { reasoningEffort: effort, reasoningSummary: "auto", include: INCLUDE_ENCRYPTED_REASONING }
     case "@ai-sdk/azure":
+      if (model.providerID.startsWith("opencode")) return { reasoningEffort: effort, reasoningSummary: "auto" }
       return { reasoningEffort: effort, reasoningSummary: "auto", include: INCLUDE_ENCRYPTED_REASONING }
     case "@jerome-benoit/sap-ai-provider-v2":
       if (model.id.includes("anthropic"))

@@ -462,6 +462,23 @@ const live: Layer.Layer<
                       prepared.messageTransformOptions,
                     )
                     stripEncryptedFromReasoning(args.params as Record<string, unknown>)
+                    // The @ai-sdk/openai provider auto-adds
+                    // `include: ["reasoning.encrypted_content"]` when store === false
+                    // AND the model is a reasoning model (line ~5674 in its dist).
+                    // This runs AFTER our middleware, so stripping include alone is
+                    // insufficient — we must also neutralize the trigger condition.
+                    const po = (args.params as Record<string, unknown>).providerOptions
+                    if (po && typeof po === "object" && !Array.isArray(po)) {
+                      const openai = (po as Record<string, unknown>).openai
+                      if (openai && typeof openai === "object" && !Array.isArray(openai)) {
+                        if ((openai as Record<string, unknown>).store === false) {
+                          delete (openai as Record<string, unknown>).store
+                        }
+                      }
+                      if ((po as Record<string, unknown>).store === false) {
+                        delete (po as Record<string, unknown>).store
+                      }
+                    }
                   }
                   return args.params
                 },

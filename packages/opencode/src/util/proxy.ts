@@ -79,10 +79,22 @@ export function proxiedInit(input: RequestInfo | URL, init?: RequestInit) {
 export function install() {
   if (installed) return
   installed = true
+  const native = nativeFetch
   // oxlint-disable-next-line typescript-eslint/no-unsafe-type-assertion -- Bun's fetch type has multiple overloads; the wrapper matches its call surface.
   globalThis.fetch = ((input: RequestInfo | URL, init?: RequestInit) => {
     const proxied = proxiedInit(input, init)
-    return proxied ? nativeFetch(input, proxied) : nativeFetch(input, init)
+    // Diagnostic: log request bodies going to cloud endpoints to verify
+    // what the SDK actually sends (include, store, encrypted_content).
+    if (proxied && init?.body) {
+      const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url
+      if (url.includes("/responses") || url.includes("/chat/completions")) {
+        const bodyStr = typeof init.body === "string" ? init.body : ""
+        if (bodyStr.includes("encrypted_content") || bodyStr.includes('"include"')) {
+          console.error("[proxy-fetch] REQUEST has encrypted_content or include:", bodyStr.slice(0, 800))
+        }
+      }
+    }
+    return proxied ? native(input, proxied) : native(input, init)
   }) as typeof globalThis.fetch
 }
 
