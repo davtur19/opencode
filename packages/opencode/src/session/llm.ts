@@ -62,10 +62,17 @@ export class Service extends Context.Service<Service, Interface>()("@opencode/LL
 export const use = serviceUse(Service)
 
 function isEncryptedContentError(error: unknown): boolean {
-  if (!(error instanceof Error)) return false
-  if (/encrypted_content was not issued/i.test(error.message)) return true
-  const cause = error.cause
-  return cause instanceof Error && /encrypted_content was not issued/i.test(cause.message)
+  const str =
+    typeof error === "string"
+      ? error
+      : error instanceof Error
+        ? error.message
+        : error && typeof error === "object" && "message" in error
+          ? String((error as { message: unknown }).message)
+          : ""
+  if (/encrypted_content was not issued/i.test(str)) return true
+  if (error instanceof Error && error.cause) return isEncryptedContentError(error.cause)
+  return false
 }
 
 function stripEncryptedFromReasoning(args: Record<string, unknown>): void {
@@ -417,7 +424,17 @@ const live: Layer.Layer<
               }
             })
 
-            const first = yield* makeStream(false)
+            const first = yield* makeStream(false).pipe(
+              Effect.catchDefect((defect) => {
+                if (isEncryptedContentError(defect)) {
+                  return Effect.gen(function* () {
+                    yield* Effect.logDebug("encrypted_content error during streamText creation, retrying")
+                    return yield* makeStream(true)
+                  })
+                }
+                return Effect.die(defect)
+              }),
+            )
             if (first.type === "native") return first.stream
 
             let retried = false
