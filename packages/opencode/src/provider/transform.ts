@@ -1381,10 +1381,11 @@ export function options(input: {
 export function smallOptions(model: Provider.Model) {
   const small = Object.values(model.variants ?? {})[0] ?? {}
   if (
-    model.providerID === "openai" ||
+    (model.providerID === "openai" ||
     model.api.npm === "@ai-sdk/openai" ||
     model.api.npm === "@ai-sdk/github-copilot" ||
-    model.api.npm === "@ai-sdk/xai"
+    model.api.npm === "@ai-sdk/xai") &&
+    !model.providerID.startsWith("opencode")
   ) {
     const base = { store: false }
     return mergeDeep(base, small)
