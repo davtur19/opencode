@@ -70,7 +70,7 @@ function isEncryptedContentError(error: unknown): boolean {
         : error && typeof error === "object" && "message" in error
           ? String((error as { message: unknown }).message)
           : ""
-  if (/encrypted_content was not issued/i.test(str)) return true
+  if (/encrypted_content[`\s]+was not issued/i.test(str)) return true
   // NamedError (e.g. APIError) stores the descriptive message in data.message,
   // not in the Error.message field which is just the class name.
   if (error instanceof Error && "data" in error) {

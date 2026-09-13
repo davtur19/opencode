@@ -95,7 +95,7 @@ const RETRYABLE_MESSAGE_PATTERNS = [
   // attempt lands on a different caller. A fresh attempt usually routes
   // consistently, so this gets the generic bounded schedule — not the
   // insistent loops, so genuinely stale blocks still terminate and report.
-  /encrypted_content was not issued/i,
+  /encrypted_content[`\s]+was not issued/i,
 ]
 
 function cap(ms: number) {
