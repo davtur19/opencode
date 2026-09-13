@@ -86,67 +86,30 @@ function isEncryptedContentError(error: unknown): boolean {
 
 /** Deep-copy messages and remove encrypted_content from reasoning parts. */
 function stripEncryptedFromModelMessages(msgs: ModelMessage[]): ModelMessage[] {
-  return msgs.map((msg) => {
-    if (typeof msg.content === "string") return msg
-    if (!Array.isArray(msg.content)) return msg
-    const copied = msg.content.map((part) => {
-      if (part.type !== "reasoning") return part
-      // AI SDK ModelMessage uses providerOptions, not providerMetadata
-      const po = (part as any).providerOptions as Record<string, unknown> | undefined
-      if (po?.openai && typeof po.openai === "object" && "encrypted_content" in (po.openai as Record<string, unknown>)) {
-        const { encrypted_content: _, ...rest } = po.openai as Record<string, unknown>
-        return {
-          ...part,
-          providerOptions: {
-            ...po,
-            openai: Object.keys(rest).length > 0 ? rest : undefined,
-          },
-        }
-      }
-      // Also check providerMetadata (UIMessage format before convertToModelMessages)
-      const pm = (part as any).providerMetadata as Record<string, unknown> | undefined
-      if (pm?.openai && typeof pm.openai === "object" && "encrypted_content" in (pm.openai as Record<string, unknown>)) {
-        const { encrypted_content: _, ...rest } = pm.openai as Record<string, unknown>
-        return {
-          ...part,
-          providerMetadata: {
-            ...pm,
-            openai: Object.keys(rest).length > 0 ? rest : undefined,
-          },
-        }
-      }
-      return part
-    })
-    return { ...msg, content: copied }
-  })
+  // Brute-force approach: serialize to JSON, remove all encrypted_content keys, parse back.
+  // This is format-agnostic and handles any nesting the AI SDK might use.
+  const json = JSON.stringify(msgs)
+  if (!json.includes("encrypted_content")) return msgs
+  const stripped = json.replace(/"encrypted_content"\s*:\s*"[^"]*"/g, "")
+  try {
+    return JSON.parse(stripped)
+  } catch {
+    return msgs
+  }
 }
 
 function stripEncryptedFromReasoning(args: Record<string, unknown>): void {
-  const prompt = args.prompt
-  if (!Array.isArray(prompt)) return
-  for (const msg of prompt) {
-    if (!msg || typeof msg !== "object") continue
-    const content = (msg as Record<string, unknown>).content
-    if (!Array.isArray(content)) continue
-    for (const part of content) {
-      if (!part || typeof part !== "object") continue
-      const p = part as Record<string, unknown>
-      if (p.type !== "reasoning") continue
-      // Check both providerOptions (AI SDK internal) and providerMetadata (UIMessage)
-      for (const key of ["providerOptions", "providerMetadata"]) {
-        const pm = p[key] as Record<string, unknown> | undefined
-        if (!pm || typeof pm !== "object") continue
-        const openai = pm.openai as Record<string, unknown> | undefined
-        if (!openai || typeof openai !== "object") continue
-        if ("encrypted_content" in openai) {
-          const { encrypted_content: _, ...rest } = openai
-          if (Object.keys(rest).length === 0) {
-            delete pm.openai
-          } else {
-            pm.openai = rest
-          }
-        }
-      }
+  // Strip from both prompt (chat completions) and input (responses API) fields
+  for (const field of ["prompt", "input"]) {
+    const val = args[field]
+    if (!val) continue
+    const json = JSON.stringify(val)
+    if (!json?.includes("encrypted_content")) continue
+    const stripped = json.replace(/"encrypted_content"\s*:\s*"[^"]*"/g, "")
+    try {
+      args[field] = JSON.parse(stripped)
+    } catch {
+      // leave untouched
     }
   }
 }
