@@ -122,6 +122,9 @@ interface ProcessorContext extends Input {
   // event; the stall watchdog compares against it. Starts undefined (not
   // turn-start) so model TTFT + prompt processing on a loaded backend —
   // routinely tens of seconds with zero events — never trips the watchdog.
+  // Suspended while tool calls are pending: a shell/sleep running minutes
+  // emits no provider events by design, and killing the turn for it would
+  // abort healthy long-running work.
   lastEventAt: number | undefined
 }
 
@@ -757,7 +760,9 @@ const layer = Layer.effect(
               // performs. It only fires after STALL_TIMEOUT of complete
               // silence — a healthy turn emits deltas continuously, and each
               // in-turn stream-level retry resets the clock by emitting new
-              // events. Raced via a Deferred marker so the sleep branch is
+              // events. Silence while tool calls are pending does NOT count:
+              // a shell/sleep running minutes emits no provider events by
+              // design. Raced via a Deferred marker so the sleep branch is
               // interrupted immediately when the drain wins.
               (drain) =>
                 Effect.gen(function* () {
@@ -770,6 +775,9 @@ const layer = Layer.effect(
                         // No events yet: the model is still producing its
                         // first token (TTFT) — not a stall.
                         if (ctx.lastEventAt === undefined) continue
+                        // Tool calls pending: the model is waiting on local
+                        // execution (shell, sleep, subagents) — not a stall.
+                        if (Object.keys(ctx.toolcalls).length > 0) continue
                         if (Date.now() - ctx.lastEventAt >= STALL_TIMEOUT_MS) return "timed-out" as const
                       }
                       // Unreachable: the while loop only exits via return.
