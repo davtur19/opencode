@@ -238,6 +238,24 @@ export const TaskTool = Tool.define(
               : result.info.error.name
           return yield* Effect.fail(new Error(`Subagent failed (task_id: ${nextSession.id}): ${message}`))
         }
+        // A max-steps stop looks like a clean finish (tools disabled, text-only
+        // summary) but the work is incomplete by definition: the loop ran out of
+        // budget instead of producing a final answer. Surface it explicitly so
+        // the orchestrator relaunches or re-scopes instead of treating a
+        // partial summary as a done result.
+        const maxStepsHit = result.parts.some(
+          (item) => item.type === "text" && !item.synthetic && item.text.includes("MAXIMUM STEPS REACHED"),
+        )
+        if (maxStepsHit) {
+          const summary = result.parts
+            .filter((item): item is SessionV1.TextPart => item.type === "text" && !item.synthetic)
+            .at(-1)?.text
+          return yield* Effect.fail(
+            new Error(
+              `Subagent hit max steps (task_id: ${nextSession.id}): incomplete, summary follows:\n${summary ?? "(no summary)"}`,
+            ),
+          )
+        }
         const failed = result.parts.findLast((item) => item.type === "tool" && item.state.status === "error")
         if (failed?.type === "tool" && failed.state.status === "error") {
           return yield* Effect.fail(new Error(`Subagent failed (task_id: ${nextSession.id}): ${failed.state.error}`))
