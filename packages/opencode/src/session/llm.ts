@@ -111,23 +111,20 @@ function stripEncryptedFromModelMessages(msgs: ModelMessage[]): ModelMessage[] {
 }
 
 function stripEncryptedFromReasoning(args: Record<string, unknown>): void {
-  let stripped = false
   for (const field of ["prompt", "input"]) {
     const val = args[field]
     if (!val) continue
     const json = JSON.stringify(val)
     if (!json?.includes("encrypted_content")) continue
     args[field] = removeEncryptedContentKeys(structuredClone(val))
-    stripped = true
   }
   const po = args.providerOptions as Record<string, unknown> | undefined
   if (po) {
     for (const key of Object.keys(po)) {
       const v = po[key] as Record<string, unknown> | undefined
       if (v && typeof v === "object") {
-        const cleaned = removeEncryptedContentKeys(structuredClone(v))
+        const cleaned = removeEncryptedContentKeys(structuredClone(v)) as Record<string, unknown>
         Object.assign(v, cleaned)
-        stripped = true
         if (Array.isArray(cleaned.include)) {
           const has = cleaned.include.some((x: unknown) => String(x).includes("encrypted_content"))
           if (has) {
@@ -141,7 +138,6 @@ function stripEncryptedFromReasoning(args: Record<string, unknown>): void {
     const hasEncrypted = args.include.some((v: unknown) => String(v).includes("encrypted_content"))
     if (hasEncrypted) {
       delete args.include
-      stripped = true
     }
   }
 }

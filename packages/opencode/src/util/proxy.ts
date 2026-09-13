@@ -76,6 +76,56 @@ export function proxiedInit(input: RequestInfo | URL, init?: RequestInit) {
   return { ...init, proxy } as ProxyAwareInit
 }
 
+// Recursively deletes keys referencing reasoning encrypted content from a
+// parsed request body. Returns true when anything was removed.
+function scrubEncryptedContent(obj: unknown): boolean {
+  if (!obj || typeof obj !== "object") return false
+  let changed = false
+  if (Array.isArray(obj)) {
+    for (const item of obj) {
+      if (scrubEncryptedContent(item)) changed = true
+    }
+    return changed
+  }
+  const record = obj as Record<string, unknown>
+  for (const key of Object.keys(record)) {
+    if (key.toLowerCase().includes("encrypted_content") || key.toLowerCase().includes("encryptedcontent")) {
+      delete record[key]
+      changed = true
+    } else if (scrubEncryptedContent(record[key])) {
+      changed = true
+    }
+  }
+  return changed
+}
+
+// Last-chance defense at the fetch boundary: removes `include` entries and
+// deep keys referencing reasoning encrypted content from cloud request
+// bodies. The AI SDK re-injects them after the session middleware strips
+// them, and the upstream rejects the request when they are present.
+function sanitizeBody(body: string): string | undefined {
+  if (!body.includes("encrypted_content")) return undefined
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(body)
+  } catch {
+    return undefined
+  }
+  if (!parsed || typeof parsed !== "object") return undefined
+  const record = parsed as Record<string, unknown>
+  let changed = false
+  if (Array.isArray(record.include)) {
+    const filtered = (record.include as unknown[]).filter((v) => !String(v).includes("encrypted_content"))
+    if (filtered.length !== (record.include as unknown[]).length) {
+      if (filtered.length > 0) record.include = filtered
+      else delete record.include
+      changed = true
+    }
+  }
+  if (scrubEncryptedContent(parsed)) changed = true
+  return changed ? JSON.stringify(parsed) : undefined
+}
+
 export function install() {
   if (installed) return
   installed = true
@@ -83,56 +133,14 @@ export function install() {
   // oxlint-disable-next-line typescript-eslint/no-unsafe-type-assertion -- Bun's fetch type has multiple overloads; the wrapper matches its call surface.
   globalThis.fetch = ((input: RequestInfo | URL, init?: RequestInit) => {
     let proxied = proxiedInit(input, init)
-    // Nuclear fix: at the fetch boundary, scrub ALL `encrypted_content`
-    // references from request bodies destined for cloud endpoints.
-    // The SDK re-adds these after our middleware strips them.
     if (init?.body) {
       const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url
       if (url.includes("/responses") || url.includes("/chat/completions")) {
         const bodyStr = typeof init.body === "string" ? init.body : ""
-        if (bodyStr.includes("encrypted_content")) {
-          try {
-            const parsed = JSON.parse(bodyStr)
-            let changed = false
-            // 1) Remove top-level include field if it contains encrypted_content
-            if (Array.isArray(parsed.include)) {
-              const filtered = parsed.include.filter((v: unknown) => !String(v).includes("encrypted_content"))
-              if (filtered.length !== parsed.include.length) {
-                console.error("[proxy-fetch] NUCLEAR: removing include field:", JSON.stringify(parsed.include))
-                if (filtered.length > 0) parsed.include = filtered
-                else delete parsed.include
-                changed = true
-              }
-            }
-            // 2) Deep-scrub any key containing "encrypted_content" or "encryptedContent"
-            function scrub(obj: unknown): boolean {
-              if (!obj || typeof obj !== "object") return false
-              let didChange = false
-              if (Array.isArray(obj)) {
-                for (let i = obj.length - 1; i >= 0; i--) {
-                  if (scrub(obj[i])) didChange = true
-                }
-              } else {
-                for (const key of Object.keys(obj as Record<string, unknown>)) {
-                  if (key.toLowerCase().includes("encrypted_content") || key.toLowerCase().includes("encryptedcontent")) {
-                    console.error("[proxy-fetch] NUCLEAR: deleting key", key)
-                    delete (obj as Record<string, unknown>)[key]
-                    didChange = true
-                  } else if (scrub((obj as Record<string, unknown>)[key])) {
-                    didChange = true
-                  }
-                }
-              }
-              return didChange
-            }
-            if (scrub(parsed)) changed = true
-            if (changed) {
-              init = { ...init, body: JSON.stringify(parsed) }
-              proxied = proxiedInit(input, init)
-            }
-          } catch {
-            // unparseable — leave as-is
-          }
+        const sanitized = bodyStr ? sanitizeBody(bodyStr) : undefined
+        if (sanitized) {
+          init = { ...init, body: sanitized }
+          proxied = proxiedInit(input, init)
         }
       }
     }
