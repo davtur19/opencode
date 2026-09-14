@@ -366,6 +366,10 @@ export const TaskTool = Tool.define(
         yield* inject("error", reason).pipe(Effect.forkIn(scope, { startImmediately: true }))
       })
 
+      // NOTE: subagentsBackground only affects the start() path below. The
+      // extend() path (same-session resume) chains onto the already-running
+      // job and always returns immediately — it is non-blocking by
+      // construction.
       if (yield* background.extend({ id: nextSession.id, run: runTask() })) {
         return {
           title: params.description,
@@ -387,6 +391,13 @@ export const TaskTool = Tool.define(
         id: nextSession.id,
         type: id,
         title: params.description,
+        // The job starts as FOREGROUND (no background flag): the tool blocks
+        // in the raceFirst below until the job completes OR the caller agent
+        // forces background via subagentsBackground. Foreground completion
+        // returns the result inline; a forced-background caller returns
+        // immediately with backgroundResult() and gets the notify() wake-up
+        // when the job settles. Nothing runs detached without an explicit
+        // opt-in from the delegating agent.
         metadata,
         onPromote: Effect.all([
           ctx.metadata({
@@ -416,6 +427,16 @@ export const TaskTool = Tool.define(
       }
 
       if (runInBackground) {
+        yield* notify(info.id)
+        return backgroundResult()
+      }
+
+      // Foreground path: block until the job settles, UNLESS the caller
+      // agent forces background via subagentsBackground — then return
+      // immediately (non-blocking) and let notify() deliver the result.
+      // The raceFirst below only resolves on job completion/promotion; with
+      // the force flag we skip it entirely instead of parking the turn here.
+      if (backgroundParam === true) {
         yield* notify(info.id)
         return backgroundResult()
       }
