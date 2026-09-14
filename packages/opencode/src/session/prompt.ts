@@ -1127,8 +1127,10 @@ const layer = Layer.effect(
     // one of them is a completed background task launch (no foreground tool
     // ran and no user-visible text was produced). The real work continues in
     // background jobs; looping back to the model would only keep the chat
-    // busy. The background flag lives in the tool result metadata (jobId):
-    // a task part without it ran in foreground and must keep the turn open.
+    // busy. The background flag lives in the tool result metadata: the start
+    // path sets background+jobId, the extend path sets background+sessionId
+    // (same value: the child session id). A task part without either ran in
+    // foreground and must keep the turn open.
     const hasOnlyBackgroundTaskCalls = Effect.fn("SessionPrompt.hasOnlyBackgroundTaskCalls")(function* (
       messageID: string,
     ) {
@@ -1148,7 +1150,8 @@ const layer = Layer.effect(
         (part) =>
           part.tool === "task" &&
           part.state.status === "completed" &&
-          typeof part.state.metadata?.jobId === "string",
+          (typeof part.state.metadata?.jobId === "string" ||
+            typeof part.state.metadata?.sessionId === "string"),
       )
     })
 
