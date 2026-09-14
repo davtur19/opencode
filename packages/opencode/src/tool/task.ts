@@ -101,9 +101,16 @@ export const TaskTool = Tool.define(
       ctx: Tool.Context,
     ) {
       const cfg = yield* config.get()
+      // Execution mode precedence: explicit caller param wins, then the
+      // invoked agent's own `background` setting, then the default (background
+      // when the experiment flag is on). Lets each agent force its mode, e.g.
+      // orchestrator delegating fire-and-forget work always in background.
+      const agentBackground = (yield* agent.get(params.subagent_type).pipe(Effect.orElseSucceed(() => undefined)))
+        ?.background
+      const backgroundParam = params.background ?? agentBackground
       const runInBackground = flags.experimentalBackgroundSubagents
-        ? params.background !== false
-        : params.background === true
+        ? backgroundParam !== false
+        : backgroundParam === true
       if (runInBackground && !flags.experimentalBackgroundSubagents) {
         return yield* Effect.fail(
           new Error("Background subagents require OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS=true"),

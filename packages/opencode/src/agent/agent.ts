@@ -52,6 +52,11 @@ export const Info = Schema.Struct({
   prompt: Schema.optional(Schema.String),
   options: Schema.Record(Schema.String, Schema.Unknown),
   steps: Schema.optional(Schema.Finite),
+  // Force subagent execution mode when this agent is invoked via the task
+  // tool: true = always background, false = always foreground. Unset keeps
+  // the existing behavior (background by default when the experiment flag is
+  // on, unless the caller passes background=false explicitly).
+  background: Schema.optional(Schema.Boolean),
 }).annotate({ identifier: "Agent" })
 export type Info = DeepMutable<Schema.Schema.Type<typeof Info>>
 
