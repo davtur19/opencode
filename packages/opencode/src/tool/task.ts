@@ -106,8 +106,12 @@ export const TaskTool = Tool.define(
       // delegating decides how its subagents run), then the default
       // (background when the experiment flag is on). Lets each caller force
       // its delegation mode, e.g. orchestrator always background.
-      const callerBackground = (yield* agent.get(ctx.agent).pipe(Effect.orElseSucceed(() => undefined)))
-        ?.subagentsBackground
+      // NOTE: ctx.agent here is the CALLEE (prompt.ts passes task.agent),
+      // so resolve the caller from the parent session instead.
+      const parent = yield* sessions.get(ctx.sessionID)
+      const callerBackground = (
+        yield* agent.get(parent.agent ?? ctx.agent).pipe(Effect.orElseSucceed(() => undefined))
+      )?.subagentsBackground
       const backgroundParam = params.background ?? callerBackground
       const runInBackground = flags.experimentalBackgroundSubagents
         ? backgroundParam !== false
@@ -118,7 +122,6 @@ export const TaskTool = Tool.define(
         )
       }
 
-      const parent = yield* sessions.get(ctx.sessionID)
       let current = parent
       let depth = 0
       while (current.parentID) {
