@@ -431,11 +431,11 @@ export const TaskTool = Tool.define(
         return backgroundResult()
       }
 
-      // Foreground path: block until the job settles, UNLESS the caller
-      // agent forces background via subagentsBackground — then return
-      // immediately (non-blocking) and let notify() deliver the result.
-      // The raceFirst below only resolves on job completion/promotion; with
-      // the force flag we skip it entirely instead of parking the turn here.
+      // subagentsBackground:true on the caller forces non-blocking even when
+      // the experiment flag is off: return immediately and let notify()
+      // deliver the result. The flag only controls the DEFAULT when nobody
+      // asked — an explicit opt-in is never gated by it. Without this, the
+      // raceFirst below parks the turn until the job settles.
       if (backgroundParam === true) {
         yield* notify(info.id)
         return backgroundResult()
