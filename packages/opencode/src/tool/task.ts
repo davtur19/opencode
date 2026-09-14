@@ -373,7 +373,6 @@ export const TaskTool = Tool.define(
             ...metadata,
             background: true,
             jobId: nextSession.id,
-            sessionId: nextSession.id,
           },
           output: renderOutput({
             sessionID: nextSession.id,
@@ -406,7 +405,6 @@ export const TaskTool = Tool.define(
             ...metadata,
             background: true,
             jobId: info.id,
-            sessionId: nextSession.id,
           },
           output: renderOutput({
             sessionID: nextSession.id,
