@@ -113,6 +113,10 @@ export const TaskTool = Tool.define(
         yield* agent.get(parent.agent ?? ctx.agent).pipe(Effect.orElseSucceed(() => undefined))
       )?.subagentsBackground
       const backgroundParam = params.background ?? callerBackground
+      // The force flag bypasses the experiment gate: an explicit opt-in
+      // returns immediately (non-blocking) regardless of the flag. The flag
+      // only controls the DEFAULT when nobody asked.
+      const forceBackground = backgroundParam === true
       const runInBackground = flags.experimentalBackgroundSubagents
         ? backgroundParam !== false
         : backgroundParam === true
@@ -443,11 +447,8 @@ export const TaskTool = Tool.define(
       }
 
       // subagentsBackground:true on the caller forces non-blocking even when
-      // the experiment flag is off: return immediately and let notify()
-      // deliver the result. The flag only controls the DEFAULT when nobody
-      // asked — an explicit opt-in is never gated by it. Without this, the
-      // raceFirst below parks the turn until the job settles.
-      if (backgroundParam === true) {
+      // the experiment flag is off (see forceBackground above).
+      if (forceBackground) {
         yield* notify(info.id).pipe(Effect.forkIn(scope, { startImmediately: true }))
         return backgroundResult()
       }

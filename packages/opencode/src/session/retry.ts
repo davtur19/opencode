@@ -61,26 +61,6 @@ export function isNetworkStreamError(error: unknown) {
   return GATEWAY_UPSTREAM_ERROR_PATTERNS.some((pattern) => pattern.test(error.data.message))
 }
 
-const SPARK_BURST_ERROR_PATTERNS = [
-  /response\.failed/i,
-  /server_error/i,
-  /failed to generate(?: a)? response/i,
-  /encrypted_content[`\s]+was not issued/i,
-  /invalid_request_error/i,
-]
-
-// Spark poison shapes: stale encrypted reasoning blocks (or the burst shapes
-// that carry them) are rejected deterministically — identical retries can
-// never succeed. Matches message AND responseBody: Zen strips the detail
-// (bare 400 invalid_request_error/invalid parameters, param:null) so either
-// field alone may carry the signature. Single home for the matcher so the
-// stream policy, the turn policy and the processor workaround stay in sync.
-export function isSparkBurstError(error: unknown): boolean {
-  if (!SessionV1.APIError.isInstance(error)) return false
-  const haystack = `${error.data.message ?? ""}\n${error.data.responseBody ?? ""}`
-  return SPARK_BURST_ERROR_PATTERNS.some((pattern) => pattern.test(haystack))
-}
-
 const RATE_LIMIT_ERROR_PATTERNS = [/rate_limit_exceeded/i, /rate limit exceeded/i]
 
 export function isRateLimitError(error: unknown) {
@@ -193,20 +173,11 @@ export function retryable(error: Err, provider: string, opts?: { retry401?: bool
     }
     // 5xx errors are transient server failures and should always be retried,
     // even when the provider SDK doesn't explicitly mark them as retryable.
-    // Spark poison shape: Zen answers stale encrypted-reasoning replays with
-    // a bare 400 invalid_request_error/invalid parameters (param:null, detail
-    // stripped). The safety net in llm.ts retries it once with a clean input;
-    // that retry only happens if this classifies it retryable first.
     if (
       !error.data.isRetryable &&
       !(status !== undefined && status >= 500) &&
       !matchesRetryableMessage(error.data.message) &&
-      !matchesRetryableMessage(error.data.responseBody) &&
-      !(
-        provider === "opencode" &&
-        /invalid_request_error/i.test(error.data.message ?? "") &&
-        /invalid parameters/i.test(error.data.message ?? "")
-      )
+      !matchesRetryableMessage(error.data.responseBody)
     )
       return undefined
     if (error.data.responseBody?.includes("FreeUsageLimitError")) {
