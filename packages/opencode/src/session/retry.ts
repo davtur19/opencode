@@ -173,11 +173,20 @@ export function retryable(error: Err, provider: string, opts?: { retry401?: bool
     }
     // 5xx errors are transient server failures and should always be retried,
     // even when the provider SDK doesn't explicitly mark them as retryable.
+    // Spark poison shape: Zen answers stale encrypted-reasoning replays with
+    // a bare 400 invalid_request_error/invalid parameters (param:null, detail
+    // stripped). The safety net in llm.ts retries it once with a clean input;
+    // that retry only happens if this classifies it retryable first.
     if (
       !error.data.isRetryable &&
       !(status !== undefined && status >= 500) &&
       !matchesRetryableMessage(error.data.message) &&
-      !matchesRetryableMessage(error.data.responseBody)
+      !matchesRetryableMessage(error.data.responseBody) &&
+      !(
+        provider === "opencode" &&
+        /invalid_request_error/i.test(error.data.message ?? "") &&
+        /invalid parameters/i.test(error.data.message ?? "")
+      )
     )
       return undefined
     if (error.data.responseBody?.includes("FreeUsageLimitError")) {
