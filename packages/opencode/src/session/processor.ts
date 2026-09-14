@@ -46,16 +46,10 @@ const STALL_CHECK_INTERVAL_MS = 5 * 1000
 // were issued to a different upstream caller, so replaying them re-triggers
 // the rejection. After plain retries fail, drop the stale reasoning blocks
 // (text survives in the persisted parts) and retry once with a clean turn:
-// the automatic equivalent of stop + resend. Spark-only: other models never
-// hit this shape, so their retry path is untouched.
+// the automatic equivalent of stop + resend. Spark-only; every other model
+// keeps the old path. Burst detection lives in retry.ts (isSparkBurstError)
+// so the stream/turn caps stay in sync with this workaround.
 const SPARK_MODEL_IDS = new Set(["muse-spark-1.3-contributor-free", "muse-spark-1.2-contributor-free"])
-const SPARK_BURST_ERROR_PATTERNS = [/response\.failed/i, /server_error/i, /failed to generate(?: a)? response/i]
-
-function isSparkBurstError(error: unknown): boolean {
-  if (!SessionV1.APIError.isInstance(error)) return false
-  const haystack = `${error.data.message ?? ""}\n${error.data.responseBody ?? ""}`
-  return SPARK_BURST_ERROR_PATTERNS.some((pattern) => pattern.test(haystack))
-}
 
 function stripReasoningParts(input: LLM.StreamInput): LLM.StreamInput {
   return {
@@ -841,15 +835,18 @@ const layer = Layer.effect(
               // from scratch up to TURN_RETRY_LIMIT times. Permanent errors and
               // context overflow still halt (finalize as error / compact).
               const parsed = parse(e)
-              // Spark burst workaround: 2-3 identical retries already failed
-              // with response.failed/server_error, so replaying the same
-              // encrypted reasoning blocks will keep failing. Once per turn,
-              // drop the stale reasoning blocks and retry with a clean input —
-              // the persisted text parts keep the content, only the opaque
-              // blobs go. Spark-only; every other model keeps the old path.
+              // Spark poison workaround: stale encrypted reasoning blocks (or
+              // the burst shapes that carry them) are rejected deterministically
+              // — identical retries can never succeed. Once per turn, fail
+              // TransientTurnError WITHOUT consuming stream-level attempts:
+              // the turn-level retry in the run loop reprocesses the turn
+              // from scratch (fresh stream, new attempt budget), and the run
+              // below swaps the input for the reasoning-stripped copy. The
+              // persisted text parts keep the content, only the opaque blobs
+              // go. Spark-only; every other model keeps the old path.
               if (
                 SPARK_MODEL_IDS.has(input.model.id) &&
-                isSparkBurstError(parsed) &&
+                SessionRetry.isSparkBurstError(parsed) &&
                 attemptInput === streamInput
               ) {
                 attemptInput = stripReasoningParts(streamInput)
