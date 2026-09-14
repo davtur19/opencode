@@ -46,6 +46,7 @@ import { Process } from "@/util/process"
 import { Cause, Effect, Exit, Latch, Layer, Option, Scope, Context, Schema, Types } from "effect"
 import { InstanceState } from "@/effect/instance-state"
 import { TaskTool, type TaskPromptOps } from "@/tool/task"
+import { BackgroundJob } from "@/background/job"
 import { SessionRunState } from "./run-state"
 import { RuntimeFlags } from "@/effect/runtime-flags"
 import { EventV2Bridge } from "@/event-v2-bridge"
@@ -183,6 +184,7 @@ const layer = Layer.effect(
     const events = yield* EventV2Bridge.Service
     const flags = yield* RuntimeFlags.Service
     const database = yield* Database.Service
+    const background = yield* BackgroundJob.Service
     const { db } = database
     const ops = Effect.fn("SessionPrompt.ops")(function* () {
       return {
@@ -1121,6 +1123,35 @@ const layer = Layer.effect(
       throw new Error("Impossible")
     })
 
+    // True when the turn's assistant message contains tool calls but every
+    // one of them is a completed background task launch (no foreground tool
+    // ran and no user-visible text was produced). The real work continues in
+    // background jobs; looping back to the model would only keep the chat
+    // busy. The background flag lives in the tool result metadata (jobId):
+    // a task part without it ran in foreground and must keep the turn open.
+    const hasOnlyBackgroundTaskCalls = Effect.fn("SessionPrompt.hasOnlyBackgroundTaskCalls")(function* (
+      messageID: string,
+    ) {
+      const parts = yield* MessageV2.parts(MessageID.make(messageID)).pipe(
+        Effect.provideService(Database.Service, database),
+        Effect.orDie,
+      )
+      const tools = parts.filter(
+        (part): part is SessionV1.ToolPart => part.type === "tool",
+      )
+      if (tools.length === 0) return false
+      const texts = parts.filter(
+        (part): part is SessionV1.TextPart => part.type === "text" && !part.synthetic && part.text.trim().length > 0,
+      )
+      if (texts.length > 0) return false
+      return tools.every(
+        (part) =>
+          part.tool === "task" &&
+          part.state.status === "completed" &&
+          typeof part.state.metadata?.jobId === "string",
+      )
+    })
+
     // Fallback parent notification: when a child session's run loop finishes,
     // deliver its result to the parent as a synthetic user message — even if
     // the task tool's job-based notify() never fired (unregistered job,
@@ -1477,6 +1508,23 @@ const layer = Layer.effect(
                 overflow: !handle.message.finish,
               })
             }
+            // Background handoff: the turn launched background subagents and
+            // produced no user-visible output (no text, no foreground tool
+            // results). Instead of looping back to the model — which keeps
+            // the chat busy while the real work happens elsewhere — close
+            // the turn here. Each completion wakes the session via notify(),
+            // so nothing is lost and the user can keep prompting meanwhile.
+            // Foreground tools (bash/read/edit/...) are unaffected: only a
+            // turn whose ONLY tool activity is background task launches
+            // hands off.
+            const backgrounded = yield* hasOnlyBackgroundTaskCalls(msg.id).pipe(Effect.orElseSucceed(() => false))
+            if (backgrounded) {
+              yield* Effect.logInfo("background handoff: closing turn, jobs continue in background", {
+                "session.id": sessionID,
+                messageID: msg.id,
+              })
+              return "break" as const
+            }
             return "continue" as const
           }).pipe(
             Effect.ensuring(instruction.clear(handle.message.id)),
@@ -1778,6 +1826,7 @@ export const node = LayerNode.make({
     EventV2Bridge.node,
     RuntimeFlags.node,
     Database.node,
+    BackgroundJob.node,
   ],
 })
 
