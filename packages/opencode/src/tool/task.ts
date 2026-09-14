@@ -102,12 +102,12 @@ export const TaskTool = Tool.define(
     ) {
       const cfg = yield* config.get()
       // Execution mode precedence: explicit caller param wins, then the
-      // invoked agent's own `background` setting, then the default (background
-      // when the experiment flag is on). Lets each agent force its mode, e.g.
-      // orchestrator delegating fire-and-forget work always in background.
-      const agentBackground = (yield* agent.get(params.subagent_type).pipe(Effect.orElseSucceed(() => undefined)))
-        ?.background
-      const backgroundParam = params.background ?? agentBackground
+      // CALLER agent's own `background` setting (the agent doing the
+      // delegating decides how its subagents run), then the default
+      // (background when the experiment flag is on). Lets each caller force
+      // its delegation mode, e.g. orchestrator always background.
+      const callerBackground = (yield* agent.get(ctx.agent).pipe(Effect.orElseSucceed(() => undefined)))?.background
+      const backgroundParam = params.background ?? callerBackground
       const runInBackground = flags.experimentalBackgroundSubagents
         ? backgroundParam !== false
         : backgroundParam === true
