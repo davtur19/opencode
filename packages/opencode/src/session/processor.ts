@@ -124,7 +124,10 @@ interface ProcessorContext extends Input {
   // routinely tens of seconds with zero events — never trips the watchdog.
   // Suspended while tool calls are pending: a shell/sleep running minutes
   // emits no provider events by design, and killing the turn for it would
-  // abort healthy long-running work.
+  // abort healthy long-running work. A slow reasoning-only phase (deltas
+  // minutes apart on a loaded backend) is NOT a stall either, but it is
+  // indistinguishable from a dead stream at this level — so the watchdog
+  // only reports it as transient (auto-retried), never as a terminal error.
   lastEventAt: number | undefined
 }
 
@@ -787,7 +790,11 @@ const layer = Layer.effect(
                   if (outcome === "timed-out") {
                     return yield* Effect.fail(
                       new SessionRetry.TransientTurnError({
-                        message: `Turn stalled with no provider events for ${STALL_TIMEOUT_MS / 1000}s; retrying with a fresh turn`,
+                        // Transient phrasing on purpose: the turn-level retry
+                        // in the run loop re-runs automatically, and a stall
+                        // may be a slow reasoning phase rather than a dead
+                        // stream. Never surfaced as a terminal failure banner.
+                        message: "Provider response delayed; retrying the turn",
                         error: new SessionV1.APIError({
                           message: "Turn timed out waiting for provider response",
                           isRetryable: true,
