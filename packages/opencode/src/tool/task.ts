@@ -401,6 +401,10 @@ export const TaskTool = Tool.define(
         // immediately with backgroundResult() and gets the notify() wake-up
         // when the job settles. Nothing runs detached without an explicit
         // opt-in from the delegating agent.
+        // NON-BLOCKING CONTRACT: every return path above this point (extend,
+        // runInBackground, force flag) returns without waiting for the job.
+        // Only the foreground raceFirst below may park the turn — and only
+        // when nobody asked for background.
         metadata,
         onPromote: Effect.all([
           ctx.metadata({
@@ -430,7 +434,11 @@ export const TaskTool = Tool.define(
       }
 
       if (runInBackground) {
-        yield* notify(info.id)
+        // Fire-and-forget: notify() waits for the job, so fork it — the tool
+        // must return backgroundResult() NOW, not when the job settles.
+        // Awaiting it here parks the turn (and the chat) for the whole
+        // subagent duration.
+        yield* notify(info.id).pipe(Effect.forkIn(scope, { startImmediately: true }))
         return backgroundResult()
       }
 
@@ -440,7 +448,7 @@ export const TaskTool = Tool.define(
       // asked — an explicit opt-in is never gated by it. Without this, the
       // raceFirst below parks the turn until the job settles.
       if (backgroundParam === true) {
-        yield* notify(info.id)
+        yield* notify(info.id).pipe(Effect.forkIn(scope, { startImmediately: true }))
         return backgroundResult()
       }
 
