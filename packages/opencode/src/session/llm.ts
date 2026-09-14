@@ -69,6 +69,10 @@ export const use = serviceUse(Service)
 // attempt and the backend keeps refusing them. A stop + resend works because
 // the new turn rebuilds history without the stale blocks. Matches ONLY these
 // shapes — every other model and every other error keeps the normal path.
+// NOTE: a bare "invalid parameters" 400 with param:null carries no signature
+// at all — it can be the same stale-block rejection with the detail stripped
+// by the gateway. On spark it joins the poison set (the workaround is cheap
+// and safe: one clean retry, then the original cause either way).
 function isPoisonedRequestError(error: unknown): boolean {
   const str =
     typeof error === "string"
@@ -81,6 +85,7 @@ function isPoisonedRequestError(error: unknown): boolean {
   if (/encrypted_content[`\s]+was not issued/i.test(str)) return true
   if (/response\.failed/i.test(str)) return true
   if (/server_error/i.test(str) && /failed to generate(?: a)? response/i.test(str)) return true
+  if (/invalid_request_error/i.test(str) && /invalid parameters/i.test(str)) return true
   if (error instanceof Error && "data" in error) {
     const data = (error as { data: unknown }).data
     if (data && typeof data === "object" && "message" in data) {
@@ -88,6 +93,7 @@ function isPoisonedRequestError(error: unknown): boolean {
       if (/encrypted_content was not issued/i.test(dataMsg)) return true
       if (/response\.failed/i.test(dataMsg)) return true
       if (/server_error/i.test(dataMsg) && /failed to generate(?: a)? response/i.test(dataMsg)) return true
+      if (/invalid_request_error/i.test(dataMsg) && /invalid parameters/i.test(dataMsg)) return true
     }
   }
   if (error instanceof Error && error.cause) return isPoisonedRequestError(error.cause)
