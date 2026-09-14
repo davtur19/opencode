@@ -100,6 +100,48 @@ function isOrphanedInterruptedTool(part: SessionV1.ToolPart) {
   return part.state.status === "error" && part.state.metadata?.interrupted === true
 }
 
+function renderSubagentOutput(input: {
+  sessionID: SessionID
+  state: "completed" | "error"
+  summary: string
+  text: string
+}) {
+  const tag = input.state === "error" ? "task_error" : "task_result"
+  return [
+    `<task id="${input.sessionID}" state="${input.state}">`,
+    `<summary>${input.summary}</summary>`,
+    `<${tag}>`,
+    input.text,
+    `</${tag}>`,
+    "</task>",
+  ].join("\n")
+}
+
+function subagentResultText(result: SessionV1.WithParts) {
+  const text = result.parts
+    .filter((part): part is SessionV1.TextPart => part.type === "text")
+    .map((part) => part.text)
+    .join("\n")
+    .trim()
+  if (text) return text
+  if (result.info.role === "assistant" && result.info.error) return assistantErrorMessage(result.info.error)
+  return "Subagent finished without a text response."
+}
+
+function assistantErrorMessage(error: NonNullable<SessionV1.Assistant["error"]>) {
+  if (typeof error.data === "object" && error.data && "message" in error.data && typeof error.data.message === "string") {
+    return error.data.message
+  }
+  return error.name
+}
+
+function subagentNotifiedMetadata(session: Session.Info, messageID: string) {
+  return {
+    ...session.metadata,
+    subagent_last_notified_message_id: messageID,
+  }
+}
+
 export interface Interface {
   readonly cancel: (sessionID: SessionID) => Effect.Effect<void>
   readonly prompt: (input: PromptInput) => Effect.Effect<SessionV1.WithParts, Image.Error>
@@ -1079,6 +1121,57 @@ const layer = Layer.effect(
       throw new Error("Impossible")
     })
 
+    // Fallback parent notification: when a child session's run loop finishes,
+    // deliver its result to the parent as a synthetic user message — even if
+    // the task tool's job-based notify() never fired (unregistered job,
+    // wait() defect, restart gap). Deduped via subagent_last_notified_message_id
+    // so a child that already reported through the job path is not re-announced.
+    // The task tool's notify() stays the primary path; this only covers jobs it missed.
+    const notifyParent = Effect.fn("SessionPrompt.notifyParent")(function* (input: {
+      session: Session.Info
+      result: SessionV1.WithParts
+    }) {
+      if (!input.session.parentID) return
+      const current = yield* sessions.get(input.session.id).pipe(Effect.catchCause(() => Effect.succeed(input.session)))
+      if (current.metadata?.subagent_last_notified_message_id === input.result.info.id) return
+      if (!current.parentID) return
+      const parent = yield* sessions.get(current.parentID).pipe(
+        Effect.catchCause((cause) =>
+          Effect.logWarning("failed to load parent session for subagent notification", {
+            sessionID: current.id,
+            parentID: current.parentID,
+            cause: Cause.pretty(cause),
+          }).pipe(Effect.as(undefined)),
+        ),
+      )
+      if (!parent) return
+      yield* sessions.setMetadata({
+        sessionID: current.id,
+        metadata: subagentNotifiedMetadata(current, input.result.info.id),
+      })
+
+      const state = input.result.info.role === "assistant" && input.result.info.error ? "error" : "completed"
+      yield* prompt({
+        sessionID: current.parentID,
+        agent: parent.agent,
+        parts: [
+          {
+            type: "text",
+            synthetic: true,
+            text: renderSubagentOutput({
+              sessionID: current.id,
+              state,
+              summary:
+                state === "completed"
+                  ? `Subagent completed: ${current.title}`
+                  : `Subagent failed: ${current.title}`,
+              text: subagentResultText(input.result),
+            }),
+          },
+        ],
+      }).pipe(Effect.ignore, Effect.forkIn(scope, { startImmediately: true }))
+    })
+
     const runLoop: (sessionID: SessionID) => Effect.Effect<SessionV1.WithParts> = Effect.fn("SessionPrompt.run")(
       function* (sessionID: SessionID) {
         const ctx = yield* InstanceState.context
@@ -1394,7 +1487,9 @@ const layer = Layer.effect(
         }
 
         yield* compaction.prune({ sessionID }).pipe(Effect.ignore, Effect.forkIn(scope))
-        return yield* lastAssistant(sessionID)
+        const result = yield* lastAssistant(sessionID)
+        yield* notifyParent({ session, result }).pipe(Effect.ignore)
+        return result
       },
     )
 

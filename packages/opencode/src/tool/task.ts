@@ -290,6 +290,10 @@ export const TaskTool = Tool.define(
         text: string,
       ) {
         const currentParent = yield* sessions.get(ctx.sessionID)
+        // Fire-and-forget wake-up: prompt() on an idle session starts a new
+        // turn that delivers the result; on a busy session it queues behind
+        // the active turn via the runner. Either way the chat is free the
+        // moment the task tool returns — the parent never blocks on the job.
         yield* ops
           .prompt({
             sessionID: ctx.sessionID,

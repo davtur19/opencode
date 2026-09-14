@@ -26,7 +26,6 @@ import { isRecord } from "@/util/record"
 import { EventV2Bridge } from "@/event-v2-bridge"
 import { Database } from "@opencode-ai/core/database/database"
 import { Usage, type LLMEvent } from "@opencode-ai/llm"
-import type { AssistantModelMessage } from "ai"
 
 const DOOM_LOOP_THRESHOLD = 3
 
@@ -41,29 +40,6 @@ const DOOM_LOOP_THRESHOLD = 3
 const STALL_TIMEOUT_MS = 90 * 1000
 const STALL_CHECK_INTERVAL_MS = 5 * 1000
 
-// Muse burst workaround: response.failed/server_error bursts reject the
-// identical request every time — the encrypted reasoning blocks in history
-// were issued to a different upstream caller, so replaying them re-triggers
-// the rejection. After plain retries fail, drop the stale reasoning blocks
-// (text survives in the persisted parts) and retry once with a clean turn:
-// the automatic equivalent of stop + resend. Spark-only; every other model
-// keeps the old path. Burst detection lives in retry.ts (isSparkBurstError)
-// so the stream/turn caps stay in sync with this workaround.
-const SPARK_MODEL_IDS = new Set(["muse-spark-1.3-contributor-free", "muse-spark-1.2-contributor-free"])
-
-function stripReasoningParts(input: LLM.StreamInput): LLM.StreamInput {
-  return {
-    ...input,
-    messages: input.messages.map((msg) => {
-      if (msg.role !== "assistant" || !Array.isArray(msg.content)) return msg
-      const content = (msg.content as AssistantModelMessage["content"] as unknown[]).filter((part) => {
-        if (typeof part !== "object" || part === null || !("type" in part)) return true
-        return (part as { type: string }).type !== "reasoning"
-      })
-      return { ...msg, content: content as AssistantModelMessage["content"] }
-    }),
-  }
-}
 export type Result = "compact" | "stop" | "continue"
 
 export interface Handle {
@@ -735,14 +711,11 @@ const layer = Layer.effect(
         ctx.shouldBreak = (yield* config.get()).experimental?.continue_loop_on_deny !== true
 
         return yield* Effect.gen(function* () {
-          // Per-attempt input: the spark workaround swaps this for a
-          // reasoning-stripped copy after plain retries exhaust (see below).
-          let attemptInput = streamInput
           yield* Effect.gen(function* () {
             ctx.currentText = undefined
             ctx.reasoningMap = {}
             yield* status.set(ctx.sessionID, { type: "busy" })
-            const stream = llm.stream(attemptInput)
+            const stream = llm.stream(streamInput)
 
             yield* stream.pipe(
               Stream.tap((event) => handleEvent(event)),
@@ -835,28 +808,6 @@ const layer = Layer.effect(
               // from scratch up to TURN_RETRY_LIMIT times. Permanent errors and
               // context overflow still halt (finalize as error / compact).
               const parsed = parse(e)
-              // Spark poison workaround: stale encrypted reasoning blocks (or
-              // the burst shapes that carry them) are rejected deterministically
-              // — identical retries can never succeed. Once per turn, fail
-              // TransientTurnError WITHOUT consuming stream-level attempts:
-              // the turn-level retry in the run loop reprocesses the turn
-              // from scratch (fresh stream, new attempt budget), and the run
-              // below swaps the input for the reasoning-stripped copy. The
-              // persisted text parts keep the content, only the opaque blobs
-              // go. Spark-only; every other model keeps the old path.
-              if (
-                SPARK_MODEL_IDS.has(input.model.id) &&
-                SessionRetry.isSparkBurstError(parsed) &&
-                attemptInput === streamInput
-              ) {
-                attemptInput = stripReasoningParts(streamInput)
-                return Effect.fail(
-                  new SessionRetry.TransientTurnError({
-                    message: "Muse burst: retrying without stale reasoning blocks",
-                    error: parsed,
-                  }),
-                )
-              }
               const retry = SessionRetry.retryable(parsed, input.model.providerID, { retry401: anonymous401 })
               if (retry) {
                 return Effect.fail(
