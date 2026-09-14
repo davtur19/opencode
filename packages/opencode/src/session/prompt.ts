@@ -410,6 +410,15 @@ const layer = Layer.effect(
             time: { ...part.state.time, end: Date.now() },
           },
         } satisfies SessionV1.ToolPart)
+        // Background launches must be visible to the model immediately: the
+        // tool returns "Background task started" but the part keeps showing
+        // the stale running state until the next event flushes it. Force the
+        // flush now so the model sees the started output in this same turn
+        // and can close with its "waiting on subagents" text instead of
+        // hanging on an output-less running part.
+        if (result.metadata?.background === true) {
+          yield* sessions.flushNow(sessionID).pipe(Effect.orElseSucceed(() => false))
+        }
       }
 
       if (!result) {
