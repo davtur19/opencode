@@ -101,26 +101,26 @@ export const TaskTool = Tool.define(
       ctx: Tool.Context,
     ) {
       const cfg = yield* config.get()
-      // Execution mode precedence: explicit caller param wins, then the
-      // CALLER agent's own `subagentsBackground` setting (the agent doing the
-      // delegating decides how its subagents run), then the default
-      // (background when the experiment flag is on). Lets each caller force
-      // its delegation mode, e.g. orchestrator always background.
+      // Execution mode precedence: the CALLER agent's `subagentsBackground`
+      // setting wins over everything, including an explicit caller param —
+      // that is the point of the setting: the delegating agent decides how
+      // its subagents run, and the model must not override it (it keeps
+      // passing background:false out of habit). Unset falls back to the
+      // param, then the default (background when the experiment flag is on).
       // NOTE: ctx.agent here is the CALLEE (prompt.ts passes task.agent),
       // so resolve the caller from the parent session instead.
       const parent = yield* sessions.get(ctx.sessionID)
       const callerBackground = (
         yield* agent.get(parent.agent ?? ctx.agent).pipe(Effect.orElseSucceed(() => undefined))
       )?.subagentsBackground
-      const backgroundParam = params.background ?? callerBackground
-      // The force flag bypasses the experiment gate: an explicit opt-in
-      // returns immediately (non-blocking) regardless of the flag. The flag
-      // only controls the DEFAULT when nobody asked.
+      const backgroundParam = callerBackground ?? params.background
+      // The caller setting forces the mode and bypasses the experiment gate:
+      // an explicit opt-in returns immediately (non-blocking) regardless of
+      // the flag. The flag only enables the feature (background machinery);
+      // when nobody asked, background is the default iff the flag is on.
       const forceBackground = backgroundParam === true
-      const runInBackground = flags.experimentalBackgroundSubagents
-        ? backgroundParam !== false
-        : backgroundParam === true
-      if (runInBackground && !flags.experimentalBackgroundSubagents) {
+      const runInBackground = forceBackground || (flags.experimentalBackgroundSubagents && backgroundParam !== false)
+      if (runInBackground && !forceBackground && !flags.experimentalBackgroundSubagents) {
         return yield* Effect.fail(
           new Error("Background subagents require OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS=true"),
         )
