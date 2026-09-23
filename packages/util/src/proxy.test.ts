@@ -48,6 +48,16 @@ describe("util.proxy", () => {
     expect(FetchProxy.proxiedInit("https://opencode.ai/install")).toBeUndefined()
   })
 
+  test("does not route loopback hosts through the cloud proxy", () => {
+    process.env[CLOUD_PROXY_ENV] = PROXY_URL
+    expect(FetchProxy.getProxyForHostname("127.0.0.1")).toBeUndefined()
+    expect(FetchProxy.getProxyForHostname("localhost")).toBeUndefined()
+    expect(FetchProxy.getProxyForHostname("[::1]")).toBeUndefined()
+    expect(FetchProxy.proxiedInit("http://127.0.0.1:4096/api/session", {})).toBeUndefined()
+    expect(FetchProxy.proxiedInit("http://localhost:4096/api/session", {})).toBeUndefined()
+    expect(FetchProxy.proxiedInit("http://[::1]:4096/api/session", {})).toBeUndefined()
+  })
+
   test("routes cloud model hostnames via OPENCODE_CLOUD_PROXY using the default domain list", () => {
     process.env[CLOUD_PROXY_ENV] = ENV_PROXY_URL
     expect(FetchProxy.getProxyForHostname("opencode.ai")).toBe(ENV_PROXY_URL)
