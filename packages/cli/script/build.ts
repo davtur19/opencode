@@ -22,7 +22,9 @@ process.chdir(dir)
 
 await rm(outdir, { recursive: true, force: true })
 
-const singleFlag = process.argv.includes("--single")
+// Default to the current platform; pass --all for a cross-platform matrix.
+// --single is accepted as a no-op alias so existing CI invocations keep working.
+const allFlag = process.argv.includes("--all")
 const baselineFlag = process.argv.includes("--baseline")
 const requestedTarget = process.argv.find((arg) => arg.startsWith("--target="))?.slice("--target=".length)
 const skipInstall = process.argv.includes("--skip-install")
@@ -53,13 +55,13 @@ const allTargets: {
 const targets =
   requestedTarget !== undefined
     ? allTargets.filter((item) => targetName(item) === requestedTarget)
-    : singleFlag
-      ? allTargets.filter((item) => {
+    : allFlag
+      ? allTargets
+      : allTargets.filter((item) => {
           if (item.os !== process.platform || item.arch !== process.arch) return false
           if (item.avx2 === false) return baselineFlag
           return item.abi === undefined
         })
-      : allTargets
 if (!targets.length) throw new Error(`Unknown build target: ${requestedTarget}`)
 
 if (!skipInstall)
