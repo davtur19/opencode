@@ -134,30 +134,46 @@ export const OpencodePlugin = define<HttpClient.HttpClient | Bus.Service | Manag
       config: typeof RemoteResponse.Type | undefined
       connection: ActiveConnection
       organization: string | undefined
-    } = { config: undefined, connection: undefined, organization: undefined }
+      // True only after resolve() yields a credential; an active connection alone must not
+      // unlock the paid catalog when refresh or lookup fails (port of 4749e7a413).
+      resolved: boolean
+    } = { config: undefined, connection: undefined, organization: undefined, resolved: false }
 
     const load = Effect.fn("OpencodePlugin.load")(function* () {
       const connection = yield* ctx.integration.connection.active("opencode")
-      if (!connection) return { config: undefined, connection, organization: undefined }
+      if (!connection) return { config: undefined, connection, organization: undefined, resolved: false }
       return yield* ctx.integration.connection.resolve(connection).pipe(
         Effect.flatMap((credential) => {
-          if (!credential) return Effect.succeed({ config: undefined, connection, organization: undefined })
+          if (!credential)
+            return Effect.succeed({ config: undefined, connection, organization: undefined, resolved: false })
           return fetchConfig(http, credential).pipe(
             Effect.map((config) => ({
               config,
               connection,
               organization: typeof credential.metadata?.orgName === "string" ? credential.metadata.orgName : undefined,
+              resolved: true,
             })),
+            // The credential already resolved; a Console outage keeps the last config and stays resolved.
+            Effect.catch((cause) =>
+              Effect.logWarning("failed to load OpenCode provider config", { cause }).pipe(
+                // A load that fails for the connection already in place keeps its last config: dropping it
+                // would lift organization policy while personal credentials keep working.
+                Effect.as(
+                  IntegrationConnection.key(connection) === IntegrationConnection.key(snapshot.connection)
+                    ? { config: snapshot.config, connection, organization: snapshot.organization, resolved: true }
+                    : { config: undefined, connection, organization: undefined, resolved: true },
+                ),
+              ),
+            ),
           )
         }),
+        // Resolve failure (expired refresh, missing store entry): not usable as a credential.
         Effect.catch((cause) =>
-          Effect.logWarning("failed to load OpenCode provider config", { cause }).pipe(
-            // A load that fails for the connection already in place keeps its last config: dropping it
-            // would lift organization policy while personal credentials keep working.
+          Effect.logWarning("failed to resolve OpenCode credential", { cause }).pipe(
             Effect.as(
               IntegrationConnection.key(connection) === IntegrationConnection.key(snapshot.connection)
-                ? { config: snapshot.config, connection, organization: snapshot.organization }
-                : { config: undefined, connection, organization: undefined },
+                ? { config: snapshot.config, connection, organization: snapshot.organization, resolved: false }
+                : { config: undefined, connection, organization: undefined, resolved: false },
             ),
           ),
         ),
@@ -255,7 +271,7 @@ export const OpencodePlugin = define<HttpClient.HttpClient | Bus.Service | Manag
 
       const item = providers.get(Provider.ID.opencode)
       if (!item) return
-      const hasKey = Boolean(process.env.OPENCODE_API_KEY || snapshot.connection || item.provider.settings?.apiKey)
+      const hasKey = Boolean(process.env.OPENCODE_API_KEY || snapshot.resolved || item.provider.settings?.apiKey)
       providers.update(item.provider.id, (provider) => {
         if (!hasKey) {
           provider.activation = "enabled"
@@ -268,7 +284,7 @@ export const OpencodePlugin = define<HttpClient.HttpClient | Bus.Service | Manag
       if (!item) return
       const hasKey = Boolean(
         process.env.OPENCODE_API_KEY ||
-          snapshot.connection ||
+          snapshot.resolved ||
           (item.provider.settings?.apiKey && item.provider.settings.apiKey !== "public"),
       )
       if (hasKey) return
