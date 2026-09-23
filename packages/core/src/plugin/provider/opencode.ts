@@ -273,6 +273,9 @@ export const OpencodePlugin = define<HttpClient.HttpClient | Bus.Service | Manag
       if (!item) return
       const hasKey = Boolean(process.env.OPENCODE_API_KEY || snapshot.resolved || item.provider.settings?.apiKey)
       providers.update(item.provider.id, (provider) => {
+        // Force Connection: close on OpenCode provider requests (port of 0cd10587cd);
+        // model.headers merges provider.headers and reaches the SDK fetch path.
+        provider.headers = Provider.mergeHeaders(provider.headers, { Connection: "close" })
         if (!hasKey) {
           provider.activation = "enabled"
           provider.settings = { ...provider.settings, apiKey: "public" }
