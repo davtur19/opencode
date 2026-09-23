@@ -157,10 +157,10 @@ describe("util.proxy", () => {
       }
       const scrubbed = FetchProxy.scrubInit("https://models.opencode.ai/zen/v1/chat/completions", init)
       expect(scrubbed).toBeDefined()
-      if (scrubbed === undefined || typeof scrubbed.body !== "string") {
-        throw new Error("expected string body")
+      if (scrubbed === undefined || scrubbed.body === undefined || scrubbed.body === null) {
+        throw new Error("expected scrubbed body")
       }
-      expect(scrubbed.body).not.toContain("encrypted_content")
+      expect(String(scrubbed.body)).not.toContain("encrypted_content")
       expect(FetchProxy.scrubInit("https://opencode.ai/console/v1/responses", init)).toBeDefined()
     })
 

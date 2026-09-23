@@ -24,6 +24,11 @@ const CLOUD_PROXY_DOMAINS_ENV = "OPENCODE_CLOUD_PROXY_DOMAINS"
 // Bun accepts `proxy` in the fetch init even though the DOM types omit it.
 type ProxyAwareInit = RequestInit & { proxy?: string }
 
+// Parsed JSON from an LLM request body (strings, numbers, booleans, null,
+// arrays, and string-keyed objects). Used instead of `unknown` so the scrub
+// walks a concrete contract after JSON.parse.
+type JsonValue = string | number | boolean | null | JsonValue[] | { [key: string]: JsonValue }
+
 function parseDomains(value: string | undefined) {
   if (!value) return undefined
   const domains = value
@@ -46,6 +51,30 @@ function isCloudHostname(hostname: string) {
   return cloudDomains().some((domain) => matchesHostname(hostname, domain))
 }
 
+function isEncryptedContentKey(key: string) {
+  const lowered = key.toLowerCase()
+  return lowered.includes("encrypted_content") || lowered.includes("encryptedcontent")
+}
+
+function decodeUtf8(bytes: ArrayBufferView | ArrayBuffer) {
+  const view =
+    bytes instanceof ArrayBuffer ? new Uint8Array(bytes) : new Uint8Array(bytes.buffer, bytes.byteOffset, bytes.byteLength)
+  return new TextDecoder().decode(view)
+}
+
+// Narrows BodyInit to text without a runtime typeof: every non-string member
+// is an object constructor check; the remainder is string.
+function bodyToText(body: BodyInit): string | undefined {
+  if (body instanceof ArrayBuffer) return decodeUtf8(body)
+  if (ArrayBuffer.isView(body)) return decodeUtf8(body)
+  if (body instanceof URLSearchParams) return body.toString()
+  // Blob, FormData, and ReadableStream are not cheaply sync-decodable here.
+  if (body instanceof Blob) return undefined
+  if (body instanceof FormData) return undefined
+  if (body instanceof ReadableStream) return undefined
+  return body
+}
+
 export function getProxyForHostname(hostname: string) {
   const url = process.env[CLOUD_PROXY_ENV]
   if (!url) return undefined
@@ -56,34 +85,9 @@ export function getProxyForHostname(hostname: string) {
 export function proxiedInit(input: RequestInfo | URL, init?: RequestInit) {
   const hostname = hostnameOf(input)
   const proxy = hostname ? getProxyForHostname(hostname) : undefined
-  const existingProxy =
-    init !== undefined && "proxy" in init && Boolean(init.proxy)
+  const existingProxy = init !== undefined && "proxy" in init && Boolean(init.proxy)
   if (!proxy || existingProxy) return undefined
   return { ...init, proxy } satisfies ProxyAwareInit
-}
-
-// Recursively deletes keys referencing reasoning encrypted content from a
-// parsed request body. Returns true when anything was removed.
-function scrubEncryptedContent(obj: unknown): boolean {
-  if (!obj || typeof obj !== "object") return false
-  let changed = false
-  if (Array.isArray(obj)) {
-    for (const item of obj) {
-      if (scrubEncryptedContent(item)) changed = true
-    }
-    return changed
-  }
-  const record = obj as Record<string, unknown>
-  for (const key of Object.keys(record)) {
-    const lowered = key.toLowerCase()
-    if (lowered.includes("encrypted_content") || lowered.includes("encryptedcontent")) {
-      delete record[key]
-      changed = true
-    } else if (scrubEncryptedContent(record[key])) {
-      changed = true
-    }
-  }
-  return changed
 }
 
 // Last-chance defense at the fetch boundary: removes `include` entries and
@@ -95,29 +99,31 @@ function scrubEncryptedContent(obj: unknown): boolean {
 export function sanitizeBody(body: string): string | undefined {
   const lowered = body.toLowerCase()
   if (!lowered.includes("encrypted_content") && !lowered.includes("encryptedcontent")) return undefined
-  let parsed: unknown
+
+  let changed = false
+  let scrubbed: JsonValue
   try {
-    parsed = JSON.parse(body)
+    // JSON.parse returns the parsed tree; the reviver only rewrites
+    // encrypted_content keys and include entries, preserving JsonValue.
+    scrubbed = JSON.parse(body, (key: string, value: JsonValue) => {
+      if (key.length > 0 && isEncryptedContentKey(key)) {
+        changed = true
+        return undefined
+      }
+      if (key === "include" && Array.isArray(value)) {
+        const filtered = value.filter((item) => !String(item).includes("encrypted_content"))
+        if (filtered.length !== value.length) {
+          changed = true
+          return filtered.length > 0 ? filtered : undefined
+        }
+      }
+      return value
+    })
   } catch {
     return undefined
   }
-  if (!parsed || typeof parsed !== "object") return undefined
-  let changed = false
-  if (Array.isArray(parsed)) {
-    changed = scrubEncryptedContent(parsed)
-  } else {
-    const record = parsed as Record<string, unknown>
-    if (Array.isArray(record.include)) {
-      const filtered = record.include.filter((value) => !String(value).includes("encrypted_content"))
-      if (filtered.length !== record.include.length) {
-        if (filtered.length > 0) record.include = filtered
-        else delete record.include
-        changed = true
-      }
-    }
-    if (scrubEncryptedContent(parsed)) changed = true
-  }
-  return changed ? JSON.stringify(parsed) : undefined
+  if (!changed) return undefined
+  return JSON.stringify(scrubbed)
 }
 
 // Returns a replacement init when the body must be scrubbed for a cloud
@@ -128,26 +134,16 @@ export function scrubInit(input: RequestInfo | URL, init?: RequestInit): Request
   const hostname = hostnameOf(input)
   if (!hostname || !isCloudHostname(hostname)) return undefined
   const url = urlStringOf(input)
-  if (!url || (!url.includes("/responses") && !url.includes("/chat/completions"))) return undefined
+  if (!url.includes("/responses") && !url.includes("/chat/completions")) return undefined
 
-  if (typeof body === "string") {
-    const sanitized = sanitizeBody(body)
-    return sanitized === undefined ? undefined : { ...init, body: sanitized }
+  const text = bodyToText(body)
+  if (text === undefined) return undefined
+  const sanitized = sanitizeBody(text)
+  if (sanitized === undefined) return undefined
+  if (body instanceof ArrayBuffer || ArrayBuffer.isView(body)) {
+    return { ...init, body: new TextEncoder().encode(sanitized) }
   }
-  // Blob, FormData, and streams are not text-decodable here; leave them alone.
-  if (body instanceof ArrayBuffer) {
-    const sanitized = sanitizeBody(new TextDecoder().decode(body))
-    return sanitized === undefined
-      ? undefined
-      : { ...init, body: new TextEncoder().encode(sanitized) }
-  }
-  if (body instanceof Uint8Array) {
-    const sanitized = sanitizeBody(new TextDecoder().decode(body))
-    return sanitized === undefined
-      ? undefined
-      : { ...init, body: new TextEncoder().encode(sanitized) }
-  }
-  return undefined
+  return { ...init, body: sanitized }
 }
 
 let installed = false
@@ -167,16 +163,16 @@ export function install() {
 }
 
 function urlStringOf(input: RequestInfo | URL) {
-  if (typeof input === "string") return input
   if (input instanceof URL) return input.href
-  return input.url
+  if (input instanceof Request) return input.url
+  return input
 }
 
 function hostnameOf(input: RequestInfo | URL) {
   try {
-    if (typeof input === "string") return URL.canParse(input) ? new URL(input).hostname : undefined
     if (input instanceof URL) return input.hostname
-    return new URL(input.url).hostname
+    if (input instanceof Request) return new URL(input.url).hostname
+    return URL.canParse(input) ? new URL(input).hostname : undefined
   } catch {
     return undefined
   }
