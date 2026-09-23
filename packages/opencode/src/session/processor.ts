@@ -87,6 +87,7 @@ interface ProcessorContext extends Input {
   needsCompaction: boolean
   currentText: SessionV1.TextPart | undefined
   reasoningMap: Record<string, SessionV1.ReasoningPart>
+  doomLoopWarned: boolean
   // Monotonic timestamp (ms) of the last event received from the provider
   // stream, or undefined until the first event arrives. Updated on every
   // event; the stall watchdog compares against it. Starts undefined (not
@@ -139,6 +140,7 @@ const layer = Layer.effect(
         needsCompaction: false,
         currentText: undefined,
         reasoningMap: {},
+        doomLoopWarned: false,
         lastEventAt: undefined,
       }
       let aborted = false
@@ -422,14 +424,35 @@ const layer = Layer.effect(
             }
 
             const agent = yield* agents.get(ctx.assistantMessage.agent)
-            yield* permission.ask({
-              permission: "doom_loop",
-              patterns: [value.name],
-              sessionID: ctx.assistantMessage.sessionID,
-              metadata: { tool: value.name, input },
-              always: [value.name],
-              ruleset: agent.permission,
-            })
+            const rule = Permission.evaluate("doom_loop", value.name, agent.permission)
+            if (rule.action === "allow") return
+            if (rule.action === "ask") {
+              yield* permission.ask({
+                permission: "doom_loop",
+                patterns: [value.name],
+                sessionID: ctx.assistantMessage.sessionID,
+                metadata: { tool: value.name, input },
+                always: [value.name],
+                ruleset: agent.permission,
+              })
+              return
+            }
+            // deny: warn the model once and continue, stop on repeat
+            if (!ctx.doomLoopWarned) {
+              ctx.doomLoopWarned = true
+              yield* failToolCall(
+                value.id,
+                new Error(
+                  `Doom loop detected: the same ${value.name} tool call was repeated with identical input. Do not repeat it — change your approach, arguments, or use a different tool. The turn continues after this warning.`,
+                ),
+              )
+              return
+            }
+            ctx.blocked = true
+            yield* failToolCall(
+              value.id,
+              new Error("Doom loop repeated after warning. Stopping this turn."),
+            )
             return
           }
 
