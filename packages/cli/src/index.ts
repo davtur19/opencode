@@ -15,6 +15,12 @@ import { Config } from "./config"
 import { Npm } from "@opencode/util/npm"
 import { Heap } from "./heap"
 import { CpuProfile } from "./cpu-profile"
+import { FetchProxy } from "@opencode/util/proxy"
+
+// Install before the Effect runtime starts so every later fetch (native
+// Effect FetchHttpClient, AISDK prepareOptions, models.dev refresh) sees the
+// wrapper. Idempotent; env-only config (OPENCODE_CLOUD_PROXY[_DOMAINS]).
+FetchProxy.install()
 
 if (process.env.OPENCODE_SSH_ASKPASS_PORT) {
   const { askpass } = await import("./ssh-askpass")
