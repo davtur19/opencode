@@ -21,6 +21,7 @@ import { SessionStore } from "../store.js"
 import { SessionMessageTable } from "../sql.js"
 import { SessionTitle } from "../title.js"
 import { DrainResult, Service, type Interface } from "./index.js"
+import { Permission } from "../../permission.js"
 import { Snapshot } from "../../snapshot.js"
 import { makeLocationNode } from "@opencode/util/effect/app-node"
 import { llmClient } from "../../effect/app-node-platform.js"
@@ -369,6 +370,7 @@ export const node = makeLocationNode({
     SessionModelTransport.node,
     SessionStore.node,
     SessionCompaction.node,
+    Permission.node,
     Plugin.node,
     SessionTitle.node,
     Snapshot.node,
