@@ -60,8 +60,14 @@ export function resource(app: App = { client: "opencode", version: "unknown", ch
   }
 }
 
+// Telemetry export is opt-in: a configured endpoint alone must never enable it.
+function telemetryEnabled() {
+  const value = process.env.OPENCODE_TELEMETRY?.toLowerCase()
+  return value === "1" || value === "true"
+}
+
 export function loggers(options: Options | undefined, app: App) {
-  if (!options?.endpoint) return []
+  if (!telemetryEnabled() || !options?.endpoint) return []
   return [
     OtlpLogger.make({
       url: `${options.endpoint}/v1/logs`,
@@ -72,7 +78,7 @@ export function loggers(options: Options | undefined, app: App) {
 }
 
 export const tracingLayer = Effect.fnUntraced(function* (options: Options | undefined, app: App) {
-  if (!options?.endpoint) return Layer.empty
+  if (!telemetryEnabled() || !options?.endpoint) return Layer.empty
   const [{ layer }, { OTLPTraceExporter }, { BatchSpanProcessor }, { AsyncLocalStorageContextManager }, { context }] =
     yield* Effect.all(
       [
