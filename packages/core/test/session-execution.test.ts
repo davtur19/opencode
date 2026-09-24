@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test"
 import { AIError, TransportError } from "@opencode/ai"
+import { Agent } from "@opencode/core/agent"
 import { Database } from "@opencode/core/database/database"
 import { AppNodeBuilder } from "@opencode/core/effect/app-node-builder"
 import { LayerNode } from "@opencode/util/effect/layer-node"
@@ -9,8 +10,10 @@ import { Job } from "@opencode/core/job"
 import { KV } from "@opencode/core/kv"
 import { LocationServiceMap } from "@opencode/core/location-service-map"
 import type { LocationServices } from "@opencode/core/location-services"
+import { Model } from "@opencode/core/model"
 import { Project } from "@opencode/core/project"
 import { ProjectTable } from "@opencode/core/project/sql"
+import { Provider } from "@opencode/core/provider"
 import { AbsolutePath } from "@opencode/core/schema"
 import { Session } from "@opencode/core/session"
 import { SessionExecution } from "@opencode/core/session/execution"
@@ -20,9 +23,9 @@ import { SessionEvent } from "@opencode/core/session/event"
 import { SessionInbox } from "@opencode/core/session/inbox"
 import { SessionMessage } from "@opencode/core/session/message"
 import { SessionRunner } from "@opencode/core/session/runner/index"
-import { SessionInboxTable, SessionTable } from "@opencode/core/session/sql"
+import { SessionInboxTable, SessionMessageTable, SessionTable } from "@opencode/core/session/sql"
 import { SessionStore } from "@opencode/core/session/store"
-import { Cause, Context, Deferred, Effect, Exit, Fiber, Layer, LayerMap, Scope } from "effect"
+import { Cause, Context, DateTime, Deferred, Effect, Exit, Fiber, Layer, LayerMap, Schema, Scope } from "effect"
 import { eq } from "drizzle-orm"
 import { testEffect } from "./lib/effect"
 
@@ -1237,6 +1240,139 @@ describe("SessionExecution interrupt continuation", () => {
   )
 })
 
+describe("SessionRestart orphan settlement", () => {
+  it.effect("settles an orphaned question turn in a Session that never drains again", () =>
+    Effect.gen(function* () {
+      const database = yield* Database.Service
+      const store = yield* SessionStore.Service
+      const bus = yield* Bus.Service
+      const sessionID = Session.ID.make("ses_orphan_question")
+      // No claim: resume exhaustion already terminalized this turn's execution.
+      yield* seedSessions(database, [sessionID])
+      const assistant = yield* seedOrphanTurn(database, sessionID, { id: "call_orphan_question", name: "question" })
+
+      const toolFailures: SessionEvent.Tool.Failed[] = []
+      const stepFailures: SessionEvent.Step.Failed[] = []
+      yield* bus.project(SessionEvent.Tool.Failed, (event) => Effect.sync(() => void toolFailures.push(event)))
+      yield* bus.project(SessionEvent.Step.Failed, (event) => Effect.sync(() => void stepFailures.push(event)))
+
+      const drained: Session.ID[] = []
+      const scope = yield* Scope.make()
+      yield* Effect.addFinalizer(() => Scope.close(scope, Exit.void))
+      const context = yield* buildExecution(scope, ({ sessionID }) => Effect.sync(() => void drained.push(sessionID)))
+      const restart = Context.get(context, SessionRestart.Service)
+      yield* restart.resumeSuspendedSessions
+
+      // Nothing claims this Session, so the sweep settles it instead of draining it.
+      expect(drained).toEqual([])
+      expect(toolFailures.map((event) => event.data)).toEqual([
+        {
+          sessionID,
+          assistantMessageID: assistant.id,
+          id: "call_orphan_question",
+          error: { type: "aborted", message: SessionRestart.QUESTION_ORPHAN_MESSAGE },
+          executed: false,
+        },
+      ])
+      expect(stepFailures.map((event) => event.data)).toEqual([
+        {
+          sessionID,
+          assistantMessageID: assistant.id,
+          error: { type: "aborted", message: SessionRestart.GENERIC_ORPHAN_MESSAGE },
+        },
+      ])
+      expect(yield* store.context(sessionID)).toMatchObject([
+        {
+          id: assistant.id,
+          finish: "error",
+          error: { type: "aborted", message: SessionRestart.GENERIC_ORPHAN_MESSAGE },
+          time: { completed: expect.anything() },
+          content: [
+            {
+              type: "tool",
+              id: "call_orphan_question",
+              state: {
+                status: "error",
+                error: { type: "aborted", message: SessionRestart.QUESTION_ORPHAN_MESSAGE },
+              },
+            },
+          ],
+        },
+      ])
+
+      // A second boot finds a settled transcript and adds nothing.
+      toolFailures.length = 0
+      stepFailures.length = 0
+      yield* restart.resumeSuspendedSessions
+      expect(toolFailures).toEqual([])
+      expect(stepFailures).toEqual([])
+    }),
+  )
+
+  it.effect("settles cleared child claims while claimed Sessions wait for their resumed drain", () =>
+    Effect.gen(function* () {
+      const database = yield* Database.Service
+      const store = yield* SessionStore.Service
+      const bus = yield* Bus.Service
+      const parent = Session.ID.make("ses_orphan_parent")
+      const child = Session.ID.make("ses_orphan_child")
+      yield* seedSessions(database, [parent], { time_suspended: Date.now() })
+      yield* seedSessions(database, [child], { parent_id: parent, time_suspended: Date.now() })
+      const parentAssistant = yield* seedOrphanTurn(database, parent, { id: "call_parent_shell", name: "shell" })
+      const childAssistant = yield* seedOrphanTurn(database, child, { id: "call_child_question", name: "question" })
+
+      const toolFailures: SessionEvent.Tool.Failed[] = []
+      const stepFailures: SessionEvent.Step.Failed[] = []
+      yield* bus.project(SessionEvent.Tool.Failed, (event) => Effect.sync(() => void toolFailures.push(event)))
+      yield* bus.project(SessionEvent.Step.Failed, (event) => Effect.sync(() => void stepFailures.push(event)))
+
+      const parentDraining = yield* Deferred.make<void>()
+      const scope = yield* Scope.make()
+      yield* Effect.addFinalizer(() => Scope.close(scope, Exit.void))
+      const context = yield* buildExecution(scope, ({ sessionID }) =>
+        sessionID === parent
+          ? Deferred.succeed(parentDraining, undefined).pipe(Effect.andThen(Effect.never))
+          : Effect.die(`cleared child must never drain: ${sessionID}`),
+      )
+      const restart = Context.get(context, SessionRestart.Service)
+      yield* restart.resumeSuspendedSessions
+      yield* Deferred.await(parentDraining)
+
+      // The claimed parent keeps its claim and its drain owns its stale tool calls;
+      // the child's claim was cleared, so the sweep settles its orphaned question.
+      expect(toolFailures.map((event) => event.data)).toEqual([
+        {
+          sessionID: child,
+          assistantMessageID: childAssistant.id,
+          id: "call_child_question",
+          error: { type: "aborted", message: SessionRestart.QUESTION_ORPHAN_MESSAGE },
+          executed: false,
+        },
+      ])
+      expect(stepFailures.map((event) => event.data)).toEqual([
+        {
+          sessionID: child,
+          assistantMessageID: childAssistant.id,
+          error: { type: "aborted", message: SessionRestart.GENERIC_ORPHAN_MESSAGE },
+        },
+      ])
+      expect(yield* store.context(child)).toMatchObject([
+        {
+          id: childAssistant.id,
+          error: { type: "aborted", message: SessionRestart.GENERIC_ORPHAN_MESSAGE },
+          content: [{ type: "tool", state: { status: "error" } }],
+        },
+      ])
+      const parentTurn = (yield* store.context(parent)).find((message) => message.id === parentAssistant.id)
+      expect(parentTurn).toMatchObject({
+        id: parentAssistant.id,
+        content: [{ type: "tool", id: "call_parent_shell", state: { status: "running" } }],
+      })
+      expect(yield* claims(database)).toEqual({ [parent]: true, [child]: false })
+    }),
+  )
+})
+
 function seedBackground(
   jobs: Job.Interface,
   sessionID: Session.ID,
@@ -1312,6 +1448,47 @@ function seedSessions(
       )
       .run()
       .pipe(Effect.orDie)
+  })
+}
+
+/** Seeds a pre-boot assistant whose tool part never settled, the crash-leftover shape. */
+function seedOrphanTurn(
+  database: Database.Service["Service"],
+  sessionID: Session.ID,
+  tool: { readonly id: string; readonly name: string },
+) {
+  return Effect.gen(function* () {
+    const created = DateTime.makeUnsafe(Date.now() - 60_000)
+    const assistant = SessionMessage.Assistant.make({
+      id: SessionMessage.ID.create(),
+      type: "assistant",
+      agent: Agent.defaultID,
+      model: { id: Model.ID.make("model"), providerID: Provider.ID.make("provider") },
+      content: [
+        SessionMessage.AssistantTool.make({
+          type: "tool",
+          id: tool.id,
+          name: tool.name,
+          state: SessionMessage.ToolStateRunning.make({ status: "running", input: {}, metadata: {} }),
+          time: { created },
+        }),
+      ],
+      time: { created },
+    })
+    const { id, type, ...data } = Schema.encodeSync(SessionMessage.Info)(assistant)
+    yield* database.db
+      .insert(SessionMessageTable)
+      .values({
+        id: SessionMessage.ID.make(id),
+        session_id: sessionID,
+        type,
+        seq: 1,
+        time_created: DateTime.toEpochMillis(created),
+        data,
+      })
+      .run()
+      .pipe(Effect.orDie)
+    return assistant
   })
 }
 
