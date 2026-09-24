@@ -1,14 +1,19 @@
 export * as SessionRestart from "./restart.js"
 
 import { Context, Effect, Layer } from "effect"
+import { and, eq, isNotNull, sql } from "drizzle-orm"
 import { makeGlobalNode } from "@opencode/util/effect/app-node"
 import { Bus } from "../../bus.js"
+import { Database } from "../../database/database.js"
 import { Job } from "../../job.js"
 import { Session } from "../../session.js"
 import { SessionEvent } from "../event.js"
 import { SessionExecution } from "../execution.js"
+import { SessionHistory } from "../history.js"
+import type { SessionMessage } from "../message.js"
 import { SessionSchema } from "../schema.js"
 import { SessionStore } from "../store.js"
+import { SessionMessageTable, SessionTable } from "../sql.js"
 import { ShellResult } from "../../shell/result.js"
 import { SubagentCompletion } from "../subagent-completion.js"
 
@@ -19,6 +24,13 @@ const RESUME_EXHAUSTED = {
   type: "aborted",
   message: "Execution was interrupted repeatedly and will not be resumed automatically.",
 } as const
+
+// A `question` tool awaiting user input dies with the in-memory Form: no reply can
+// ever arrive, so its part must not park the transcript on a spinner after restart.
+export const QUESTION_ORPHAN_MESSAGE = "Service restarted while awaiting user input (orphaned question tool)"
+// Any other pre-boot turn cut short by a crash that never resumes: finalize it so the
+// session doesn't stay parked.
+export const GENERIC_ORPHAN_MESSAGE = "Service restarted while turn was in progress (orphaned turn)"
 
 export interface Options {
   /**
@@ -71,8 +83,13 @@ export const layer = (options?: Options) =>
       const bus = yield* Bus.Service
       const jobs = yield* Job.Service
       const sessions = yield* Session.Service
+      const db = (yield* Database.Service).db
       const scope = yield* Effect.scope
       const maxAttempts = options?.maxAttempts ?? DEFAULT_MAX_ATTEMPTS
+      // The boot instant, captured once when the layer is constructed. Anything
+      // created after this point belongs to post-boot activity and is never
+      // touched, even if a sweep overlaps live work.
+      const bootTime = Date.now()
 
       const prepareResume = Effect.fnUntraced(function* (sessionID: SessionSchema.ID) {
         // Durable before the resume runs, so a crash inside the resumed turn is
@@ -189,6 +206,79 @@ export const layer = (options?: Options) =>
         )
       })
 
+      /**
+       * Settles pre-boot turns whose Sessions will never drain again:
+       * releaseChildClaims clears orphaned child claims and resume exhaustion
+       * terminalizes top-level turns, so their stale tool calls — an awaiting
+       * `question` above all — and unfinished assistant messages would otherwise
+       * dangle forever: a drain is what settles them, and these Sessions get
+       * none. Claimed Sessions are skipped because their resumed drain owns
+       * settlement.
+       */
+      const settleOrphanedTurns = Effect.fn("SessionRestart.settleOrphanedTurns")(function* () {
+        const rows = yield* db
+          .select()
+          .from(SessionMessageTable)
+          .where(
+            and(
+              eq(SessionMessageTable.type, "assistant"),
+              // Cut short before its terminal step boundary, or still holding tool
+              // parts that never settled.
+              sql`${SessionMessageTable.time_created} < ${bootTime}
+                and (json_extract(${SessionMessageTable.data}, '$.time.completed') is null
+                  or exists (select 1 from json_each(json_extract(${SessionMessageTable.data}, '$.content'))
+                    where json_extract(value, '$.type') = 'tool'
+                      and json_extract(value, '$.state.status') in ('running', 'streaming')))`,
+            ),
+          )
+          .all()
+          .pipe(Effect.orDie)
+        if (rows.length === 0) return
+        const claimed = new Set(
+          (
+            yield* db
+              .select({ id: SessionTable.id })
+              .from(SessionTable)
+              .where(isNotNull(SessionTable.time_suspended))
+              .all()
+              .pipe(Effect.orDie)
+          ).map((session) => session.id),
+        )
+        for (const row of rows) {
+          if (claimed.has(row.session_id)) continue
+          const message = yield* SessionHistory.decodeMessageRow(row).pipe(Effect.orElseSucceed(() => undefined))
+          if (message?.type !== "assistant") continue
+          const unfinished = message.content.filter(
+            (item): item is SessionMessage.AssistantTool =>
+              item.type === "tool" && (item.state.status === "running" || item.state.status === "streaming"),
+          )
+          const finalized = Boolean(message.time.completed || message.error || message.finish)
+          if (unfinished.length === 0 && finalized) continue
+          // A `question` stuck awaiting input gets the specific note; any other
+          // unfinished part uses the generic orphan note.
+          const runningQuestion = unfinished.find((tool) => tool.name === "question" && tool.state.status === "running")
+          const note = runningQuestion ? QUESTION_ORPHAN_MESSAGE : GENERIC_ORPHAN_MESSAGE
+          for (const tool of unfinished) {
+            const metadata = tool.state.status === "running" ? tool.state.metadata : undefined
+            yield* bus.publish(SessionEvent.Tool.Failed, {
+              sessionID: row.session_id,
+              assistantMessageID: message.id,
+              id: tool.id,
+              error: { type: "aborted", message: note },
+              ...(metadata && Object.keys(metadata).length > 0 ? { metadata } : {}),
+              executed: tool.executed === true,
+            })
+          }
+          if (!finalized) {
+            yield* bus.publish(SessionEvent.Step.Failed, {
+              sessionID: row.session_id,
+              assistantMessageID: message.id,
+              error: { type: "aborted", message: GENERIC_ORPHAN_MESSAGE },
+            })
+          }
+        }
+      })
+
       return Service.of({
         resumeSuspendedSessions: Effect.gen(function* () {
           const active = yield* execution.active
@@ -228,6 +318,9 @@ export const layer = (options?: Options) =>
           )
           // Async observers consult this set at delivery; later completions wake parents normally.
           suspended.clear()
+          // Resume decisions above left either a claim — the resumed drain settles its
+          // own stale tool calls — or an orphan that never drains again: settle those.
+          yield* settleOrphanedTurns()
         }),
       })
     }),
@@ -236,5 +329,5 @@ export const layer = (options?: Options) =>
 export const node = makeGlobalNode({
   service: Service,
   layer: layer(),
-  deps: [SessionStore.node, SessionExecution.node, Bus.node, Job.node, Session.node],
+  deps: [SessionStore.node, SessionExecution.node, Bus.node, Job.node, Session.node, Database.node],
 })
