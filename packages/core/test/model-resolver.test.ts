@@ -420,6 +420,8 @@ describe("ModelResolver", () => {
             expect(headers["cf-access-token"]).toBe("access-token")
             expect(headers.authorization).toBeUndefined()
             expect(headers["x-goog-api-key"]).toBeUndefined()
+            // No credential and no real configured auth: requests use the public access path.
+            expect(resolved.anonymous).toBe(true)
           }),
         )
       }).pipe(Effect.provide(layer)),

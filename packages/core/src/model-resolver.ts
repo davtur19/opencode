@@ -124,6 +124,8 @@ export interface Resolved {
   readonly transport?: Provider.Transport
   /** Milliseconds without streamed data before a WebSocket exchange fails. */
   readonly chunkTimeout?: number
+  /** No credential or configured auth resolves for this provider; requests use its public access path. */
+  readonly anonymous?: boolean
 }
 
 export interface Interface {
@@ -378,6 +380,9 @@ export const layer = Layer.effect(
         usesAPIKeyAuth(runtimeInfo.package)
           ? LanguageModel.update(model, { route: model.route.with({ auth: Auth.none }) })
           : model
+      // Public activation means the provider works without a credential; with no integration
+      // credential and no real configured auth the request carries the public access path only.
+      const anonymous = provider?.activation === "enabled" && credential === undefined && !hasRealAuth(runtimeInfo)
       return {
         model: runtime,
         ref: Ref.make({
@@ -391,6 +396,7 @@ export const layer = Layer.effect(
         compaction: runtimeInfo.settings?.compaction,
         transport: provider?.settings?.transport,
         chunkTimeout: provider?.settings?.chunkTimeout,
+        ...(anonymous ? { anonymous: true } : {}),
       }
     })
     return Service.of({
@@ -417,6 +423,14 @@ export const layer = Layer.effect(
 function hasConfiguredAuth(model: RuntimeInfo) {
   return [model.settings?.apiKey, model.settings?.authToken, model.settings?.accessToken].some(
     (value) => typeof value === "string" && value !== "",
+  )
+}
+
+// The opencode provider's public bearer is a configured settings value that proves no credential
+// rather than configured auth; anything else non-empty is a real secret the provider will send.
+function hasRealAuth(model: RuntimeInfo) {
+  return [model.settings?.apiKey, model.settings?.authToken, model.settings?.accessToken].some(
+    (value) => typeof value === "string" && value !== "" && value !== Provider.PUBLIC_API_KEY,
   )
 }
 

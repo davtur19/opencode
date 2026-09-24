@@ -19,6 +19,7 @@ import {
 } from "@opencode/ai"
 import { Permission } from "@opencode/core/permission"
 import { ID } from "@opencode/core/model"
+import { Model } from "@opencode/schema/model"
 import { ModelResolver } from "@opencode/core/model-resolver"
 import { Provider } from "@opencode/core/provider"
 import { Tool } from "@opencode/schema/tool"
@@ -188,8 +189,16 @@ describe("toSessionError", () => {
       ),
     ]
 
-    expect(eligible.map(SessionRunnerRetry.isRetryable)).toEqual([true, true, true, true])
-    expect(ineligible.map(SessionRunnerRetry.isRetryable)).toEqual([false, false, false, false, false, false, false])
+    expect(eligible.map((error) => SessionRunnerRetry.isRetryable(error))).toEqual([true, true, true, true])
+    expect(ineligible.map((error) => SessionRunnerRetry.isRetryable(error))).toEqual([
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+    ])
   })
 
   test("retries accepted transport reads but not accepted writes or rejected requests", () => {
@@ -245,8 +254,8 @@ describe("toSessionError", () => {
       ),
     ]
 
-    expect(retryable.map(SessionRunnerRetry.isRetryable)).toEqual([true, true, true, true])
-    expect(ineligible.map(SessionRunnerRetry.isRetryable)).toEqual([false, false])
+    expect(retryable.map((error) => SessionRunnerRetry.isRetryable(error))).toEqual([true, true, true, true])
+    expect(ineligible.map((error) => SessionRunnerRetry.isRetryable(error))).toEqual([false, false])
   })
 
   test("honors provider retry header overrides", () => {
@@ -272,5 +281,32 @@ describe("toSessionError", () => {
         llm(new InvalidRequestError({ message: "retry", http: http({ "x-should-retry": "true" }) })),
       ),
     ).toBeTrue()
+  })
+
+  test("scopes opencode gateway flakes to anonymous public requests and free-tier quota", () => {
+    const gateway = (status: number) =>
+      new HttpContext({ url: "https://opencode.ai/zen/v1/chat/completions", status, headers: {} })
+    const rejection = llm(new AuthenticationError({ message: "invalid_bearer_credential", http: gateway(401) }))
+    const forbidden = llm(new AuthenticationError({ message: "forbidden", http: gateway(403) }))
+    const quota = llm(new QuotaExceededError({ message: "Payment Required", http: gateway(402) }))
+    const opencode = {
+      ref: Model.Ref.make({ id: ID.make("model"), providerID: Provider.ID.opencode }),
+      anonymous: true,
+    }
+    const credentialed = { ref: opencode.ref }
+    const foreign = {
+      ref: Model.Ref.make({ id: ID.make("model"), providerID: Provider.ID.make("anthropic") }),
+      anonymous: true,
+    }
+
+    expect(SessionRunnerRetry.isRetryable(rejection, opencode)).toBeTrue()
+    expect(SessionRunnerRetry.isRetryable(rejection, credentialed)).toBeFalse()
+    expect(SessionRunnerRetry.isRetryable(rejection, foreign)).toBeFalse()
+    expect(SessionRunnerRetry.isRetryable(rejection)).toBeFalse()
+    expect(SessionRunnerRetry.isRetryable(forbidden, opencode)).toBeFalse()
+    expect(SessionRunnerRetry.isRetryable(quota, opencode)).toBeTrue()
+    expect(SessionRunnerRetry.isRetryable(quota, credentialed)).toBeTrue()
+    expect(SessionRunnerRetry.isRetryable(quota, foreign)).toBeFalse()
+    expect(SessionRunnerRetry.isRetryable(llm(new QuotaExceededError({ message: "Payment Required" })), opencode)).toBeFalse()
   })
 })

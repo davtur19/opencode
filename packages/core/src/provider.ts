@@ -21,6 +21,8 @@ import { AISDKNative } from "./aisdk-native.js"
 export const ID = Provider.ID
 export type ID = typeof ID.Type
 
+/** Bearer the opencode provider substitutes when no credential is configured: its public access path. */
+export const PUBLIC_API_KEY = "public"
 export const AISDK_PREFIX = "aisdk:"
 export const isAISDK = (value: string | undefined): value is string => value?.startsWith(AISDK_PREFIX) ?? false
 export const aisdk = (value: string) => (isAISDK(value) ? value : `${AISDK_PREFIX}${value}`)

@@ -3,6 +3,7 @@ export * as SessionRunnerRetry from "./retry.js"
 import { AIError, isContextOverflowFailure } from "@opencode/ai"
 import { Agent } from "@opencode/schema/agent"
 import { Model } from "@opencode/schema/model"
+import { Provider } from "@opencode/schema/provider"
 import { SessionError } from "@opencode/schema/session-error"
 import { Clock, Duration, Effect, Pull, Schedule } from "effect"
 import { Bus } from "../../bus.js"
@@ -27,7 +28,16 @@ export interface Decision {
   readonly delay: number
 }
 
-export function isRetryable(error: AIError) {
+/**
+ * Retries one provider failure. `model` resolves the opencode gateway's transient flakes: its
+ * intermittent401 on anonymous public requests and its free-tier402 quota blip. Callers without
+ * a resolved model keep the plain reason taxonomy so auxiliary requests never mask a real
+ * credential or billing failure.
+ */
+export function isRetryable(
+  error: AIError,
+  model?: { readonly ref: Model.Ref; readonly anonymous?: boolean | undefined },
+) {
   const override = error.reason.http?.headers["x-should-retry"]
   if (override === "true") return true
   if (override === "false") return false
@@ -49,8 +59,22 @@ export function isRetryable(error: AIError) {
     // that arrive in shapes no classifier anticipates.
     case "UnknownProvider":
       return true
+    // The opencode gateway intermittently rejects public requests with
+    // invalid_bearer_credential (~1-2%) even though the public bearer it was sent is valid.
+    // Only an anonymous request — one with no real credential that could be wrong — absorbs
+    // that flake as transient; a credentialed401 stays terminal so a revoked or mistyped key
+    // is never masked by a retry.
     case "Authentication":
+      return (
+        model?.ref.providerID === Provider.ID.opencode &&
+        model.anonymous === true &&
+        error.reason.http?.status === 401
+      )
+    // A402 from the opencode gateway is a transient free-tier quota flake on free models: the
+    // same request succeeds moments later. Other providers' quota rejections are real billing
+    // limits and stay terminal.
     case "QuotaExceeded":
+      return model?.ref.providerID === Provider.ID.opencode && error.reason.http?.status === 402
     case "ContentPolicy":
     case "InvalidRequest":
     case "UnsupportedOperation":
@@ -91,14 +115,29 @@ const schedule = Schedule.max([
   }),
 )
 
-export const policy = (sessionID: SessionSchema.ID) =>
+/**
+ * A transient step failure whose schedule runs out starts another fresh schedule phase instead of
+ * finalizing the step: one initial policy plus renewals, each about 84s. This is the fork's
+ * turn-level retry budget (TURN_RETRY_LIMIT), reworked per step because in V2 one step is one
+ * logical LLM call; each renewal re-runs the failed call from scratch while the gateway heals.
+ */
+export const RETRY_PHASES = 4
+
+export const policy = (sessionID: SessionSchema.ID, options?: { readonly phases?: number }) =>
   Effect.gen(function* () {
-    const step = yield* Schedule.toStep(schedule)
+    let step = yield* Schedule.toStep(schedule)
     let attempt = 1
+    let phase = 1
     return (input: Input) =>
       Effect.gen(function* () {
         const now = yield* Clock.currentTimeMillis
-        const next = yield* step(now, input).pipe(Pull.catchDone(() => Effect.succeed(undefined)))
+        let next = yield* step(now, input).pipe(Pull.catchDone(() => Effect.succeed(undefined)))
+        // Renewal never bypasses the retry hook: an exhausted schedule returns before the hook
+        // runs, while a hook veto exits below from a schedule that still has steps left.
+        if (!next && input.retry && phase++ < (options?.phases ?? 1)) {
+          step = yield* Schedule.toStep(schedule)
+          next = yield* step(now, input).pipe(Pull.catchDone(() => Effect.succeed(undefined)))
+        }
         if (!next) return { retry: false as const }
         const [, duration] = next
         attempt++
@@ -139,7 +178,7 @@ export const transient =
 
 export const make = (bus: Bus.Interface, sessionID: SessionSchema.ID) =>
   Effect.gen(function* () {
-    const decide = yield* policy(sessionID)
+    const decide = yield* policy(sessionID, { phases: RETRY_PHASES })
     const wait = (input: {
       readonly decision: Decision
       readonly assistantMessageID: SessionMessage.ID

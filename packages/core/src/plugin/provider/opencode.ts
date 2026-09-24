@@ -278,7 +278,7 @@ export const OpencodePlugin = define<HttpClient.HttpClient | Bus.Service | Manag
         provider.headers = Provider.mergeHeaders(provider.headers, { Connection: "close" })
         if (!hasKey) {
           provider.activation = "enabled"
-          provider.settings = { ...provider.settings, apiKey: "public" }
+          provider.settings = { ...provider.settings, apiKey: Provider.PUBLIC_API_KEY }
         }
       })
     })
@@ -288,7 +288,7 @@ export const OpencodePlugin = define<HttpClient.HttpClient | Bus.Service | Manag
       const hasKey = Boolean(
         process.env.OPENCODE_API_KEY ||
           snapshot.resolved ||
-          (item.provider.settings?.apiKey && item.provider.settings.apiKey !== "public"),
+          (item.provider.settings?.apiKey && item.provider.settings.apiKey !== Provider.PUBLIC_API_KEY),
       )
       if (hasKey) return
       for (const model of models.list(item.provider.id)) {
