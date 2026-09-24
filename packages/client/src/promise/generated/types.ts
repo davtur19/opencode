@@ -1935,6 +1935,7 @@ export type AgentInfo = {
   hidden: boolean
   color?: AgentColor
   steps?: number
+  subagentsBackground?: boolean
   permissions: PermissionRuleset
 }
 
@@ -2014,6 +2015,7 @@ export type ConfigEntry =
             hidden?: boolean
             color?: string
             steps?: number
+            subagentsBackground?: boolean
             disabled?: boolean
             permissions?: PermissionRuleset
           }

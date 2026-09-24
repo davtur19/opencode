@@ -197,7 +197,10 @@ export const Plugin = {
                     ),
                   ))
 
-              const background = input.background === true
+              // The delegating agent's `subagentsBackground` wins over the call's
+              // `background` argument: the caller decides how its subagents run.
+              const caller = yield* agents.resolve(parent.agent ?? context.agent)
+              const background = caller?.subagentsBackground ?? input.background === true
               yield* context.progress({ sessionID: child.id, status: "running" })
 
               // Standard prompt admission outside the job: Job.start joining a running child skips

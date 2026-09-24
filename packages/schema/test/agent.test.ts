@@ -8,3 +8,12 @@ test("Agent.Color preserves configured colors at the public boundary", () => {
   expect(encode("info")).toBe("info")
   expect(encode("custom-color")).toBe("custom-color")
 })
+
+test("Agent.Info omits an unset subagentsBackground and preserves a set one", () => {
+  const encode = Schema.encodeSync(Agent.Info)
+  const base = Agent.Info.default(Agent.ID.make("build"))
+
+  expect(encode(base)).not.toHaveProperty("subagentsBackground")
+  expect(encode({ ...base, subagentsBackground: undefined })).not.toHaveProperty("subagentsBackground")
+  expect(encode({ ...base, subagentsBackground: false })).toHaveProperty("subagentsBackground", false)
+})

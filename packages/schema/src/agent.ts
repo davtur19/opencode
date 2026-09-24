@@ -31,6 +31,7 @@ export const Info = Schema.Struct({
   hidden: Schema.Boolean,
   color: Color.pipe(optional),
   steps: PositiveInt.pipe(optional),
+  subagentsBackground: Schema.Boolean.pipe(optional),
   permissions: Permission.Ruleset,
 })
   .annotate({ identifier: "Agent.Info" })

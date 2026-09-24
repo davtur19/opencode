@@ -17,6 +17,10 @@ export class Info extends Schema.Class<Info>("Config.Agent")({
   hidden: Schema.Boolean.pipe(optional),
   color: Color.pipe(optional),
   steps: PositiveInt.pipe(optional),
+  subagentsBackground: Schema.Boolean.pipe(optional).annotate({
+    description:
+      "Override how this agent delegates subagents: true always runs them in the background, false always waits in the foreground; unset lets each call's background argument decide",
+  }),
   disabled: Schema.Boolean.pipe(optional),
   permissions: Permission.Ruleset.pipe(optional),
 }) {}

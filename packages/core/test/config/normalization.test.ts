@@ -173,6 +173,24 @@ describe("ConfigNormalize", () => {
     expect(result.diagnostics).toEqual([])
   })
 
+  test("keeps subagentsBackground on legacy and native agent paths", () => {
+    const legacy = normalized({
+      agent: { orchestrator: { prompt: "plan", subagentsBackground: true } },
+    })
+    expect(legacy.encoded.agents).toEqual({
+      orchestrator: { system: "plan", subagentsBackground: true },
+    })
+    expect(legacy.diagnostics).toEqual([])
+
+    const native = normalized({
+      agents: { orchestrator: { mode: "primary", subagentsBackground: false } },
+    })
+    expect(native.encoded.agents).toEqual({
+      orchestrator: { mode: "primary", subagentsBackground: false },
+    })
+    expect(native.diagnostics).toEqual([])
+  })
+
   test("omits an invalid legacy small model without exposing its value", () => {
     const secret = "do-not-log-this-value"
     const result = normalized({ small_model: secret })

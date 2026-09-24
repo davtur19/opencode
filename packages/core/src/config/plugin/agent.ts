@@ -118,6 +118,7 @@ export const Plugin = define({
             if (item.hidden !== undefined) agent.hidden = item.hidden
             if (item.color !== undefined) agent.color = item.color
             if (item.steps !== undefined) agent.steps = item.steps
+            if (item.subagentsBackground !== undefined) agent.subagentsBackground = item.subagentsBackground
             if (item.permissions !== undefined) {
               agent.permissions.push(...expandPermissions(item.permissions, global.home))
             }

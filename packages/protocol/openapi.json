@@ -12588,6 +12588,9 @@
             "type": "integer",
             "exclusiveMinimum": 0
           },
+          "subagentsBackground": {
+            "type": "boolean"
+          },
           "permissions": {
             "$ref": "#/components/schemas/Permission.Ruleset"
           }
@@ -12724,6 +12727,9 @@
           "steps": {
             "type": "integer",
             "exclusiveMinimum": 0
+          },
+          "subagentsBackground": {
+            "type": "boolean"
           },
           "disabled": {
             "type": "boolean"

@@ -35,6 +35,9 @@ const AgentSchema = Schema.StructWithRest(
       description: "Maximum number of agentic iterations before forcing text-only response",
     }),
     maxSteps: Schema.optional(PositiveInt).annotate({ description: "@deprecated Use 'steps' field instead." }),
+    subagentsBackground: Schema.optional(Schema.Boolean).annotate({
+      description: "Override how this agent delegates subagents: true forces background, false forces foreground",
+    }),
     permission: Schema.optional(ConfigPermissionV1.Info),
   }),
   [Schema.Record(Schema.String, Schema.Any)],

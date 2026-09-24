@@ -287,6 +287,20 @@ steps: 8
 
 On the final step, OpenCode removes tools and asks the model to summarize in text. New user input resets the allowance.
 
+### Subagents background
+
+`subagentsBackground` forces how this agent delegates work through the `subagent` tool:
+
+```yaml
+subagentsBackground: true
+```
+
+- `true` always returns immediately and runs the subagent in the background.
+- `false` always waits for the subagent to finish in the foreground.
+- Omitted, each call decides through the tool's `background` argument.
+
+When set, the agent's setting wins over the `background` argument the model passes.
+
 ### Hidden
 
 `hidden` removes an agent from normal listings, interactive discovery, and the subagent catalog:
