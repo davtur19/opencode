@@ -70,6 +70,7 @@ import { useToast } from "../../ui/toast"
 import stripAnsi from "strip-ansi"
 import { usePromptRef } from "../../context/prompt"
 import { projectedPromptInput } from "../../prompt/codec"
+import { appendPrompt } from "../../prompt/history"
 import { deduplicateVisibleImages } from "../../prompt/attachment"
 import { useEpilogue } from "../../context/epilogue"
 import { normalizePath } from "../../util/path"
@@ -116,7 +117,7 @@ import { isRecord } from "../../util/record"
 import { createHistoryPrepend } from "./history"
 import { context, use, type PendingAction } from "./render-context"
 import { INLINE_TOOL_ICON_WIDTH, InlineToolRow, ReasoningPart, TextPart, toolDisplay } from "./message-parts"
-import type { SessionEntry } from "./grouping/session"
+import { defaultVerbosity, type GroupKind, type SessionEntry } from "./grouping/session"
 import { SessionGroupView } from "./group-view"
 import { useEntryAnchor } from "./anchor-view"
 import { containsAnchor, createTimelineAnchors } from "./anchors"
@@ -211,7 +212,9 @@ export function Session(props: {
   )
   const pendingDeliveries = createMemo(() => new Map(pendingUsers().map((item) => [item.id, item.delivery])))
   const queuedPrompts = createMemo(() =>
-    pendingUsers().flatMap((item) => (item.delivery === "queue" ? [{ id: item.id, text: item.payload.text }] : [])),
+    pendingUsers().flatMap((item) =>
+      item.delivery === "queue" ? [{ id: item.id, text: item.payload.text, payload: item.payload }] : [],
+    ),
   )
   const [composer, setComposer] = createStore({
     open: false,
@@ -234,6 +237,13 @@ export function Session(props: {
   const markdownMode = createMemo(() => config.session?.markdown ?? "rendered")
   const diffWrapMode = createMemo(() => config.diffs?.wrap ?? "word")
   const groupExploration = createMemo(() => config.session?.grouping !== "none")
+  const verbosity = createMemo(() => config.session?.verbosity ?? defaultVerbosity)
+  // High opens exploration and instruction summaries by default; everything else starts collapsed.
+  const groupExpanded = (groupID: string, kind: GroupKind) =>
+    sessionTabs.groupExpanded(sessionID, groupID) ??
+    (verbosity() === "high" && (kind === "exploration" || kind === "instructions"))
+  const groupedKind = (kind: GroupKind) =>
+    kind === "reasoning" ? thinkingMode() === "hide" : kind === "exploration" ? groupExploration() : true
 
   Keymap.createLayer(() => ({
     priority: 10,
@@ -395,8 +405,8 @@ export function Session(props: {
   const weights = createMemo(() =>
     rows.map((row) =>
       rowWeight(row, {
-        expanded: (groupID) => sessionTabs.groupExpanded(sessionID, groupID) ?? false,
-        grouped: (kind) => (kind === "reasoning" ? thinkingMode() === "hide" : groupExploration()),
+        expanded: groupExpanded,
+        grouped: groupedKind,
       }),
     ),
   )
@@ -601,7 +611,7 @@ export function Session(props: {
   const dialog = useDialog()
   const renderer = useRenderer()
   const runPendingAction = createSingleFlight<string>()
-  const mutatePending = async (action: PendingAction, inboxID: string) => {
+  const mutatePending = async (action: PendingAction, inboxID: string, failureLabel?: string) => {
     const result = await runPendingAction(inboxID, async () => {
       const request =
         action === "steer"
@@ -614,7 +624,7 @@ export function Session(props: {
         (error) => error,
       )
       if (!error) return true
-      const label = action === "cancel" ? "delete" : action
+      const label = failureLabel ?? (action === "cancel" ? "delete" : action)
       toast.show({ title: `Failed to ${label} pending prompt`, message: errorMessage(error), variant: "error" })
       return false
     })
@@ -642,6 +652,26 @@ export function Session(props: {
               const last = queuedPrompts().length === 1
               void mutatePending("cancel", option.value).then((cancelled) => {
                 if (cancelled && last) dialog.clear()
+              })
+            },
+          },
+          {
+            command: "queued_prompt.undo",
+            title: "undo",
+            onTrigger: (option) => {
+              const target = prompt()
+              const queued = queuedPrompts().find((item) => item.id === option.value)
+              if (!target || !queued) return
+              if (target.mode === "shell" && target.current.text) {
+                toast.show({ message: "Leave shell mode before undoing a queued prompt", variant: "error" })
+                return
+              }
+              void mutatePending("cancel", queued.id, "undo").then((undone) => {
+                if (!undone) return
+                target.setMode("normal")
+                target.set(appendPrompt(target.current, { ...projectedPromptInput(queued.payload), pasted: [] }))
+                dialog.clear()
+                target.focus()
               })
             },
           },
@@ -1046,6 +1076,21 @@ export function Session(props: {
       },
     },
     {
+      title: `Verbosity: ${Locale.titlecase(verbosity())}`,
+      id: "session.verbosity.cycle",
+      group: "Session",
+      run: () => {
+        const levels = ["low", "medium", "high"] as const
+        const next = levels[(levels.indexOf(verbosity()) + 1) % levels.length]
+        void configState
+          .update((draft) => {
+            draft.session = { ...draft.session, verbosity: next }
+          })
+          .catch(toast.error)
+        dialog.clear()
+      },
+    },
+    {
       title: "Jump to last user message",
       id: "session.messages_last_user",
       group: "Session",
@@ -1302,7 +1347,7 @@ export function Session(props: {
     <context.Provider
       value={{
         anchors,
-        groupExpanded: (groupID) => sessionTabs.groupExpanded(sessionID, groupID),
+        groupExpanded,
         setGroupExpanded: (groupID, expanded) => {
           sessionTabs.setGroupExpanded(sessionID, groupID, expanded)
           afterLayout(saveScrollAnchor)

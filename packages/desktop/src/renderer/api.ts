@@ -50,6 +50,8 @@ export const api: ElectronAPI = {
   browserPane: {
     request: (request) => invoke("BrowserPane", { request }),
     send: (request) => send("BrowserPane", { request }),
+    capture: (bindingID, tabID) =>
+      invoke("BrowserPaneCapture", { bindingID, tabID }).then((data) => (data ? toArrayBuffer(data) : null)),
     onEvent: (callback) => listen("BrowserPaneEvent", (value) => callback(value)),
   },
   wslServers: {
@@ -163,6 +165,7 @@ export const api: ElectronAPI = {
   recordFatalRendererError: (error) => invoke("AppRecordFatalRendererError", { error }),
   setNativeTranslations: (bundle) => invoke("AppSetNativeTranslations", { value: bundle }),
   pairInfo: () => invoke("AppPairInfo").then(mutable),
+  pairCode: () => invoke("AppPairCode"),
   getKeepScreenActive: () => invoke("AppGetKeepScreenActive"),
   setKeepScreenActive: (enabled) => invoke("AppSetKeepScreenActive", { enabled }),
 }
