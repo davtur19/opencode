@@ -22,7 +22,8 @@ export function make(input: Partial<Info> = {}): Info {
 }
 
 export function useragent(app: Info) {
-  return `opencode/${app.channel}/${app.version}/${app.name}`
+  const segment = (value: string) => value.replace(/[^a-zA-Z0-9._-]/g, "-")
+  return `opencode/${segment(app.channel)}/${segment(app.version)}/${segment(app.name)}`
 }
 
 export const layer = (input?: Partial<Info>) => Layer.succeed(Metadata, make(input))

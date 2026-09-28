@@ -143,7 +143,7 @@ export default { path: file, version: ${JSON.stringify(opencodePty.version)}, sh
       outfile: path.join(outdir, name, "bin", binary),
       execArgv: [
         "--smol",
-        `--user-agent=opencode/${Script.channel}/${Script.version}/cli`,
+        `--user-agent=opencode/${Script.channel.replace(/[^a-zA-Z0-9._-]/g, "-")}/${Script.version.replace(/[^a-zA-Z0-9._-]/g, "-")}/cli`,
         "--use-system-ca",
         "--no-warnings",
         "--",
