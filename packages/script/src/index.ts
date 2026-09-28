@@ -31,8 +31,16 @@ const CHANNEL = await (async () => {
 })()
 const IS_PREVIEW = CHANNEL !== "latest"
 
+// Off CI a build carries no release context, so stamp the checked-out package
+// version instead of a `0.0.0-<branch>-<build>` preview id. The preview id
+// reads as a non-release to consumers that gate on it (OpenChamber rejects it
+// as "not OpenCode 2.x"), while a locally built binary is the same code a
+// published one ships. CI preview builds keep the branch-scoped id.
+const IS_CI = Boolean(process.env["CI"] || process.env["GITHUB_ACTIONS"] || process.env["GITHUB_RUN_NUMBER"])
+
 const VERSION = await (async () => {
   if (env.OPENCODE_VERSION) return env.OPENCODE_VERSION
+  if (!IS_CI) return rootPkg.version
   if (IS_PREVIEW) return `0.0.0-${CHANNEL}-${previewBuildNumber()}`
   const version = await fetch("https://registry.npmjs.org/@opencode%2fcli/latest")
     .then((res) => {
