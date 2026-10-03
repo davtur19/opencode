@@ -41,6 +41,30 @@ const noRemoteConfig = HttpClient.make((request) =>
   Effect.succeed(HttpClientResponse.fromWeb(request, new Response(null, { status: 404 }))),
 )
 
+const opencodeProvider = (connectionClose: string | undefined) =>
+  Effect.acquireUseRelease(
+    Effect.sync(() =>
+      Bun.serve({
+        port: 0,
+        fetch: () => Response.json({ providers: { opencode: {} } }),
+      }),
+    ),
+    (server) =>
+      withEnv({ OPENCODE_EXPERIMENTAL_CONNECTION_CLOSE: connectionClose }, () =>
+        Effect.gen(function* () {
+          const credentials = yield* Credential.Service
+          yield* credentials.create({
+            integrationID: Integration.ID.make("opencode"),
+            value: Credential.Key.make({ type: "key", key: "secret", metadata: { server: server.url.origin } }),
+          })
+          yield* addPlugin()
+          const providers = yield* Provider.Service
+          return required(yield* providers.get(Provider.ID.opencode))
+        }),
+      ),
+    (server) => Effect.promise(() => server.stop(true)),
+  )
+
 function consoleServer(orgID: string | null | undefined, unavailable = false) {
   const config: { authorization: string | null; orgID: string | null }[] = []
   const requests: string[] = []
@@ -132,6 +156,14 @@ describe("OpencodePlugin", () => {
         { type: "key", label: "API key (service account)" },
       ])
     }),
+  )
+
+  it.effect("does not force Connection close on provider requests by default", () =>
+    Effect.map(opencodeProvider(undefined), (provider) => expect(provider.headers?.Connection).toBeUndefined()),
+  )
+
+  it.effect("forces Connection close when OPENCODE_EXPERIMENTAL_CONNECTION_CLOSE is set", () =>
+    Effect.map(opencodeProvider("1"), (provider) => expect(provider.headers?.Connection).toBe("close")),
   )
 
   it.live("uses a canonical custom server throughout device authorization", () =>
