@@ -50,6 +50,8 @@ export type Options<Provided extends Record<string, unknown> = {}> = {
   extensions?: ReadonlyArray<Extension>
   /** Resource limits enforced on each execution. */
   limits?: ExecutionLimits
+  /** Names the host also advertises outside this runtime; unknown-tool diagnostics point at them. */
+  topLevel?: ReadonlySet<string>
 }
 
 /** Options for one CodeMode execution. */
@@ -145,7 +147,10 @@ export const execute = <const Provided extends Record<string, unknown>>(
 export const make = <const Provided extends Record<string, unknown> = {}>(
   options: Options<Provided> = {},
 ): Runtime<Services<Provided>> => {
-  const prepared = ToolRuntime.prepare((options.tools ?? {}) as Tools<Services<Provided>>)
+  const prepared = ToolRuntime.prepare(
+    (options.tools ?? {}) as Tools<Services<Provided>>,
+    options.topLevel ?? undefined,
+  )
   const limits = resolveExecutionLimits(options.limits)
   const extensions = options.extensions ?? []
   const bound = new Set(globalNames)

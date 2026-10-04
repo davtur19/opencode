@@ -188,6 +188,8 @@ export type Prepared<R = never> = {
   readonly root: ToolNode<R>
   readonly catalog: ReadonlyArray<ToolDescription>
   readonly searchIndex: ReadonlyArray<SearchEntry>
+  /** Names the host also advertises outside this runtime; unknown-tool diagnostics point at them. */
+  readonly topLevel: ReadonlySet<string>
 }
 
 export type SearchEntry = {
@@ -299,12 +301,13 @@ const toSearchEntry = <R>(visible: VisibleTool<R>): SearchEntry => ({
     .toLowerCase(),
 })
 
-export const prepare = <R>(tools: Tools<R>): Prepared<R> => {
+export const prepare = <R>(tools: Tools<R>, topLevel?: ReadonlySet<string>): Prepared<R> => {
   const root = toolTrie(tools)
   let searchIndex: ReadonlyArray<SearchEntry> | undefined
   let catalog: ReadonlyArray<ToolDescription> | undefined
   return {
     root,
+    topLevel: topLevel ?? new Set(),
     get catalog() {
       return (catalog ??= this.searchIndex.map((entry) => entry.description))
     },
@@ -321,20 +324,39 @@ export const prepare = <R>(tools: Tools<R>): Prepared<R> => {
 const lookup = <R>(root: ToolNode<R>, segments: ReadonlyArray<string>): ToolNode<R> | undefined =>
   segments.reduce<ToolNode<R> | undefined>((node, segment) => node?.children.get(segment), root)
 
-const namespaceKeys = <R>(root: ToolNode<R>, path: ReadonlyArray<string>): ReadonlyArray<string> => {
-  const segments = canonicalSegments(path)
-  const node = lookup(root, segments)
-  if (node === undefined) {
-    throw new ToolRuntimeError("UnknownTool", `Unknown tool namespace '${segments.join(".")}'.`)
-  }
-  return Array.from(node.children.keys())
-}
+const topLevelGuidance = (name: string) => `'${name}' is a top-level tool: call it directly, not through 'tools'.`
 
-const resolve = <R>(root: ToolNode<R>, path: ReadonlyArray<string>, index: ReadonlyArray<SearchEntry>): Tool<R> => {
+const namespaceKeys = <R>(
+  root: ToolNode<R>,
+  path: ReadonlyArray<string>,
+  topLevel: ReadonlySet<string>,
+): ReadonlyArray<string> => {
   const segments = canonicalSegments(path)
   const node = lookup(root, segments)
   if (node === undefined) {
     const name = segments.join(".")
+    throw new ToolRuntimeError(
+      "UnknownTool",
+      segments.length === 1 && topLevel.has(name)
+        ? `Unknown tool namespace '${name}'. ${topLevelGuidance(name)}`
+        : `Unknown tool namespace '${name}'.`,
+    )
+  }
+  return Array.from(node.children.keys())
+}
+
+const resolve = <R>(
+  root: ToolNode<R>,
+  path: ReadonlyArray<string>,
+  index: ReadonlyArray<SearchEntry>,
+  topLevel: ReadonlySet<string>,
+): Tool<R> => {
+  const segments = canonicalSegments(path)
+  const node = lookup(root, segments)
+  if (node === undefined) {
+    const name = segments.join(".")
+    if (segments.length === 1 && topLevel.has(name))
+      throw new ToolRuntimeError("UnknownTool", `Unknown tool '${name}'. ${topLevelGuidance(name)}`)
     const ns = segments.length > 1 && root.children.has(segments[0]) ? segments[0] : undefined
     const closest = rank(
       ns ? index.filter((entry) => entry.description.path.startsWith(`${ns}.`)) : index,
@@ -443,7 +465,7 @@ export const make = <R>(
   return {
     calls,
     hooks,
-    keys: (path) => namespaceKeys(root, path),
+    keys: (path) => namespaceKeys(root, path, prepared.topLevel),
     search: (args) => Effect.suspend(() => executeTool("search", makeSearchTool(prepared.searchIndex), args)),
     execute: (path, args) =>
       Effect.suspend(() => {
@@ -451,7 +473,7 @@ export const make = <R>(
         // Models often write `tools.search(...)` for the bare `search(...)`; honor it unless a tool owns that path.
         if (segments.length === 1 && segments[0] === "search" && lookup(root, segments) === undefined)
           return executeTool("search", makeSearchTool(prepared.searchIndex), args)
-        return executeTool(segments.join("."), resolve(root, path, prepared.searchIndex), args)
+        return executeTool(segments.join("."), resolve(root, path, prepared.searchIndex, prepared.topLevel), args)
       }),
   }
 }

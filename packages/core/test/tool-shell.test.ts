@@ -883,6 +883,33 @@ describe("ShellTool", () => {
     ),
   )
 
+  it.live("points at the top-level tool when shell is called inside execute", () =>
+    Effect.acquireUseRelease(
+      Effect.promise(() => tmpdir()),
+      (tmp) => {
+        reset()
+        return withSession(tmp.path, (registry) =>
+          Effect.gen(function* () {
+            const result = yield* executeTool(registry, {
+              sessionID,
+              ...toolIdentity,
+              call: {
+                type: "tool-call",
+                id: "call-top-level-hint",
+                name: "execute",
+                input: { code: `return await tools.shell({ command: "echo hi" })` },
+              },
+            }).pipe(Effect.timeout("3 seconds"))
+            expect(JSON.stringify(result)).toContain(
+              "'shell' is a top-level tool: call it directly, not through 'tools'.",
+            )
+          }),
+        )
+      },
+      (tmp) => Effect.promise(() => tmp[Symbol.asyncDispose]().then(() => undefined)),
+    ),
+  )
+
   productionIt.live(
     "registers and returns real successful output from the active Location",
     () =>

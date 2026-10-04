@@ -122,6 +122,37 @@ describe("callable namespaces", () => {
   })
 })
 
+describe("top-level tool diagnostics", () => {
+  const runtime = CodeMode.make({
+    tools: { api: { list: echo("List issues", "listed") } },
+    topLevel: new Set(["shell"]),
+  })
+
+  test("calling a top-level name through tools points at direct use", async () => {
+    const diagnostic = await failure(runtime, `return await tools.shell({ command: "ls" })`)
+    expect(diagnostic.kind).toBe("UnknownTool")
+    expect(diagnostic.message).toBe(
+      "Unknown tool 'shell'. 'shell' is a top-level tool: call it directly, not through 'tools'.",
+    )
+    expect(diagnostic.suggestions).toBeUndefined()
+  })
+
+  test("enumerating a top-level name through tools points at direct use", async () => {
+    const diagnostic = await failure(runtime, `return Object.keys(tools.shell)`)
+    expect(diagnostic.kind).toBe("UnknownTool")
+    expect(diagnostic.message).toBe(
+      "Unknown tool namespace 'shell'. 'shell' is a top-level tool: call it directly, not through 'tools'.",
+    )
+  })
+
+  test("an unrelated unknown name keeps the search suggestion", async () => {
+    const diagnostic = await failure(runtime, `return await tools.shellx({})`)
+    expect(diagnostic.kind).toBe("UnknownTool")
+    expect(diagnostic.message).toContain("Unknown tool 'shellx'")
+    expect(diagnostic.suggestions).toEqual(["Use search to find available tools."])
+  })
+})
+
 describe("tool input diagnostics", () => {
   const runtime = CodeMode.make({
     tools: {

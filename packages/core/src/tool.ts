@@ -234,7 +234,7 @@ const layer = Layer.effect(
           const direct = new Map(Array.from(active).filter(([, tool]) => tool.options?.codemode === false))
           const codeModeTools = new Map(Array.from(active).filter(([, tool]) => tool.options?.codemode !== false))
           const namespaces = data.namespaces
-          const codeModeInventory = { tools: codeModeTools, namespaces }
+          const codeModeInventory = { tools: codeModeTools, namespaces, topLevel: new Set(direct.keys()) }
           const codeModeEnabled = !whollyDisabled("execute", rules)
           const codeModeTool = codeModeEnabled
             ? CodeModeTool.create(codeModeInventory, (name, tool, input, context) =>
