@@ -27,7 +27,9 @@ const backgroundResult = (sessionID: SessionSchema.ID) => ({
 })
 
 function forceBackground() {
-  const value = process.env.OPENCODE_FORCE_BACKGROUND_SUBAGENTS?.toLowerCase()
+  const value = (
+    process.env.OPENCODE_BACKGROUND_SUBAGENTS ?? process.env.OPENCODE_FORCE_BACKGROUND_SUBAGENTS
+  )?.toLowerCase()
   return value === "1" || value === "true"
 }
 
@@ -202,9 +204,10 @@ export const Plugin = {
                     ),
                   ))
 
-              // OPENCODE_FORCE_BACKGROUND_SUBAGENTS forces background for every call.
-              // Otherwise the delegating agent's `subagentsBackground` wins over the
-              // call's `background` argument: the caller decides how its subagents run.
+              // OPENCODE_BACKGROUND_SUBAGENTS (or OPENCODE_FORCE_BACKGROUND_SUBAGENTS)
+              // forces background for every call. Otherwise the delegating agent's
+              // `subagentsBackground` wins over the call's `background` argument:
+              // the caller decides how its subagents run.
               const caller = yield* agents.resolve(parent.agent ?? context.agent)
               const background =
                 forceBackground() || (caller?.subagentsBackground ?? input.background === true)

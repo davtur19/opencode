@@ -57,6 +57,11 @@ const tokens = { input: 0, output: 0, reasoning: 0, cache: { read: 0, write: 0 }
 const outputSessionID = (value: unknown) =>
   Schema.decodeUnknownSync(Schema.Struct({ sessionID: Session.ID }))(value).sessionID
 
+// Foreground-behavior tests must not inherit a force flag from the ambient environment
+// (a server exporting it reaches every spawned shell).
+delete process.env.OPENCODE_BACKGROUND_SUBAGENTS
+delete process.env.OPENCODE_FORCE_BACKGROUND_SUBAGENTS
+
 const executionNode = makeGlobalNode({
   service: SessionExecution.Service,
   layer: Layer.effect(
@@ -668,67 +673,69 @@ describe("SubagentTool", () => {
     ),
   )
 
-  it.live("forces background when OPENCODE_FORCE_BACKGROUND_SUBAGENTS is set", () =>
-    Effect.acquireRelease(
-      Effect.promise(() => tmpdir()),
-      (dir) => Effect.promise(() => dir[Symbol.asyncDispose]()),
-    ).pipe(
-      Effect.flatMap((dir) =>
-        Effect.gen(function* () {
-          const location = Location.Ref.make({ directory: AbsolutePath.make(dir.path) })
-          const sessions = yield* Session.Service
-          const parent = yield* sessions.create({ location, model: parentModel })
-          const child = yield* sessions.create({
-            parentID: parent.id,
-            title: "review",
-            agent: Agent.ID.make("reviewer"),
-            model: childModel,
-          })
-          yield* withSubagent(parent.location)
-          const locations = yield* LocationServiceMap.Service
-          yield* Agent.Service.use((agents) =>
-            agents.transform((editor) => {
-              editor.update(toolIdentity.agent, (agent) => {
-                agent.subagentsBackground = false
-              })
-            }),
-          ).pipe(Effect.provide(locations.get(parent.location)))
-          const registry = yield* Tool.Service.pipe(Effect.provide(locations.get(parent.location)))
-          const jobs = yield* Job.Service
-          yield* jobs.start({ id: child.id, type: SubagentTool.name, run: Effect.never })
+  for (const variable of ["OPENCODE_BACKGROUND_SUBAGENTS", "OPENCODE_FORCE_BACKGROUND_SUBAGENTS"]) {
+    it.live(`forces background when ${variable} is set`, () =>
+      Effect.acquireRelease(
+        Effect.promise(() => tmpdir()),
+        (dir) => Effect.promise(() => dir[Symbol.asyncDispose]()),
+      ).pipe(
+        Effect.flatMap((dir) =>
+          Effect.gen(function* () {
+            const location = Location.Ref.make({ directory: AbsolutePath.make(dir.path) })
+            const sessions = yield* Session.Service
+            const parent = yield* sessions.create({ location, model: parentModel })
+            const child = yield* sessions.create({
+              parentID: parent.id,
+              title: "review",
+              agent: Agent.ID.make("reviewer"),
+              model: childModel,
+            })
+            yield* withSubagent(parent.location)
+            const locations = yield* LocationServiceMap.Service
+            yield* Agent.Service.use((agents) =>
+              agents.transform((editor) => {
+                editor.update(toolIdentity.agent, (agent) => {
+                  agent.subagentsBackground = false
+                })
+              }),
+            ).pipe(Effect.provide(locations.get(parent.location)))
+            const registry = yield* Tool.Service.pipe(Effect.provide(locations.get(parent.location)))
+            const jobs = yield* Job.Service
+            yield* jobs.start({ id: child.id, type: SubagentTool.name, run: Effect.never })
 
-          const result = yield* withEnv({ OPENCODE_FORCE_BACKGROUND_SUBAGENTS: "true" }, () =>
-            executeTool(registry, {
-              sessionID: parent.id,
-              ...toolIdentity,
-              call: {
-                type: "tool-call",
-                id: "call-env-forced-background",
-                name: SubagentTool.name,
-                input: {
-                  agent: "reviewer",
-                  description: "review",
-                  prompt: "continue while running",
-                  sessionID: child.id,
-                  background: false,
+            const result = yield* withEnv({ [variable]: "true" }, () =>
+              executeTool(registry, {
+                sessionID: parent.id,
+                ...toolIdentity,
+                call: {
+                  type: "tool-call",
+                  id: `call-env-forced-background-${variable}`,
+                  name: SubagentTool.name,
+                  input: {
+                    agent: "reviewer",
+                    description: "review",
+                    prompt: "continue while running",
+                    sessionID: child.id,
+                    background: false,
+                  },
                 },
-              },
-            }),
-          )
+              }),
+            )
 
-          expect(result).toMatchObject({
-            status: "completed",
-            metadata: { sessionID: child.id, status: "running" },
-          })
-          expect((yield* sessions.inbox(child.id)).find((message) => message.type === "user")?.payload.text).toBe(
-            "continue while running",
-          )
-          expect((yield* jobs.get(child.id))?.status).toBe("running")
-          yield* jobs.cancel(child.id)
-        }),
+            expect(result).toMatchObject({
+              status: "completed",
+              metadata: { sessionID: child.id, status: "running" },
+            })
+            expect((yield* sessions.inbox(child.id)).find((message) => message.type === "user")?.payload.text).toBe(
+              "continue while running",
+            )
+            expect((yield* jobs.get(child.id))?.status).toBe("running")
+            yield* jobs.cancel(child.id)
+          }),
+        ),
       ),
-    ),
-  )
+    )
+  }
 
   it.live("rejects unrelated children and switches agents on continuation", () =>
     Effect.acquireRelease(
