@@ -26,6 +26,11 @@ const backgroundResult = (sessionID: SessionSchema.ID) => ({
   ].join("\n"),
 })
 
+function forceBackground() {
+  const value = process.env.OPENCODE_FORCE_BACKGROUND_SUBAGENTS?.toLowerCase()
+  return value === "1" || value === "true"
+}
+
 export const Input = Schema.Struct({
   agent: Schema.String.annotate({
     description:
@@ -197,10 +202,12 @@ export const Plugin = {
                     ),
                   ))
 
-              // The delegating agent's `subagentsBackground` wins over the call's
-              // `background` argument: the caller decides how its subagents run.
+              // OPENCODE_FORCE_BACKGROUND_SUBAGENTS forces background for every call.
+              // Otherwise the delegating agent's `subagentsBackground` wins over the
+              // call's `background` argument: the caller decides how its subagents run.
               const caller = yield* agents.resolve(parent.agent ?? context.agent)
-              const background = caller?.subagentsBackground ?? input.background === true
+              const background =
+                forceBackground() || (caller?.subagentsBackground ?? input.background === true)
               yield* context.progress({ sessionID: child.id, status: "running" })
 
               // Standard prompt admission outside the job: Job.start joining a running child skips

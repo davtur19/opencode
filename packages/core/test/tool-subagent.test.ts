@@ -37,6 +37,7 @@ import { SubagentTool } from "@opencode/core/tool/plugin/subagent"
 import { Tool } from "@opencode/core/tool"
 import { tmpdir } from "./fixture/tmpdir"
 import { tempGlobalLayer } from "./fixture/global"
+import { withEnv } from "./fixture/env"
 import { offlineModels } from "./fixture/models"
 import { testEffect } from "./lib/effect"
 import { executeTool, registerToolPlugin, toolIdentity } from "./lib/tool"
@@ -652,6 +653,68 @@ describe("SubagentTool", () => {
               },
             },
           })
+
+          expect(result).toMatchObject({
+            status: "completed",
+            metadata: { sessionID: child.id, status: "running" },
+          })
+          expect((yield* sessions.inbox(child.id)).find((message) => message.type === "user")?.payload.text).toBe(
+            "continue while running",
+          )
+          expect((yield* jobs.get(child.id))?.status).toBe("running")
+          yield* jobs.cancel(child.id)
+        }),
+      ),
+    ),
+  )
+
+  it.live("forces background when OPENCODE_FORCE_BACKGROUND_SUBAGENTS is set", () =>
+    Effect.acquireRelease(
+      Effect.promise(() => tmpdir()),
+      (dir) => Effect.promise(() => dir[Symbol.asyncDispose]()),
+    ).pipe(
+      Effect.flatMap((dir) =>
+        Effect.gen(function* () {
+          const location = Location.Ref.make({ directory: AbsolutePath.make(dir.path) })
+          const sessions = yield* Session.Service
+          const parent = yield* sessions.create({ location, model: parentModel })
+          const child = yield* sessions.create({
+            parentID: parent.id,
+            title: "review",
+            agent: Agent.ID.make("reviewer"),
+            model: childModel,
+          })
+          yield* withSubagent(parent.location)
+          const locations = yield* LocationServiceMap.Service
+          yield* Agent.Service.use((agents) =>
+            agents.transform((editor) => {
+              editor.update(toolIdentity.agent, (agent) => {
+                agent.subagentsBackground = false
+              })
+            }),
+          ).pipe(Effect.provide(locations.get(parent.location)))
+          const registry = yield* Tool.Service.pipe(Effect.provide(locations.get(parent.location)))
+          const jobs = yield* Job.Service
+          yield* jobs.start({ id: child.id, type: SubagentTool.name, run: Effect.never })
+
+          const result = yield* withEnv({ OPENCODE_FORCE_BACKGROUND_SUBAGENTS: "true" }, () =>
+            executeTool(registry, {
+              sessionID: parent.id,
+              ...toolIdentity,
+              call: {
+                type: "tool-call",
+                id: "call-env-forced-background",
+                name: SubagentTool.name,
+                input: {
+                  agent: "reviewer",
+                  description: "review",
+                  prompt: "continue while running",
+                  sessionID: child.id,
+                  background: false,
+                },
+              },
+            }),
+          )
 
           expect(result).toMatchObject({
             status: "completed",
