@@ -39,3 +39,4 @@ tsconfig.tsbuildinfo
 
 # Embedded databases (tool state, never commit)
 *.sqlite*
+/artifacts/
