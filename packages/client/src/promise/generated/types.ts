@@ -308,6 +308,8 @@ export type CredentialOAuth = {
   metadata?: { [x: string]: JsonValue }
 }
 
+export type CredentialExternal = { type: "external"; methodID: string; metadata?: { [x: string]: JsonValue } }
+
 export type ProjectVcs = string
 
 export type ProjectIcon = { url?: string; override?: string; color?: string }
@@ -1478,6 +1480,7 @@ export type ModelCompatibility = {
   requireAssistantAfterTool?: boolean
   supportsPromptCacheKey?: boolean
   supportsThinkingBlockBinding?: boolean
+  supportsEffortUpdates?: boolean
 }
 
 export type ModelCost = {
@@ -1491,7 +1494,7 @@ export type ConnectionCredentialInfo = {
   type: "credential"
   id: string
   label: string
-  method: "key" | "oauth"
+  method: "key" | "oauth" | "external"
   status?: ConnectionStatus
 }
 
@@ -2199,7 +2202,11 @@ export type ConfigEntry =
         experimental?: {
           portable_shell_scanner?: boolean
           subagent_depth?: number
-          policies?: Array<{ action: "provider.use" | "permission"; resource: string; effect: "allow" | "deny" }>
+          policies?: Array<{
+            action: "provider.use" | "tool.use" | "integration.use"
+            resource: string
+            effect: "allow" | "deny"
+          }>
         }
       }
     }
@@ -2257,7 +2264,7 @@ export type SessionMessageAssistantTool1 = {
 
 export type FormFields = [FormField, ...Array<FormField>]
 
-export type CredentialValue = CredentialOAuth | CredentialKey
+export type CredentialValue = CredentialOAuth | CredentialKey | CredentialExternal
 
 export type FormFields2 = [FormField1, ...Array<FormField1>]
 
@@ -2313,6 +2320,8 @@ export type IntegrationOAuthMethod = { id: string; type: "oauth"; label: string;
 
 export type IntegrationKeyMethod = { type: "key"; label?: string; form?: FormFields }
 
+export type IntegrationExternalMethod = { id: string; type: "external"; label: string; form?: FormFields }
+
 export type CredentialEntry = {
   id: string
   integrationID: string
@@ -2350,6 +2359,7 @@ export type IntegrationMethod =
   | IntegrationOAuthMethod
   | IntegrationCommandMethod
   | IntegrationKeyMethod
+  | IntegrationExternalMethod
   | IntegrationEnvMethod
 
 export type FormCreated = {
@@ -5687,6 +5697,28 @@ export type IntegrationConnectKeyInput = {
 
 export type IntegrationConnectKeyOutput = void
 
+export type IntegrationConnectExternalInput = {
+  readonly integrationID: { readonly integrationID: string }["integrationID"]
+  readonly location?: { readonly location?: { readonly directory?: string | undefined } | undefined }["location"]
+  readonly methodID: {
+    readonly methodID: string
+    readonly answer?: { readonly [x: string]: string | number | boolean | ReadonlyArray<string> } | undefined
+    readonly label?: string | undefined
+  }["methodID"]
+  readonly answer?: {
+    readonly methodID: string
+    readonly answer?: { readonly [x: string]: string | number | boolean | ReadonlyArray<string> } | undefined
+    readonly label?: string | undefined
+  }["answer"]
+  readonly label?: {
+    readonly methodID: string
+    readonly answer?: { readonly [x: string]: string | number | boolean | ReadonlyArray<string> } | undefined
+    readonly label?: string | undefined
+  }["label"]
+}
+
+export type IntegrationConnectExternalOutput = void
+
 export type IntegrationOauthConnectInput = {
   readonly integrationID: { readonly integrationID: string }["integrationID"]
   readonly location?: { readonly location?: { readonly directory?: string | undefined } | undefined }["location"]
@@ -5855,6 +5887,11 @@ export type CredentialCreateInput = {
             readonly [x: string]: string | number | "Infinity" | "-Infinity" | "NaN" | boolean | ReadonlyArray<string>
           }
         }
+      | {
+          readonly type: "external"
+          readonly methodID: string
+          readonly metadata?: { readonly [x: string]: JsonValue }
+        }
     readonly activate?: boolean
   }["id"]
   readonly integrationID: {
@@ -5877,6 +5914,11 @@ export type CredentialCreateInput = {
           readonly configuration?: {
             readonly [x: string]: string | number | "Infinity" | "-Infinity" | "NaN" | boolean | ReadonlyArray<string>
           }
+        }
+      | {
+          readonly type: "external"
+          readonly methodID: string
+          readonly metadata?: { readonly [x: string]: JsonValue }
         }
     readonly activate?: boolean
   }["integrationID"]
@@ -5901,6 +5943,11 @@ export type CredentialCreateInput = {
             readonly [x: string]: string | number | "Infinity" | "-Infinity" | "NaN" | boolean | ReadonlyArray<string>
           }
         }
+      | {
+          readonly type: "external"
+          readonly methodID: string
+          readonly metadata?: { readonly [x: string]: JsonValue }
+        }
     readonly activate?: boolean
   }["label"]
   readonly value: {
@@ -5924,6 +5971,11 @@ export type CredentialCreateInput = {
             readonly [x: string]: string | number | "Infinity" | "-Infinity" | "NaN" | boolean | ReadonlyArray<string>
           }
         }
+      | {
+          readonly type: "external"
+          readonly methodID: string
+          readonly metadata?: { readonly [x: string]: JsonValue }
+        }
     readonly activate?: boolean
   }["value"]
   readonly activate?: {
@@ -5946,6 +5998,11 @@ export type CredentialCreateInput = {
           readonly configuration?: {
             readonly [x: string]: string | number | "Infinity" | "-Infinity" | "NaN" | boolean | ReadonlyArray<string>
           }
+        }
+      | {
+          readonly type: "external"
+          readonly methodID: string
+          readonly metadata?: { readonly [x: string]: JsonValue }
         }
     readonly activate?: boolean
   }["activate"]

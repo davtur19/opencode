@@ -1,5 +1,6 @@
 #!/usr/bin/env bun
 
+import { ensurePluginRuntime } from "@opencode/plugin/runtime"
 import { NodeRuntime, NodeServices } from "@effect/platform-node"
 import { Cause, Effect } from "effect"
 import { getErrorReported } from "effect/Runtime"
@@ -22,6 +23,8 @@ import { FetchProxy } from "@opencode/util/proxy"
 // Effect FetchHttpClient, AISDK prepareOptions, models.dev refresh) sees the
 // wrapper. Idempotent; env-only config (OPENCODE_CLOUD_PROXY[_DOMAINS]).
 FetchProxy.install()
+
+ensurePluginRuntime()
 
 if (process.env.OPENCODE_SSH_ASKPASS_PORT) {
   const { askpass } = await import("./ssh-askpass")
