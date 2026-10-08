@@ -33,7 +33,9 @@ import { SessionProjector } from "../src/session/projector"
 import { SessionRunnerModel } from "../src/session/runner/model"
 import { SessionStep } from "../src/session/runner/step"
 import { SessionTable } from "../src/session/sql"
+import { SessionStore } from "../src/session/store"
 import { Snapshot } from "../src/snapshot"
+import { permissionLayer } from "../test/lib/permission"
 import { ToolOutput } from "../src/tool-output"
 
 const args = process.argv.slice(2)
@@ -122,7 +124,7 @@ const run = (snapshots: Layer.Layer<Snapshot.Service>) =>
       .insert(SessionTable)
       .values({ id: sessionID, project_id: Project.ID.global, slug: "bench", directory, version: "bench" })
       .run()
-    const steps = yield* SessionStep.make
+    const steps = yield* SessionStep.make.pipe(Effect.provide(permissionLayer()))
     const snapshot = yield* Snapshot.Service
     // Warm the snapshot store so the first step does not pay repository creation.
     yield* snapshot.capture()
@@ -161,6 +163,7 @@ const run = (snapshots: Layer.Layer<Snapshot.Service>) =>
           retry: () => Effect.succeed({ retry: false as const }),
           recoverContinuation: false,
           recoverOverflow: Effect.succeed(false),
+          stall: { lastEventAt: undefined },
         })
       }
     return { ms: performance.now() - start, spawns: spawns - before }
@@ -168,9 +171,10 @@ const run = (snapshots: Layer.Layer<Snapshot.Service>) =>
     Effect.provide(snapshots),
     Effect.provide(
       Layer.merge(
-        AppNodeBuilder.build(LayerNode.group([Database.node, Bus.node, SessionProjector.node, ToolOutput.node]), [
-          Bus.node.replace(Bus.configured({ persist: true })),
-        ]),
+        AppNodeBuilder.build(
+          LayerNode.group([Database.node, Bus.node, SessionProjector.node, ToolOutput.node, SessionStore.node]),
+          [Bus.node.replace(Bus.configured({ persist: true }))],
+        ),
         TestLLM.testLayer(),
       ),
     ),
