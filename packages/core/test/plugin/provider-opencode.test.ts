@@ -798,7 +798,7 @@ describe("OpencodePlugin", () => {
     ),
   )
 
-  it.effect("ignores unsupported managed actions and keys while enforcing supported policies", () =>
+  it.effect("ignores unsupported managed actions, effects, and keys while enforcing supported policies", () =>
     Effect.acquireUseRelease(
       Effect.sync(() =>
         Bun.serve({
@@ -813,6 +813,7 @@ describe("OpencodePlugin", () => {
                   { action: "provider.use", resource: "opencode", effect: "allow" },
                   { action: "tool.use", resource: "shell:*", effect: "deny" },
                   { action: "tool.use", resource: "shell:git *", effect: "allow" },
+                  { action: "tool.use", resource: "shell:git status", effect: "future-effect" },
                   { action: "permission", resource: "*", effect: "deny" },
                   { action: "tool.use", resource: "shell:sudo *", effect: "deny", audience: "ignored" },
                   { action: "integration.use", resource: "mcp:restricted", effect: "deny" },
@@ -877,7 +878,7 @@ describe("OpencodePlugin", () => {
     ),
   )
 
-  it.effect("refreshes past future-only policies while retaining config on malformed supported statements", () =>
+  it.effect("refreshes past future-only policies while retaining config on malformed statements", () =>
     Effect.acquireUseRelease(
       Effect.sync(() => {
         const state: { policies: unknown[] } = {
@@ -909,7 +910,6 @@ describe("OpencodePlugin", () => {
           expect(managed.current()).toEqual({ statements: [sudo], organization: "Acme" })
 
           for (const malformed of [
-            { action: "tool.use", resource: "shell:*", effect: "future-effect" },
             { action: "tool.use", resource: 42, effect: "deny" },
             { action: "tool.use", effect: "deny" },
             null,
@@ -921,6 +921,11 @@ describe("OpencodePlugin", () => {
             expect(managed.current()).toEqual({ statements: [sudo], organization: "Acme" })
             expect(yield* providers.get(Provider.ID.opencode)).toBeDefined()
           }
+
+          state.policies = [env, { action: "tool.use", resource: "shell:*", effect: "future-effect" }]
+          yield* TestClock.adjust("1 minute")
+          yield* drain
+          expect(managed.current()).toEqual({ statements: [env], organization: "Acme" })
 
           state.policies = [{ action: "future.use", future: { values: [true] } }]
           yield* TestClock.adjust("1 minute")
