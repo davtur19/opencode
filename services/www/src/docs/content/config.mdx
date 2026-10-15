@@ -176,19 +176,6 @@ Project-level values are ignored.
 }
 ```
 
-### Sharing
-
-Set the session sharing policy. OpenCode accepts this field, but session sharing
-is not supported yet.
-
-```jsonc
-{
-  "share": "manual",
-}
-```
-
-See the [sharing guide](/sharing) for more details.
-
 ### Username
 
 Set a username. OpenCode accepts this field but does not display it in
@@ -346,8 +333,9 @@ rate limits, and disabling search.
 
 ### MCP
 
-Configure local and remote Model Context Protocol servers. Global timeouts can
-be overridden by an individual server.
+Configure local and remote Model Context Protocol servers. Global
+`mcp.timeout` values apply to servers defined in configuration files; each
+server's `timeout` overrides them.
 
 ```jsonc
 {
