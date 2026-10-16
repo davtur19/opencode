@@ -35,6 +35,7 @@ export const mergeCapabilities = (config: Partial<Capabilities>, base: Capabilit
     tools: config.tools ?? fallback.tools,
     input: [...(config.input ?? fallback.input)],
     output: [...(config.output ?? fallback.output)],
+    temperature: config.temperature ?? base?.temperature,
   }
 }
 

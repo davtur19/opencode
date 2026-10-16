@@ -762,6 +762,78 @@ describe("ConfigProviderPlugin.Plugin", () => {
     }),
   )
 
+  it.effect("builds variants from configured reasoning and overlays configured variants", () =>
+    Effect.gen(function* () {
+      const models = yield* Model.Service
+      const providerID = Provider.ID.make("custom")
+      yield* addPlugin([
+        new Document({
+          type: "document",
+          info: decode({
+            providers: {
+              custom: {
+                package: "aisdk:@ai-sdk/openai",
+                models: {
+                  effort: {
+                    capabilities: { reasoning: { supported: true, effort: ["default", "low", "high"] } },
+                    variants: [{ id: "high", headers: { "x-tier": "high" } }],
+                  },
+                  fixed: { capabilities: { reasoning: { supported: true } } },
+                  plain: { capabilities: { reasoning: { supported: false } } },
+                },
+              },
+            },
+          }),
+        }),
+      ])
+
+      const effort = required(yield* models.get(providerID, Model.ID.make("effort")))
+      expect(effort.variants).toEqual([
+        {
+          id: Model.VariantID.make("low"),
+          settings: { reasoningEffort: "low", reasoningSummary: "auto", include: ["reasoning.encrypted_content"] },
+        },
+        {
+          id: Model.VariantID.make("high"),
+          settings: { reasoningEffort: "high", reasoningSummary: "auto", include: ["reasoning.encrypted_content"] },
+          headers: { "x-tier": "high" },
+        },
+      ])
+      expect(required(yield* models.get(providerID, Model.ID.make("fixed"))).variants).toEqual([])
+      expect(required(yield* models.get(providerID, Model.ID.make("plain"))).variants).toEqual([])
+    }),
+  )
+
+  it.effect("applies configured release date, temperature support, and reasoning field", () =>
+    Effect.gen(function* () {
+      const models = yield* Model.Service
+      yield* addPlugin([
+        new Document({
+          type: "document",
+          info: decode({
+            providers: {
+              custom: {
+                package: "aisdk:@ai-sdk/openai-compatible",
+                models: {
+                  reasoner: {
+                    releaseDate: "2026-02-03",
+                    capabilities: { temperature: false },
+                    compatibility: { reasoningField: "reasoning_content" },
+                  },
+                },
+              },
+            },
+          }),
+        }),
+      ])
+
+      const model = required(yield* models.get(Provider.ID.make("custom"), Model.ID.make("reasoner")))
+      expect(model.time.released).toBe(Date.UTC(2026, 1, 3))
+      expect(model.capabilities.temperature).toBe(false)
+      expect(model.compatibility?.reasoningField).toBe("reasoning_content")
+    }),
+  )
+
   it.effect("keeps configured model variant bodies unchanged", () =>
     Effect.gen(function* () {
       const models = yield* Model.Service

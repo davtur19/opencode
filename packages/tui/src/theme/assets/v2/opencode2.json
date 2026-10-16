@@ -21,7 +21,8 @@
         },
         "secondary": {
           "base": "$text.muted",
-          "$hovered": "$text.base"
+          "$hovered": "$text.base",
+          "$focused": "$hue.interactive.200"
         },
         "destructive": {
           "base": "$hue.neutral.900",
@@ -152,7 +153,10 @@
         "base": "$background.raised.base",
         "action": {
           "primary": {
-            "$hovered": "$background.raised.high"
+            "$hovered": "$background.raised.max"
+          },
+          "secondary": {
+            "$hovered": "$background.raised.max"
           }
         }
       }
@@ -293,6 +297,22 @@
       "image": "#3b7dd8",
       "imageText": "#318795",
       "codeBlock": "#1a1a1a"
+    },
+    "@dialog": {
+      "background": {
+        "base": "$hue.neutral.800",
+        "raised": {
+          "high": "$hue.neutral.700"
+        },
+        "action": {
+          "primary": {
+            "$hovered": "$hue.neutral.600"
+          },
+          "secondary": {
+            "$hovered": "$hue.neutral.600"
+          }
+        }
+      }
     }
   },
   "dark": {

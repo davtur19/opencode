@@ -79,8 +79,8 @@ export const goModels = [
     limitedTime: true,
   },
   {
-    id: "cat-jam-free",
-    name: "Cat Jam Free",
+    id: "beam-free",
+    name: "Beam Free",
     requests: Infinity,
     allowance: Infinity,
     featured: true,
@@ -119,7 +119,7 @@ const plusLimits: Record<string, [number, number]> = {
   "muse-spark-1.3-contributor": [90600, 120],
   "muse-spark-1.2-contributor": [90600, 120],
   "longcat-2.5-preview-free": [Infinity, Infinity],
-  "cat-jam-free": [Infinity, Infinity],
+  "beam-free": [Infinity, Infinity],
 }
 
 // A bonus multiplies a model's usual allowance, which is shown crossed out beside the current limits.
