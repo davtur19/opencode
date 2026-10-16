@@ -140,3 +140,26 @@ test("selects the minimum and active artifacts from the partial indexes", async 
   const body = (await response.json()) as { artifacts: { version: string }[] }
   expect(body.artifacts.map((artifact) => artifact.version)).toEqual(["3.0.0"])
 })
+
+test("caches rollout fallback reads across caller IPs and overlapping releases", async () => {
+  const db = database()
+  const base = Date.parse("2026-10-13T00:00:00Z")
+  db.sqlite.query("INSERT INTO channel_rollout (channel, duration_hours) VALUES ('rollout', 6)").run()
+  db.insert({ channel: "rollout", version: "1.0.0", time: base })
+  db.insert({ channel: "rollout", version: "1.1.0", time: base + 5 * 3_600_000 })
+  db.insert({ channel: "rollout", version: "1.2.0", time: base + 7 * 3_600_000, active: true })
+  setSystemTime(new Date(base + 7 * 3_600_000 + 1_000))
+
+  // Missing IP waits for full 6h rollout -> cutoff is base + 1h + 1s, selects 1.0.0.
+  expect(await version(await lookup(db.env, "rollout/cli/opencode"))).toBe("1.0.0")
+  expect(db.queries).toHaveLength(3)
+
+  // Different caller IPs evaluate different cutoffs against the cached rollout history without extra D1 reads.
+  const versions = await Promise.all(
+    Array.from({ length: 20 }, (_, i) =>
+      lookup(db.env, "rollout/cli/opencode", { "CF-Connecting-IP": `203.0.113.${i + 1}` }).then(version),
+    ),
+  )
+  expect(new Set(versions)).toEqual(new Set(["1.0.0", "1.1.0"]))
+  expect(db.queries).toHaveLength(3)
+})

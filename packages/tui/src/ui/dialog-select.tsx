@@ -7,7 +7,17 @@ import { createStore } from "solid-js/store"
 import { useRenderer, useTerminalDimensions } from "@opentui/solid"
 import * as fuzzysort from "fuzzysort"
 import { isDeepEqual } from "remeda"
-import { DIALOG_LIST_INSET, DialogFooter, DialogHeader, dialogWidth, useDialog, type DialogContext } from "./dialog"
+import {
+  DIALOG_INSET,
+  DIALOG_LIST_INSET,
+  DialogBleed,
+  DialogFooter,
+  DialogHeader,
+  DialogLayout,
+  dialogWidth,
+  useDialog,
+  type DialogContext,
+} from "./dialog"
 import { Locale } from "../util/locale"
 import { getScrollAcceleration } from "../util/scroll"
 import { useConfig } from "../config"
@@ -579,39 +589,50 @@ export function DialogSelect<T>(props: DialogSelectProps<T>) {
   }
 
   return (
-    <box gap={1} paddingBottom={1} flexGrow={1}>
-      <box paddingLeft={DIALOG_LIST_INSET} paddingRight={DIALOG_LIST_INSET}>
-        <DialogHeader title={props.title} titleView={props.titleView} onClose={props.onCancel} />
-        <Show when={props.renderFilter !== false}>
-          <box paddingTop={1}>
-            <input
-              onInput={(e) => {
-                if (props.locked) return
-                batch(() => {
-                  setStore("filter", e)
-                  props.onFilter?.(e)
-                })
-              }}
-              focusedBackgroundColor={theme.background.formfield.focused}
-              cursorColor={theme.text.formfield.focused}
-              cursorStyle={config.cursor}
-              focusedTextColor={theme.text.formfield.focused}
-              ref={(r) => {
-                input = r
-                input.traits = { status: "FILTER" }
-                setTimeout(() => {
-                  if (!input) return
-                  if (r.isDestroyed) return
-                  r.focus()
-                }, 1)
-              }}
-              placeholder={props.placeholder ?? "Search"}
-              placeholderColor={theme.text.muted}
-            />
-          </box>
+    <DialogLayout
+      header={
+        // Rows reserve a gutter, so the header and footer line up with the list's inset rather than the layout's.
+        <box paddingLeft={DIALOG_LIST_INSET - DIALOG_INSET} paddingRight={DIALOG_LIST_INSET - DIALOG_INSET}>
+          <DialogHeader title={props.title} titleView={props.titleView} onClose={props.onCancel} />
+          <Show when={props.renderFilter !== false}>
+            <box paddingTop={1}>
+              <input
+                onInput={(e) => {
+                  if (props.locked) return
+                  batch(() => {
+                    setStore("filter", e)
+                    props.onFilter?.(e)
+                  })
+                }}
+                focusedBackgroundColor={theme.background.formfield.focused}
+                cursorColor={theme.text.formfield.focused}
+                cursorStyle={config.cursor}
+                focusedTextColor={theme.text.formfield.focused}
+                ref={(r) => {
+                  input = r
+                  input.traits = { status: "FILTER" }
+                  setTimeout(() => {
+                    if (!input) return
+                    if (r.isDestroyed) return
+                    r.focus()
+                  }, 1)
+                }}
+                placeholder={props.placeholder ?? "Search"}
+                placeholderColor={theme.text.muted}
+              />
+            </box>
+          </Show>
+        </box>
+      }
+      footer={
+        <Show when={props.footer || visibleActions().length} fallback={<box flexShrink={0} />}>
+          <DialogFooter inset={DIALOG_LIST_INSET - DIALOG_INSET} actions={footerActions()}>
+            {props.footer}
+          </DialogFooter>
         </Show>
-      </box>
-      <box flexGrow={1} flexShrink={1}>
+      }
+    >
+      <DialogBleed>
         <Show
           when={grouped().length > 0}
           fallback={
@@ -701,13 +722,8 @@ export function DialogSelect<T>(props: DialogSelectProps<T>) {
             </For>
           </scrollbox>
         </Show>
-      </box>
-      <Show when={props.footer || visibleActions().length} fallback={<box flexShrink={0} />}>
-        <DialogFooter inset={DIALOG_LIST_INSET} actions={footerActions()}>
-          {props.footer}
-        </DialogFooter>
-      </Show>
-    </box>
+      </DialogBleed>
+    </DialogLayout>
   )
 }
 

@@ -9,6 +9,7 @@ import {
 } from "@opencode/theme/tui"
 import {
   allThemes,
+  getOpenCode2Theme,
   hasTheme,
   parseTheme,
   setCustomThemes,
@@ -286,9 +287,16 @@ const themeContext = createSimpleContext({
       themeRefreshTimeouts.length = 0
     })
 
+    const available = createMemo((): Record<string, ThemeDocumentSource> =>
+      config.experimental?.["new-designs"] === true
+        ? { opencode2: getOpenCode2Theme(), ...themeSources() }
+        : themeSources(),
+    )
+    const has = (name: string) => Boolean(name) && available()[name] !== undefined
+
     const initStarted = performance.now()
     const selected = createMemo(() => {
-      const sources = themeSources()
+      const sources = available()
       const name = sources[store.active] ? store.active : "opencode"
       try {
         return loadTheme(sources[name], name, store.mode)
@@ -316,8 +324,8 @@ const themeContext = createSimpleContext({
       get selected() {
         return store.active
       },
-      all: allThemes,
-      has: hasTheme,
+      all: available,
+      has,
       mode,
       modes,
       supports: (requested) => modes().includes(requested),
@@ -330,7 +338,7 @@ const themeContext = createSimpleContext({
         return true
       },
       set(theme: string) {
-        if (!hasTheme(theme)) return false
+        if (!has(theme)) return false
         setStore("active", theme)
         if (theme === "system") refreshPalette()
         void configState

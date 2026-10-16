@@ -90,6 +90,14 @@ export const Plugin = define({
         }
         next.set(item, { providerID, models: definitions })
       }
+      for (const [item, definition] of next) {
+        for (const [id, config] of Object.entries(item.models ?? {})) {
+          if (config.limit === undefined) continue
+          providers.models.update(definition.providerID, id, (model) => {
+            model.limit = { ...model.limit, ...config.limit }
+          })
+        }
+      }
       sources.defaultModel = Config.latest(loaded.entries, "model")
       sources.models = next
     })
@@ -150,7 +158,13 @@ export const Plugin = define({
             if (config.disabled !== undefined) model.enabled = !config.disabled
             if (config.limit !== undefined) model.limit = { ...model.limit, ...config.limit }
           })
-          if (config.variants === undefined && !source?.base)
+          // Inherited variants are spelled for the base model's package, so a package override needs fresh ones.
+          // A base without variants has no reasoning support to respell.
+          const repackaged =
+            source?.base !== undefined &&
+            source.base.variants.length > 0 &&
+            models.get(providerID, id)?.package !== source.base.package
+          if (config.variants === undefined && (!source?.base || repackaged))
             models.update(providerID, id, (model) => {
               model.variants = [
                 ...Variant.resolve({
