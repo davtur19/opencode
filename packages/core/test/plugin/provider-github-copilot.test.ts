@@ -145,7 +145,7 @@ describe("GithubCopilotPlugin", () => {
       expect(requests[0]?.get("x-initiator")).toBe("user")
       expect(requests[0]?.get("copilot-vision-request")).toBe("true")
       expect(requests[0]?.get("x-github-api-version")).toBe("2026-08-01")
-      expect(requests[0]?.get("user-agent")).toBe("opencode/beta/1.2.3/test")
+      expect(requests[0]?.get("user-agent")).toBe("opencode/latest/1.2.3/test")
     }),
   )
 
