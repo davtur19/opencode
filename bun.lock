@@ -244,21 +244,6 @@
         "wrangler": "4.50.0",
       },
     },
-    "packages/console/function": {
-      "name": "@opencode/console-function",
-      "version": "2.0.32",
-      "dependencies": {
-        "@opencode/console-resource": "workspace:*",
-      },
-      "devDependencies": {
-        "@cloudflare/workers-types": "catalog:",
-        "@tsconfig/node22": "22.0.2",
-        "@types/bun": "catalog:",
-        "@types/node": "catalog:",
-        "@typescript/native-preview": "catalog:",
-        "typescript": "catalog:",
-      },
-    },
     "packages/console/resource": {
       "name": "@opencode/console-resource",
       "dependencies": {
@@ -2024,8 +2009,6 @@
     "@opencode/codemode": ["@opencode/codemode@workspace:packages/codemode"],
 
     "@opencode/console-app": ["@opencode/console-app@workspace:packages/console/app"],
-
-    "@opencode/console-function": ["@opencode/console-function@workspace:packages/console/function"],
 
     "@opencode/console-resource": ["@opencode/console-resource@workspace:packages/console/resource"],
 

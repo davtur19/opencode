@@ -41,9 +41,6 @@ export default $config({
     const stats = stage.deployAws ? await import("./infra/stats.js") : undefined
     await import("./infra/console.js")
     await import("./infra/share.js")
-    if ($app.stage === "production" || $app.stage === "vimtor") {
-      await import("./infra/monitoring.js")
-    }
 
     return {
       ...(stats ? { StatsUrl: stats.app.url } : {}),
