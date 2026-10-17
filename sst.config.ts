@@ -24,9 +24,7 @@ export default $config({
                 version: "0.0.28",
                 apiKey: process.env.STRIPE_SECRET_KEY!,
               },
-              random: "4.19.2",
               planetscale: "0.4.1",
-              honeycomb: "0.49.0",
             },
     }
   },
