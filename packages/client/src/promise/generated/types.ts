@@ -174,6 +174,10 @@ export type MoneyUSDPerMillionTokens = number
 
 export type GenerateTextResponse = { data: { text: string } }
 
+export type VoiceWebRTCTransport = { type: "webrtc"; sdp: string }
+
+export type VoiceWebSocketTransport = { type: "websocket"; url: string; token: string; expiresAt: number }
+
 export type IntegrationID = string
 
 export type IntegrationMethodID = string
@@ -657,6 +661,8 @@ export type ModelCost = {
   output: MoneyUSDPerMillionTokens
   cache: { read: MoneyUSDPerMillionTokens; write: MoneyUSDPerMillionTokens }
 }
+
+export type VoiceTransport = VoiceWebRTCTransport | VoiceWebSocketTransport
 
 export type IntegrationCommandMethod = {
   id: IntegrationMethodID
@@ -1940,6 +1946,8 @@ export type ProviderInfo = {
   headers?: { [x: string]: string }
   body?: { [x: string]: any }
 }
+
+export type VoiceSessionResponse = { data: { transport: VoiceTransport } }
 
 export type ConnectionInfo = ConnectionCredentialInfo | ConnectionEnvInfo
 
@@ -5781,6 +5789,32 @@ export type GenerateTextInput = {
 }
 
 export type GenerateTextOutput = GenerateTextResponse["data"]
+
+export type VoiceSessionInput = {
+  readonly model: {
+    readonly model: string
+    readonly session?: { readonly [x: string]: unknown } | undefined
+    readonly transport:
+      | { readonly type: "webrtc"; readonly sdp: string; readonly dcid?: number | undefined }
+      | { readonly type: "websocket" }
+  }["model"]
+  readonly session?: {
+    readonly model: string
+    readonly session?: { readonly [x: string]: unknown } | undefined
+    readonly transport:
+      | { readonly type: "webrtc"; readonly sdp: string; readonly dcid?: number | undefined }
+      | { readonly type: "websocket" }
+  }["session"]
+  readonly transport: {
+    readonly model: string
+    readonly session?: { readonly [x: string]: unknown } | undefined
+    readonly transport:
+      | { readonly type: "webrtc"; readonly sdp: string; readonly dcid?: number | undefined }
+      | { readonly type: "websocket" }
+  }["transport"]
+}
+
+export type VoiceSessionOutput = VoiceSessionResponse["data"]
 
 export type ProviderListInput = {
   readonly location?: { readonly location?: { readonly directory?: string | undefined } | undefined }["location"]

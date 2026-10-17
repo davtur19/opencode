@@ -5357,6 +5357,98 @@
         }
       }
     },
+    "/api/experimental/voice/session": {
+      "post": {
+        "tags": ["voice"],
+        "operationId": "experimental.voice.session",
+        "parameters": [],
+        "security": [],
+        "responses": {
+          "200": {
+            "description": "VoiceSessionResponse",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/VoiceSessionResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "InvalidRequestError",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/InvalidRequestErrorEncoded"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "UnauthorizedError",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UnauthorizedErrorEncoded"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "LocationNotFoundError",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LocationNotFoundErrorEncoded"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "ServiceUnavailableError",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ServiceUnavailableErrorEncoded"
+                }
+              }
+            }
+          }
+        },
+        "description": "Create a server-brokered voice session using the server's configured provider credentials and return the WebRTC SDP answer or WebSocket ephemeral token.",
+        "summary": "Create voice session",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "model": {
+                    "type": "string"
+                  },
+                  "session": {
+                    "anyOf": [
+                      {
+                        "type": "object"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "transport": {
+                    "$ref": "#/components/schemas/VoiceTransportInput"
+                  }
+                },
+                "required": ["model", "transport"],
+                "additionalProperties": false
+              }
+            }
+          },
+          "required": true
+        }
+      }
+    },
     "/api/provider": {
       "get": {
         "tags": ["provider"],
@@ -20336,6 +20428,128 @@
         "required": ["_tag", "providerID", "message"],
         "additionalProperties": false
       },
+      "VoiceSessionResponse": {
+        "type": "object",
+        "properties": {
+          "data": {
+            "type": "object",
+            "properties": {
+              "transport": {
+                "$ref": "#/components/schemas/VoiceTransport"
+              }
+            },
+            "required": ["transport"],
+            "additionalProperties": false
+          }
+        },
+        "required": ["data"],
+        "additionalProperties": false
+      },
+      "VoiceTransport": {
+        "anyOf": [
+          {
+            "$ref": "#/components/schemas/VoiceWebRTCTransport"
+          },
+          {
+            "$ref": "#/components/schemas/VoiceWebSocketTransport"
+          }
+        ]
+      },
+      "VoiceTransportInput": {
+        "anyOf": [
+          {
+            "$ref": "#/components/schemas/VoiceWebRTCTransportInput"
+          },
+          {
+            "$ref": "#/components/schemas/VoiceWebSocketTransportInput"
+          }
+        ]
+      },
+      "VoiceWebRTCTransport": {
+        "type": "object",
+        "properties": {
+          "type": {
+            "type": "string",
+            "enum": ["webrtc"]
+          },
+          "sdp": {
+            "type": "string"
+          }
+        },
+        "required": ["type", "sdp"],
+        "additionalProperties": false
+      },
+      "VoiceWebRTCTransportInput": {
+        "type": "object",
+        "properties": {
+          "type": {
+            "type": "string",
+            "enum": ["webrtc"]
+          },
+          "sdp": {
+            "type": "string"
+          },
+          "dcid": {
+            "anyOf": [
+              {
+                "anyOf": [
+                  {
+                    "type": "number"
+                  },
+                  {
+                    "type": "string",
+                    "enum": ["Infinity", "-Infinity", "NaN"]
+                  }
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": ["type", "sdp"],
+        "additionalProperties": false
+      },
+      "VoiceWebSocketTransport": {
+        "type": "object",
+        "properties": {
+          "type": {
+            "type": "string",
+            "enum": ["websocket"]
+          },
+          "url": {
+            "type": "string"
+          },
+          "token": {
+            "type": "string"
+          },
+          "expiresAt": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "string",
+                "enum": ["Infinity", "-Infinity", "NaN"]
+              }
+            ]
+          }
+        },
+        "required": ["type", "url", "token", "expiresAt"],
+        "additionalProperties": false
+      },
+      "VoiceWebSocketTransportInput": {
+        "type": "object",
+        "properties": {
+          "type": {
+            "type": "string",
+            "enum": ["websocket"]
+          }
+        },
+        "required": ["type"],
+        "additionalProperties": false
+      },
       "WebSearch.ID": {
         "type": "string"
       },
@@ -20528,6 +20742,10 @@
     {
       "name": "generate",
       "description": "Experimental one-shot generation routes."
+    },
+    {
+      "name": "voice",
+      "description": "Experimental server-brokered voice session routes."
     },
     {
       "name": "provider",
