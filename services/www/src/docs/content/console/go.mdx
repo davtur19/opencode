@@ -82,14 +82,16 @@ Your client should:
 3. Send a stable session ID in `x-opencode-session` for each conversation so we can optimize routing and
    prompt caching.
 
+See [Harnesses](/console/harnesses) to set up Go in Claude Code, Codex, Hermes, Pi, and Raycast.
+
 ### Validated clients
 
 Besides OpenCode, the following clients have been validated to work properly
-with OpenCode Go. Although we do not guarantee that they will continue to work in the future.
+with OpenCode Go, although we do not guarantee that they will continue to work in the future.
 
 | Client            | Session support                                                                                                                                                                                                                             |
 | ----------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **Hermes**        | Builds containing [PR #101864](https://github.com/NousResearch/hermes-agent/pull/101864) send the header on main and auxiliary OpenCode requests. The fix was merged after v0.21.0; that release alone does not include it.                 |
+| **Hermes**        | Update to **v0.21.6 or later**, which sends the header on main and auxiliary OpenCode requests ([PR #101864](https://github.com/NousResearch/hermes-agent/pull/101864)).                                                                    |
 | **Claude Code**   | Go recognizes its native session header. No custom-header wrapper is needed.                                                                                                                                                                |
 | **Codex**         | Go recognizes its native session header. Some versions and proxy setups still omit it; preserve the session header when forwarding requests.                                                                                                |
 | **ZCode**         | Go recognizes its native session header. Our [request for `x-opencode-session`](https://github.com/zai-org/feedback/issues/492) remains open, but it is no longer necessary to send that specific header.                                   |
@@ -331,8 +333,8 @@ Usage limits may change as we learn from early usage and feedback.
 
 ### Usage beyond limits
 
-If you also have credits in your Console balance, you can enable the **Use balance**
-option in the console. When enabled, Go will fall back to your [pay-as-you-go balance](/console/models#pricing)
+If you also have credits in your Console balance, you can turn on **Extra usage** on the
+**Overview** credits card. When enabled, Go will fall back to your [pay-as-you-go balance](/console/models#pricing)
 after you've reached your usage limits instead of blocking requests.
 
 ### Why some models have lower usage

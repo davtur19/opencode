@@ -1371,6 +1371,7 @@ export type MessageListInput = {
     | "shell"
     | "assistant"
     | "compaction"
+    | "idle"
     | undefined
 }
 export type MessageListOutput = {
