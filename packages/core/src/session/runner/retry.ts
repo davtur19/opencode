@@ -5,6 +5,7 @@ import { Agent } from "@opencode/schema/agent"
 import { Model } from "@opencode/schema/model"
 import { Provider } from "@opencode/schema/provider"
 import { SessionError } from "@opencode/schema/session-error"
+import { SESSION_ROTATION_LIMIT, sessionRotationEnabled } from "@opencode/util/cloud-proxy"
 import { Clock, Duration, Effect } from "effect"
 import { Bus } from "../../bus.js"
 import { ModelRetry } from "../../model-retry.js"
@@ -30,8 +31,9 @@ export interface Decision {
 
 /**
  * Retries one provider failure. `model` resolves the opencode gateway's transient flakes: its
- * intermittent401 on anonymous public requests and its free-tier402 quota blip. Callers without
- * a resolved model keep the plain reason taxonomy so auxiliary requests never mask a real
+ * intermittent401 on anonymous public requests, its free-tier402 quota blip, and its 403 abuse
+ * gate when the session-addressed proxy can move the retry to another egress. Callers without a
+ * resolved model keep the plain reason taxonomy so auxiliary requests never mask a real
  * credential or billing failure.
  */
 export function isRetryable(
@@ -64,12 +66,14 @@ export function isRetryable(
     // Only an anonymous request — one with no real credential that could be wrong — absorbs
     // that flake as transient; a credentialed401 stays terminal so a revoked or mistyped key
     // is never masked by a retry.
-    case "Authentication":
-      return (
-        model?.ref.providerID === Provider.ID.opencode &&
-        model.anonymous === true &&
-        error.reason.http?.status === 401
-      )
+    case "Authentication": {
+      if (model?.ref.providerID !== Provider.ID.opencode || model.anonymous !== true) return false
+      // A 403 from the free-tier gateway is the abuse gate, not a credential problem, and retrying
+      // it only helps when the next request can leave from another address. That is exactly what
+      // the session-addressed proxy does; without it the retry would hit the same egress again.
+      if (error.reason.http?.status === 403) return sessionRotationEnabled()
+      return error.reason.http?.status === 401
+    }
     // A402 from the opencode gateway is a transient free-tier quota flake on free models: the
     // same request succeeds moments later. Other providers' quota rejections are real billing
     // limits and stay terminal.
@@ -96,20 +100,32 @@ export function isRetryable(
  */
 export const RETRY_PHASES = 4
 
+// Each gateway 403 costs one egress: the client reports the failure in its proxy auth and the
+// retried request leaves from another address. The retry schedule would otherwise let one stuck
+// step walk the whole shared pool, so a step gets only the allowance the proxy module grants, and
+// the client stops advancing its attempt at the same limit.
+const isForbidden = (error: AIError) =>
+  error.reason._tag === "Authentication" && error.reason.http?.status === 403
+
 export const policy = (sessionID: SessionSchema.ID, options?: { readonly phases?: number }) =>
   Effect.gen(function* () {
     const decide = yield* ModelRetry.policy(options?.phases ?? 1)
+    let forbidden = 0
     return (input: Input) =>
       Effect.gen(function* () {
         const next = yield* decide(input)
         if (!next) return { retry: false as const }
+        if (isForbidden(input.cause)) forbidden++
         const event: PluginHooks.Domains["session"]["retry"] = {
           sessionID,
           agent: input.agent,
           model: input.model,
           error: input.error,
           attempt: next.attempt,
-          decision: next.retry ? { retry: true, delay: next.delay } : { retry: false },
+          decision:
+            next.retry && forbidden <= SESSION_ROTATION_LIMIT
+              ? { retry: true, delay: next.delay }
+              : { retry: false },
         }
         yield* input.hook(event)
         if (!event.decision.retry) return event.decision

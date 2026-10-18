@@ -5,16 +5,36 @@ const PROXY_URL = "http://192.168.1.6:3128"
 const ENV_PROXY_URL = "http://env-proxy:8080"
 const CLOUD_PROXY_ENV = "OPENCODE_CLOUD_PROXY"
 const CLOUD_PROXY_DOMAINS_ENV = "OPENCODE_CLOUD_PROXY_DOMAINS"
+const CLOUD_PROXY_AUTH_ENV = "OPENCODE_CLOUD_PROXY_AUTH"
+
+type SessionToken = {
+  boot: string
+  attempt: number
+  status?: number
+  cfRay?: string
+  logID?: string
+}
+
+function sessionToken(proxy: string): SessionToken {
+  const base64 = new URL(proxy).password.replaceAll("-", "+").replaceAll("_", "/")
+  return JSON.parse(atob(base64.padEnd(Math.ceil(base64.length / 4) * 4, "="))) as SessionToken
+}
+
+function sessionHeaders(sessionID: string) {
+  return { "x-opencode-session-id": sessionID }
+}
 
 describe("util.proxy", () => {
   beforeEach(() => {
     delete process.env[CLOUD_PROXY_ENV]
     delete process.env[CLOUD_PROXY_DOMAINS_ENV]
+    delete process.env[CLOUD_PROXY_AUTH_ENV]
   })
 
   afterEach(() => {
     delete process.env[CLOUD_PROXY_ENV]
     delete process.env[CLOUD_PROXY_DOMAINS_ENV]
+    delete process.env[CLOUD_PROXY_AUTH_ENV]
   })
 
   test("routes opencode domains through the default list", () => {
@@ -116,6 +136,78 @@ describe("util.proxy", () => {
 
   test("proxiedInit is undefined without OPENCODE_CLOUD_PROXY", () => {
     expect(FetchProxy.proxiedInit("https://zenmux.ai/chat/completions", { headers: {} })).toBeUndefined()
+  })
+
+  describe("session-addressed proxy auth", () => {
+    const url = "https://zenmux.ai/chat/completions"
+    const response = (status: number, headers: Record<string, string> = {}) => new Response(null, { status, headers })
+
+    beforeEach(() => {
+      process.env[CLOUD_PROXY_ENV] = PROXY_URL
+      process.env[CLOUD_PROXY_AUTH_ENV] = "true"
+    })
+
+    test("leaves the proxy URL alone without the flag", () => {
+      delete process.env[CLOUD_PROXY_AUTH_ENV]
+      expect(FetchProxy.sessionRotationEnabled()).toBeFalse()
+      expect(FetchProxy.proxiedInit(url, { headers: sessionHeaders("ses_off") })?.proxy).toBe(PROXY_URL)
+    })
+
+    test("leaves the proxy URL alone without a session header", () => {
+      expect(FetchProxy.proxiedInit(url, { headers: { "user-agent": "test" } })?.proxy).toBe(PROXY_URL)
+    })
+
+    test("carries the session and a first attempt in the proxy userinfo", () => {
+      const proxy = FetchProxy.proxiedInit(url, { headers: sessionHeaders("ses_first") })?.proxy
+      if (proxy === undefined) throw new Error("expected a proxied init")
+      expect(new URL(proxy).username).toBe("ses_first")
+      expect(sessionToken(proxy)).toEqual({ boot: expect.any(String), attempt: 0 })
+      expect(sessionToken(proxy).boot).toMatch(/^[0-9a-f]{12}$/)
+    })
+
+    test("reads the session from the Request headers when the init carries none", () => {
+      const proxy = FetchProxy.proxiedInit(new Request(url, { headers: sessionHeaders("ses_request") }))?.proxy
+      if (proxy === undefined) throw new Error("expected a proxied init")
+      expect(new URL(proxy).username).toBe("ses_request")
+    })
+
+    test("advances the attempt and reports why the previous one failed", () => {
+      FetchProxy.noteResponseStatus(
+        "ses_forbidden",
+        response(403, { "cf-ray": "a4c7daa4bc3143cb-EWR", "x-opencode-log-id": "log-1" }),
+      )
+      const proxy = FetchProxy.proxiedInit(url, { headers: sessionHeaders("ses_forbidden") })?.proxy
+      if (proxy === undefined) throw new Error("expected a proxied init")
+      const token = sessionToken(proxy)
+      expect(token.attempt).toBe(1)
+      expect(token.status).toBe(403)
+      expect(token.cfRay).toBe("a4c7daa4bc3143cb-EWR")
+      expect(token.logID).toBe("log-1")
+    })
+
+    test("reports a failure to the next request only", () => {
+      FetchProxy.noteResponseStatus("ses_once", response(429))
+      FetchProxy.proxiedInit(url, { headers: sessionHeaders("ses_once") })
+      const later = FetchProxy.proxiedInit(url, { headers: sessionHeaders("ses_once") })?.proxy
+      if (later === undefined) throw new Error("expected a proxied init")
+      expect(sessionToken(later)).toEqual({ boot: expect.any(String), attempt: 1 })
+    })
+
+    test("ignores statuses that are not the gateway gate or throttle", () => {
+      FetchProxy.noteResponseStatus("ses_other", response(500))
+      FetchProxy.noteResponseStatus(undefined, response(403))
+      const proxy = FetchProxy.proxiedInit(url, { headers: sessionHeaders("ses_other") })?.proxy
+      if (proxy === undefined) throw new Error("expected a proxied init")
+      expect(sessionToken(proxy).attempt).toBe(0)
+    })
+
+    test("stops advancing at the session allowance so one session cannot walk the pool", () => {
+      for (let index = 0; index < 6; index++) FetchProxy.noteResponseStatus("ses_limit", response(403))
+      const proxy = FetchProxy.proxiedInit(url, { headers: sessionHeaders("ses_limit") })?.proxy
+      if (proxy === undefined) throw new Error("expected a proxied init")
+      expect(sessionToken(proxy).attempt).toBe(FetchProxy.SESSION_ROTATION_LIMIT)
+      expect(sessionToken(proxy).status).toBe(403)
+    })
   })
 
   describe("encrypted_content scrubbing", () => {

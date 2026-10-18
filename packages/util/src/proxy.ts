@@ -1,5 +1,9 @@
 export * as FetchProxy from "./proxy.js"
 
+import { CLOUD_PROXY_DOMAINS_ENV, CLOUD_PROXY_ENV, sessionRotationEnabled, SESSION_ROTATION_LIMIT } from "./cloud-proxy.js"
+
+export { SESSION_ROTATION_LIMIT, sessionRotationEnabled }
+
 // Hostnames that serve opencode's cloud models (the Zen/gateway inference
 // endpoints). Requests to these go through the configured proxy; every other
 // domain (model providers, github, telemetry, ...) is left untouched so Bun's
@@ -15,11 +19,6 @@ const OPENCODE_DOMAINS = [
   "console.opencode.ai",
   "dev.opencode.ai",
 ]
-
-// Env-only cloud-model proxy config. No config-file key: the host deploys
-// these as service environment variables, and env keeps the surface minimal.
-const CLOUD_PROXY_ENV = "OPENCODE_CLOUD_PROXY"
-const CLOUD_PROXY_DOMAINS_ENV = "OPENCODE_CLOUD_PROXY_DOMAINS"
 
 // Bun accepts `proxy` in the fetch init even though the DOM types omit it.
 type ProxyAwareInit = RequestInit & { proxy?: string }
@@ -75,6 +74,98 @@ function bodyToText(body: BodyInit): string | undefined {
   return body
 }
 
+// The session id is the default identity: one chat step, one egress. The
+// affinity is the fallback for the few cloud requests that carry no session id.
+const SESSION_HEADERS = ["x-opencode-session-id", "x-session-affinity", "x-session-id"]
+
+// Bound the per-session state so a long-lived server cannot grow it forever.
+const SESSION_TRACKED = 256
+
+type Rotation = {
+  readonly boot: string
+  readonly attempt: number
+  readonly status?: number
+  readonly cfRay?: string
+  readonly logID?: string
+}
+
+const rotations = new Map<string, Rotation>()
+
+// Tells this process apart from the previous one. The attempt counter starts over on restart, and
+// the proxy must not attribute a fresh retry to an egress it served from the old process.
+const boot = crypto.randomUUID().replaceAll("-", "").slice(0, 12)
+
+function headerValue(headers: HeadersInit | undefined, name: string) {
+  if (headers === undefined) return undefined
+  if (headers instanceof Headers) return headers.get(name) ?? undefined
+  if (Array.isArray(headers)) {
+    const entry = headers.find(([key]) => key.toLowerCase() === name)
+    return entry?.[1]
+  }
+  for (const [key, value] of Object.entries(headers)) if (key.toLowerCase() === name) return value
+  return undefined
+}
+
+// The AI layer passes the request headers either on the init or on a Request, so
+// both shapes are consulted; an explicit init always wins.
+function sessionKey(input: RequestInfo | URL, init?: RequestInit) {
+  for (const name of SESSION_HEADERS) {
+    const fromInit = headerValue(init?.headers, name)
+    if (fromInit) return fromInit
+    if (input instanceof Request) {
+      const fromRequest = input.headers.get(name)
+      if (fromRequest) return fromRequest
+    }
+  }
+  return undefined
+}
+
+function remember(key: string, rotation: Rotation) {
+  rotations.delete(key)
+  rotations.set(key, rotation)
+  if (rotations.size <= SESSION_TRACKED) return
+  const oldest = rotations.keys().next().value
+  if (oldest !== undefined) rotations.delete(oldest)
+}
+
+// base64url keeps the token inside the userinfo alphabet, so the proxy URL needs no escaping and
+// the proxy decodes the whole payload at once. Every field is ASCII.
+function encodeToken(rotation: Rotation) {
+  return btoa(JSON.stringify(rotation)).replaceAll("+", "-").replaceAll("/", "_").replace(/=+$/, "")
+}
+
+/**
+ * Records the failure the gateway returned inside the tunnel, so the retried request can carry it
+ * to the proxy. Only the wrapper sees the status and the headers, and only the retry that follows
+ * benefits from them. The attempt stops advancing at the session allowance, which keeps a
+ * rejected session from walking the whole egress pool.
+ */
+export function noteResponseStatus(
+  key: string | undefined,
+  response: { readonly status: number; readonly headers: Headers },
+) {
+  if (key === undefined) return
+  if (!sessionRotationEnabled()) return
+  if (response.status !== 403 && response.status !== 429) return
+  const state = rotations.get(key) ?? { boot, attempt: 0 }
+  remember(key, {
+    boot: state.boot,
+    attempt: Math.min(state.attempt + 1, SESSION_ROTATION_LIMIT),
+    status: response.status,
+    cfRay: response.headers.get("cf-ray") ?? undefined,
+    logID: response.headers.get("x-opencode-log-id") ?? undefined,
+  })
+}
+
+function sessionProxy(proxy: string, key: string) {
+  const state = rotations.get(key) ?? { boot, attempt: 0 }
+  // The failure describes the attempt that just failed and only the next request needs it, so it
+  // is consumed here: a later, unrelated request must not report the same failure a second time.
+  remember(key, { boot: state.boot, attempt: state.attempt })
+  const url = new URL(proxy)
+  return `${url.protocol}//${key}:${encodeToken(state)}@${url.host}`
+}
+
 export function getProxyForHostname(hostname: string) {
   const url = process.env[CLOUD_PROXY_ENV]
   if (!url) return undefined
@@ -87,7 +178,8 @@ export function proxiedInit(input: RequestInfo | URL, init?: RequestInit) {
   const proxy = hostname ? getProxyForHostname(hostname) : undefined
   const existingProxy = init !== undefined && "proxy" in init && Boolean(init.proxy)
   if (!proxy || existingProxy) return undefined
-  return { ...init, proxy } satisfies ProxyAwareInit
+  const key = sessionRotationEnabled() ? sessionKey(input, init) : undefined
+  return { ...init, proxy: key === undefined ? proxy : sessionProxy(proxy, key) } satisfies ProxyAwareInit
 }
 
 // Last-chance defense at the fetch boundary: removes `include` entries and
@@ -156,7 +248,15 @@ export function install() {
     const scrubbed = scrubInit(input, init)
     const next = scrubbed ?? init
     const proxied = proxiedInit(input, next)
-    return proxied ? native(input, proxied) : native(input, next)
+    const response = proxied ? native(input, proxied) : native(input, next)
+    if (proxied === undefined) return response
+    // The retry that follows this failure rebuilds the proxy URL from the recorded state, so the
+    // observation must land before the caller reacts to the response, not after.
+    const key = sessionKey(input, next)
+    return response.then((result) => {
+      noteResponseStatus(key, result)
+      return result
+    })
   }
   // SAFETY: Bun's fetch has multiple overloads; the wrapper preserves the (input, init) call shape used by every caller.
   globalThis.fetch = wrapped as typeof globalThis.fetch

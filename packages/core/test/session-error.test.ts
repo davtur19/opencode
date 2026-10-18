@@ -317,6 +317,12 @@ describe("toSessionError", () => {
   })
 
   test("scopes opencode gateway flakes to anonymous public requests and free-tier quota", () => {
+    // The service that runs this test may itself have the cloud proxy enabled; the assertions
+    // below describe both states, so start from the disabled one and restore it afterwards.
+    const savedProxy = process.env.OPENCODE_CLOUD_PROXY
+    const savedAuth = process.env.OPENCODE_CLOUD_PROXY_AUTH
+    delete process.env.OPENCODE_CLOUD_PROXY
+    delete process.env.OPENCODE_CLOUD_PROXY_AUTH
     const gateway = (status: number) =>
       new HttpContext({ url: "https://opencode.ai/zen/v1/chat/completions", status, headers: {} })
     const rejection = llm(new AuthenticationError({ message: "invalid_bearer_credential", http: gateway(401) }))
@@ -336,10 +342,23 @@ describe("toSessionError", () => {
     expect(SessionRunnerRetry.isRetryable(rejection, credentialed)).toBeFalse()
     expect(SessionRunnerRetry.isRetryable(rejection, foreign)).toBeFalse()
     expect(SessionRunnerRetry.isRetryable(rejection)).toBeFalse()
+    // The free-tier abuse gate retries only when the session-addressed proxy can move the retry to
+    // another egress; otherwise the retry would leave from the same rejected address.
     expect(SessionRunnerRetry.isRetryable(forbidden, opencode)).toBeFalse()
+    process.env.OPENCODE_CLOUD_PROXY = "http://192.168.1.6:7777"
+    process.env.OPENCODE_CLOUD_PROXY_AUTH = "true"
+    expect(SessionRunnerRetry.isRetryable(forbidden, opencode)).toBeTrue()
+    expect(SessionRunnerRetry.isRetryable(forbidden, credentialed)).toBeFalse()
+    expect(SessionRunnerRetry.isRetryable(forbidden, foreign)).toBeFalse()
+    delete process.env.OPENCODE_CLOUD_PROXY
+    delete process.env.OPENCODE_CLOUD_PROXY_AUTH
     expect(SessionRunnerRetry.isRetryable(quota, opencode)).toBeTrue()
     expect(SessionRunnerRetry.isRetryable(quota, credentialed)).toBeTrue()
     expect(SessionRunnerRetry.isRetryable(quota, foreign)).toBeFalse()
     expect(SessionRunnerRetry.isRetryable(llm(new QuotaExceededError({ message: "Payment Required" })), opencode)).toBeFalse()
+    if (savedProxy === undefined) delete process.env.OPENCODE_CLOUD_PROXY
+    else process.env.OPENCODE_CLOUD_PROXY = savedProxy
+    if (savedAuth === undefined) delete process.env.OPENCODE_CLOUD_PROXY_AUTH
+    else process.env.OPENCODE_CLOUD_PROXY_AUTH = savedAuth
   })
 })
