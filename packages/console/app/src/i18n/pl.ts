@@ -204,7 +204,7 @@ export const dict = {
     "Wszystkie modele Zen są hostowane w USA. Dostawcy stosują politykę zerowej retencji i nie wykorzystują Twoich danych do trenowania modeli, z",
   "zen.privacy.exceptionsLink": "następującymi wyjątkami",
 
-  "go.promo.step5": "Step 5 Preview jest już dostępny w Go z 4× większym limitem przez ograniczony czas.",
+  "go.promo.minimaxM31FlashFree": "MiniMax M3.1 Flash Free jest już dostępny w Go, za darmo przez ograniczony czas.",
   "go.title": "OpenCode Go | Niskokosztowe modele do kodowania dla każdego",
   "go.meta.description":
     "Go kosztuje $10/miesiąc, oferując hojne limity użycia i niezawodny dostęp do wiodących modeli do kodowania.",

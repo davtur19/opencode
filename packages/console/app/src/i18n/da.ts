@@ -204,7 +204,7 @@ export const dict = {
     "Alle Zen-modeller er hostet i USA. Udbydere følger en nulopbevaringspolitik og bruger ikke dine data til modeltræning med",
   "zen.privacy.exceptionsLink": "følgende undtagelser",
 
-  "go.promo.step5": "Step 5 Preview er nu tilgængelig i Go med 4× forbrug i en begrænset periode.",
+  "go.promo.minimaxM31FlashFree": "MiniMax M3.1 Flash Free er nu tilgængelig i Go, gratis i en begrænset periode.",
   "go.title": "OpenCode Go | Kodningsmodeller til lav pris for alle",
   "go.meta.description":
     "Go koster $10/måned, med generøse brugsgrænser og pålidelig adgang til førende kodningsmodeller.",

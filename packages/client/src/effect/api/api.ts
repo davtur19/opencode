@@ -121,6 +121,7 @@ export type SessionListInput = {
   readonly order?: "asc" | "desc" | undefined
   readonly search?: string | undefined
   readonly parentID?: Session.ID | null | undefined
+  readonly archived?: boolean | undefined
   readonly directory?: AbsolutePath | undefined
   readonly project?: Project.ID | undefined
   readonly subpath?: RelativePath | undefined
@@ -257,6 +258,7 @@ export type SessionUpdateInput = {
   readonly title?: string | undefined
   readonly metadata?: Session.Metadata | undefined
   readonly permissions?: Permission.Ruleset | undefined
+  readonly archived?: boolean | undefined
 }
 export type SessionUpdateOutput = void
 export type SessionUpdateOperation<E = never> = (input: SessionUpdateInput) => Effect.Effect<SessionUpdateOutput, E>
@@ -542,6 +544,28 @@ export type SessionLogOutput =
             | { readonly directory: AbsolutePath; readonly workspaceID?: Workspace.ID | undefined }
             | undefined
           readonly data: { readonly sessionID: Session.ID; readonly idle: number }
+        }
+      | {
+          readonly id: Event.ID
+          readonly created: number
+          readonly metadata?: { readonly [x: string]: unknown } | undefined
+          readonly type: "session.archived"
+          readonly durable: { readonly aggregateID: string; readonly seq: Event.Seq; readonly version: Event.Version }
+          readonly location?:
+            | { readonly directory: AbsolutePath; readonly workspaceID?: Workspace.ID | undefined }
+            | undefined
+          readonly data: { readonly sessionID: Session.ID }
+        }
+      | {
+          readonly id: Event.ID
+          readonly created: number
+          readonly metadata?: { readonly [x: string]: unknown } | undefined
+          readonly type: "session.unarchived"
+          readonly durable: { readonly aggregateID: string; readonly seq: Event.Seq; readonly version: Event.Version }
+          readonly location?:
+            | { readonly directory: AbsolutePath; readonly workspaceID?: Workspace.ID | undefined }
+            | undefined
+          readonly data: { readonly sessionID: Session.ID }
         }
       | {
           readonly id: Event.ID
@@ -1726,6 +1750,16 @@ export type PermissionSavedListOperation<E = never> = (
   input?: PermissionSavedListInput,
 ) => Effect.Effect<PermissionSavedListOutput, E>
 
+export type PermissionSavedUpdateInput = {
+  readonly id: PermissionSaved.ID
+  readonly action?: string | undefined
+  readonly resource?: string | undefined
+}
+export type PermissionSavedUpdateOutput = PermissionSaved.Info
+export type PermissionSavedUpdateOperation<E = never> = (
+  input: PermissionSavedUpdateInput,
+) => Effect.Effect<PermissionSavedUpdateOutput, E>
+
 export type PermissionSavedRemoveInput = { readonly id: PermissionSaved.ID }
 export type PermissionSavedRemoveOutput = void
 export type PermissionSavedRemoveOperation<E = never> = (
@@ -1768,7 +1802,11 @@ export type PermissionReplyOperation<E = never> = (
 
 export interface PermissionApi<E = never> {
   readonly request: { readonly list: PermissionRequestListOperation<E> }
-  readonly saved: { readonly list: PermissionSavedListOperation<E>; readonly remove: PermissionSavedRemoveOperation<E> }
+  readonly saved: {
+    readonly list: PermissionSavedListOperation<E>
+    readonly update: PermissionSavedUpdateOperation<E>
+    readonly remove: PermissionSavedRemoveOperation<E>
+  }
   readonly create: PermissionCreateOperation<E>
   readonly list: PermissionListOperation<E>
   readonly get: PermissionGetOperation<E>
