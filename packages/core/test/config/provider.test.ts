@@ -241,6 +241,31 @@ describe("ConfigProviderPlugin.Plugin", () => {
     }),
   )
 
+  it.effect("passes configured stream usage compatibility to the runtime model", () =>
+    Effect.gen(function* () {
+      const providers = yield* Provider.Service
+      const models = yield* Model.Service
+      const providerID = Provider.ID.make("strict")
+      yield* providers.transform((editor) => {
+        editor.update(providerID, (provider) => {
+          provider.package = "@opencode/ai/providers/openai-compatible"
+          provider.settings = { baseURL: "https://strict.test/v1" }
+        })
+        editor.models.update(providerID, Model.ID.make("catalog"), () => {})
+      })
+      yield* addPlugin([
+        new Document({
+          type: "document",
+          info: decode({ providers: { strict: { compatibility: { streamUsage: false } } } }),
+        }),
+      ])
+
+      const catalog = required(yield* models.get(providerID, Model.ID.make("catalog")))
+      expect(catalog.compatibility).toEqual({ streamUsage: false })
+      expect((yield* ModelResolver.fromCatalogModel(catalog)).compatibility?.streamUsage).toBe(false)
+    }),
+  )
+
   it.effect("keeps the provider websocket policy out of model settings", () =>
     Effect.gen(function* () {
       const providers = yield* Provider.Service

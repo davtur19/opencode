@@ -22,6 +22,8 @@ new sst.cloudflare.Bucket("ZenDataNew")
 const AWS_SES_ACCESS_KEY_ID = new sst.Secret("AWS_SES_ACCESS_KEY_ID")
 const AWS_SES_SECRET_ACCESS_KEY = new sst.Secret("AWS_SES_SECRET_ACCESS_KEY")
 const ENTERPRISE_SALES_INBOX_EMAIL = new sst.Secret("ENTERPRISE_SALES_INBOX_EMAIL")
+// OpenCode API key for Jev spam scoring of enterprise form submissions.
+const ENTERPRISE_SPAM_API_KEY = new sst.Secret("ENTERPRISE_SPAM_API_KEY")
 
 const SALESFORCE_CLIENT_ID = new sst.Secret("SALESFORCE_CLIENT_ID")
 const SALESFORCE_CLIENT_SECRET = new sst.Secret("SALESFORCE_CLIENT_SECRET")
@@ -40,6 +42,7 @@ new sst.cloudflare.x.SolidStart("Console", {
     AWS_SES_ACCESS_KEY_ID,
     AWS_SES_SECRET_ACCESS_KEY,
     ENTERPRISE_SALES_INBOX_EMAIL,
+    ENTERPRISE_SPAM_API_KEY,
     SALESFORCE_CLIENT_ID,
     SALESFORCE_CLIENT_SECRET,
     SALESFORCE_INSTANCE_URL,

@@ -15,7 +15,7 @@ import { SessionModelRequest } from "@opencode/core/session/model-request"
 import { PluginHooks } from "@opencode/core/plugin/hooks"
 import { SessionProjector } from "@opencode/core/session/projector"
 import { SessionRunnerModel } from "@opencode/core/session/runner/model"
-import { SessionTable } from "@opencode/core/session/sql"
+import { SessionMessageTable, SessionTable } from "@opencode/core/session/sql"
 import { SessionStore } from "@opencode/core/session/store"
 import { Session } from "@opencode/core/session"
 import { Location } from "@opencode/core/location"
@@ -138,6 +138,74 @@ it.effect("compaction truncation does not split surrogate pairs", () =>
     expect(whole).toEndWith(`[Tool result]: ${"😀".repeat(1_250)}`)
   }),
 )
+
+it.effect("summaries written before kept-message references keep their stored recent text", () =>
+  Effect.gen(function* () {
+    const id = Session.ID.make("ses_legacy_recent")
+    yield* insertSession(id)
+    yield* storeMessages(id, [textUser("Kept question")])
+    const db = (yield* Database.Service).db
+    // Stored before v2.1: the kept text sits in `recent`, with no reference.
+    const legacy = {
+      status: "completed" as const,
+      reason: "auto" as const,
+      summary: "## Objective\n- legacy",
+      recent: "[User]: Kept question as flattened then",
+      time: { created: 0 },
+    }
+    yield* db
+      .insert(SessionMessageTable)
+      .values({
+        id: SessionMessage.ID.create(),
+        session_id: id,
+        type: "compaction",
+        seq: 2,
+        time_created: 0,
+        data: legacy,
+      })
+      .run()
+      .pipe(Effect.orDie)
+    const store = yield* SessionStore.Service
+    const [compaction] = yield* store.context(id)
+    expect(compaction).toMatchObject({
+      type: "compaction",
+      metadata: { recent: "[User]: Kept question as flattened then" },
+    })
+    expect(compaction).not.toHaveProperty("recent")
+  }),
+)
+
+it.effect("forks rebuild the recent text of a summary they copied", () =>
+  Effect.gen(function* () {
+    const parentID = Session.ID.make("ses_fork_recent_parent")
+    const childID = Session.ID.make("ses_fork_recent_child")
+    const session = yield* insertSession(parentID)
+    const messages = [textUser("Earlier question"), textUser("Kept question")]
+    yield* storeMessages(parentID, messages)
+    expect(yield* compactManually(session, messages)).toEqual({ status: "completed" })
+    const store = yield* SessionStore.Service
+    const [parent] = yield* store.context(parentID)
+    expect(parent).toMatchObject({ type: "compaction", metadata: { recent: "[User]: Kept question" } })
+
+    const bus = yield* Bus.Service
+    yield* bus.publish(SessionEvent.Forked, {
+      sessionID: childID,
+      parentID,
+      boundary: { type: "through", messageID: parent.id },
+    })
+    const [child] = yield* store.context(childID)
+    expect(child).toMatchObject({ type: "compaction", metadata: { recent: "[User]: Kept question" } })
+    expect(child.metadata?.keepID).not.toBe(parent.metadata?.keepID)
+  }),
+)
+
+const textUser = (text: string) =>
+  SessionMessage.User.make({
+    id: SessionMessage.ID.create(),
+    type: "user",
+    text,
+    time: { created: DateTime.makeUnsafe(0) },
+  })
 
 test("compaction prompt requires the checkpoint headings in order", () => {
   const prompt = SessionCompaction.buildPrompt(false)
@@ -288,7 +356,6 @@ it.effect("auto compaction estimates current content against the buffered prompt
       status: "completed",
       reason: "auto",
       summary: "x".repeat(400_000),
-      recent: "",
       time: { created: 0, completed: 0 },
     })
     expect(yield* due({ ...grown, messages: [checkpoint] })).toBe(false)
@@ -345,10 +412,26 @@ const compactManually = (
     yield* bus.publish(SessionEvent.Compaction.Started, {
       sessionID: session.id,
       reason: "manual",
-      recent: "",
       inputID,
     })
     return yield* compaction.compact({ reason: "manual", context: loaded(session, messages), inputID })
+  })
+
+/** Stores messages as the session's history so far, ahead of anything published next. */
+const storeMessages = (sessionID: Session.ID, messages: readonly SessionMessage.Info[]) =>
+  Effect.gen(function* () {
+    const db = (yield* Database.Service).db
+    yield* db
+      .insert(SessionMessageTable)
+      .values(
+        messages.map((message, index) => {
+          const { id, type, ...data } = Schema.encodeSync(SessionMessage.Info)(message)
+          return { id: SessionMessage.ID.make(id), session_id: sessionID, type, seq: index + 1, time_created: 0, data }
+        }),
+      )
+      .run()
+      .pipe(Effect.orDie)
+    yield* Bus.reserveSequence(db, sessionID, messages.length)
   })
 
 /** The recent text a manual compaction keeps when the latest exchange is one tool call with this output. */
@@ -378,12 +461,14 @@ const recentWithToolOutput = (id: Session.ID, content: SessionMessage.ToolStateC
       ],
       time: { created: 0, completed: 0 },
     })
-    expect(yield* compactManually(session, [user("Earlier question"), user("Read it"), assistant])).toEqual({
+    const messages = [user("Earlier question"), user("Read it"), assistant]
+    yield* storeMessages(id, messages)
+    expect(yield* compactManually(session, messages)).toEqual({
       status: "completed",
     })
     const store = yield* SessionStore.Service
     const stored = (yield* store.context(id))[0]
-    return stored?.type === "compaction" && stored.status === "completed" ? stored.recent : ""
+    return stored?.type === "compaction" && stored.status === "completed" ? stored.metadata?.recent : ""
   })
 
 it.effect("manual compaction summarizes short context instead of no-op", () =>
@@ -473,7 +558,6 @@ it.effect("manual compaction summarizes short context instead of no-op", () =>
         type: "compaction",
         reason: "manual",
         summary: "## Objective\n- manual summary",
-        recent: "",
         cost: 0.0000233,
         tokens: { input: 10, output: 4, reasoning: 2, cache: { read: 3, write: 2 } },
       },
@@ -509,7 +593,7 @@ it.effect("summary updates include the retained tail in compaction hooks and the
         status: "completed",
         reason: "auto",
         summary: "## Objective\n- Previous objective",
-        recent: "[User]: Previous exact request",
+        metadata: { recent: "[User]: Previous exact request" },
         time: { created: DateTime.makeUnsafe(0) },
       }),
       SessionMessage.User.make({
@@ -534,7 +618,7 @@ it.effect("summary updates include the retained tail in compaction hooks and the
     expect(requests[0].messages.at(-1)?.content).toEqual([{ type: "text", text: SessionCompaction.buildPrompt(true) }])
     const store = yield* SessionStore.Service
     expect(yield* store.context(session.id)).toMatchObject([
-      { type: "compaction", recent: "[User]: The latest request supersedes the previous objective." },
+      { type: "compaction", metadata: { keepID: messages[1].id } },
     ])
   }),
 )
@@ -663,7 +747,7 @@ it.effect("compaction hooks can supply the summary instead of the model", () =>
     expect(contexts).toBe(0)
     expect(requests).toEqual([])
     expect(yield* store.context(sessionID)).toMatchObject([
-      { type: "compaction", reason: "manual", summary: "## Objective\n- hooked summary", recent: "" },
+      { type: "compaction", reason: "manual", summary: "## Objective\n- hooked summary" },
     ])
     expect(
       yield* db

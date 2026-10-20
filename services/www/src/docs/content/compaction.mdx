@@ -125,7 +125,7 @@ after    [ encrypted checkpoint + recent user messages ]
 | --- | --- |
 | Support | OpenAI Responses models. Support varies by deployment and model. |
 | Threshold | Same `auto` and `buffer` settings as summary compaction. Manual requests work too. |
-| Portability | An encrypted checkpoint only works with the same provider, model, and endpoint. If you switch models, the session continues from the original conversation instead. |
+| Portability | An encrypted checkpoint only works with the same provider and model. If you switch models, the session continues from the original conversation instead. |
 | Too long | If the provider rejects a compaction as too long, OpenCode retries it with a smaller request. It does not switch to a summary. |
 
 ## Summaries

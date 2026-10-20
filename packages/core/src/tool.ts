@@ -155,7 +155,15 @@ const layer = Layer.effect(
       }
     })
 
-    let catalog: { data: Data; names: string; value: CodeModeCatalog.Inventory } | undefined
+    let catalog:
+      | {
+          data: Data
+          names: string
+          direct: string
+          inventory: CodeModeTool.Inventory
+          value: CodeModeCatalog.Inventory
+        }
+      | undefined
     const state = State.create<Data, Editor>({
       name: "tool",
       initial: () => ({
@@ -233,9 +241,19 @@ const layer = Layer.effect(
           }
           const direct = new Map(Array.from(active).filter(([, tool]) => tool.options?.codemode === false))
           const codeModeTools = new Map(Array.from(active).filter(([, tool]) => tool.options?.codemode !== false))
-          const namespaces = data.namespaces
-          const codeModeInventory = { tools: codeModeTools, namespaces, topLevel: new Set(direct.keys()) }
+          const names = Array.from(codeModeTools.keys()).join("\0")
+          const directNames = Array.from(direct.keys()).join("\0")
           const codeModeEnabled = !whollyDisabled("execute", rules)
+          // Discovery is immutable for a registry revision and visible tool set. Keep request
+          // definitions/executors fresh, but share the inventory, whose prepared runtime and much
+          // larger rendered catalog are cached by identity, across steps.
+          const cached =
+            catalog?.data === data && catalog.names === names && catalog.direct === directNames ? catalog : undefined
+          const codeModeInventory = cached?.inventory ?? {
+            tools: codeModeTools,
+            namespaces: data.namespaces,
+            topLevel: new Set(direct.keys()),
+          }
           const codeModeTool = codeModeEnabled
             ? CodeModeTool.create(codeModeInventory, (name, tool, input, context) =>
                 beforeExecute(name, input, context).pipe(
@@ -243,15 +261,11 @@ const layer = Layer.effect(
                 ),
               )
             : undefined
-          const names = Array.from(codeModeTools.keys()).join("\0")
-          // Discovery is immutable for a registry revision and visible tool set. Keep request
-          // definitions/executors fresh, but share the much larger rendered catalog across steps.
           const codeModeCatalog = !codeModeEnabled
             ? undefined
-            : catalog?.data === data && catalog.names === names
-              ? catalog.value
-              : CodeModeTool.catalog(codeModeInventory)
-          if (codeModeCatalog) catalog = { data, names, value: codeModeCatalog }
+            : (cached?.value ?? CodeModeTool.catalog(codeModeInventory))
+          if (codeModeCatalog)
+            catalog = { data, names, direct: directNames, inventory: codeModeInventory, value: codeModeCatalog }
           return {
             ...(codeModeCatalog === undefined ? {} : { codeModeCatalog }),
             definitions: [

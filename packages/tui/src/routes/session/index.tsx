@@ -64,6 +64,7 @@ import { useEditorContext } from "../../context/editor"
 import { useDialog } from "../../ui/dialog"
 import { DialogSelect } from "../../ui/dialog-select"
 import { DialogSessionRename } from "../../component/dialog-session-rename"
+import { TodoItem } from "../../component/todo-item"
 import { DialogImagePreview } from "../../component/dialog-image-preview"
 import { statusLabel } from "../../component/dialog-workspace-file-changes"
 import { DialogMessage } from "./dialog-message"
@@ -120,6 +121,7 @@ import { createSingleFlight } from "../../util/single-flight"
 import { createDelayedPresence } from "../../util/delayed-presence"
 import { SessionLocationMissing } from "./location-missing"
 import { isRecord } from "../../util/record"
+import { parseTodos } from "../../util/todo"
 import { createHistoryPrepend } from "./history"
 import { context, use, type PendingAction } from "./render-context"
 import { INLINE_TOOL_ICON_WIDTH, InlineToolRow, ReasoningPart, TextPart, toolDisplay } from "./message-parts"
@@ -2071,7 +2073,7 @@ function CompactionMessage(props: { message: Extract<SessionMessageInfo, { type:
             </Match>
           </Switch>
           <text fg={color()}>
-            {props.message.status === "completed" && props.message.providerContext
+            {props.message.status === "completed" && props.message.native?.messages
               ? "Provider compaction"
               : "Compaction"}
           </text>
@@ -2469,6 +2471,9 @@ function ToolPart(props: { part: SessionMessageAssistantTool; images?: boolean }
       </Match>
       <Match when={display() === "patch"}>
         <ApplyPatch {...toolprops} />
+      </Match>
+      <Match when={display() === "todowrite"}>
+        <TodoWrite {...toolprops} />
       </Match>
       <Match when={display() === "question"}>
         <Question {...toolprops} />
@@ -3461,6 +3466,32 @@ function ApplyPatch(props: ToolProps) {
           headerColor={props.part.state.status === "error" ? theme.text.feedback.error.base : undefined}
           errorColor={props.part.state.status === "error" ? theme.text.muted : undefined}
         />
+      </Match>
+    </Switch>
+  )
+}
+
+function TodoWrite(props: ToolProps) {
+  const theme = useTheme()
+  const todos = createMemo(() => parseTodos(props.input.todos))
+  return (
+    <Switch>
+      <Match when={props.part.state.status === "completed" && todos().length > 0}>
+        <BlockTool title="# Todos" part={props.part}>
+          <box>
+            <For each={todos()}>{(todo) => <TodoItem theme={theme} todo={todo} />}</For>
+          </box>
+        </BlockTool>
+      </Match>
+      <Match when={true}>
+        <InlineTool
+          icon="⚙"
+          pending="Updating todos…"
+          complete={props.part.state.status === "completed" || props.part.state.status === "error"}
+          part={props.part}
+        >
+          {props.part.state.status === "error" ? "Todo update failed" : "Cleared todos"}
+        </InlineTool>
       </Match>
     </Switch>
   )

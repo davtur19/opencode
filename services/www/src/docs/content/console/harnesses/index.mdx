@@ -16,14 +16,23 @@ is billed to your workspace like any other request.
 
 ## Get an API key
 
-Harnesses authenticate with a [service account](/console/api#service-accounts) key. Open **Keys** in the
-[Console](https://opencode.ai/console), add a service account, and create a key with **Inference only** permission.
+Harnesses authenticate with a Console API key. The quickest option is a
+[personal API key](/console/api#personal-api-keys), which calls models as you.
+
+1. Open **Account** from the account menu in the [Console](https://opencode.ai/console).
+2. Under **Personal API keys**, click **Add API key**.
+3. Choose the workspace, name the key, and click **Create**.
+4. Copy the key. It is shown only once.
 
 ```text
 oc_sk_1a2b3c4d5e6f_...
 ```
 
-Use a key from a workspace with credits for pay-as-you-go, or from a workspace subscribed to [Go](/console/go) for Go.
+Usage counts toward your [member budget](/console/budgets#member-budgets). Use a key from a workspace with credits for
+pay-as-you-go, or from a workspace subscribed to [Go](/console/go) for Go.
+
+For shared machines or CI, owners and admins can create a [service account](/console/api#service-accounts) key instead,
+so usage isn't tied to one person.
 
 ## Base URLs
 

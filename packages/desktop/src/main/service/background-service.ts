@@ -35,27 +35,22 @@ const connect = Effect.fn("BackgroundService.connect")(function* (mode: "initial
   const desktopCli = yield* DesktopCli.Service
   const runFork = Effect.runForkWith(yield* Effect.context<FileSystem.FileSystem | Path.Path>())
   const isolated = !app.isPackaged && process.env.OPENCODE_DESKTOP_ISOLATED_SERVER === "1"
-  const drive = process.env.OPENCODE_DRIVE_GUI === "1"
   const cli = yield* desktopCli.resolve
-  const version = mode === "initial" && !drive ? cli.version : undefined
+  const version = mode === "initial" ? cli.version : undefined
 
   if (isolated) process.env.XDG_STATE_HOME = app.getPath("userData")
   const client = yield* Effect.promise(() => import("@opencode/client/service"))
 
-  const file =
-    isolated && process.env.OPENCODE_DESKTOP_SERVER_CHANNEL === "local"
-      ? path.join(app.getPath("userData"), "opencode", "service-local.json")
-      : drive && process.env.XDG_STATE_HOME
-        ? path.join(
-            process.env.XDG_STATE_HOME,
-            "opencode",
-            process.env.OPENCODE_CHANNEL === "local" ? "service-local.json" : "service.json",
-          )
-        : undefined
-
   const ensure = () =>
     client.Service.ensure({
-      file,
+      file:
+        process.env.OPENCODE_DESKTOP_SERVER_CHANNEL === "local"
+          ? path.join(
+              process.env.XDG_STATE_HOME ?? path.join(app.getPath("home"), ".local", "state"),
+              "opencode",
+              "service-local.json",
+            )
+          : undefined,
       version,
       // A fixed port makes a second contender fail to bind and back off; port 0 never collides, so two
       // services could boot against the same database.
@@ -71,7 +66,7 @@ const connect = Effect.fn("BackgroundService.connect")(function* (mode: "initial
 
   // A compatible service the entry module already found is adopted at once; ensure() still runs
   // afterwards for its side effects (terminal handoff completion), off the renderer's path.
-  const early = mode === "initial" && !isolated && !drive ? yield* Effect.promise(sidecarProbe) : undefined
+  const early = mode === "initial" && !isolated ? yield* Effect.promise(sidecarProbe) : undefined
 
   if (early) yield* Effect.sync(() => void ensure().catch(() => undefined))
   const service = early ?? (yield* Effect.tryPromise(ensure))

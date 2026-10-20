@@ -1,5 +1,7 @@
-import { createMemo, createSignal } from "solid-js"
+import type { ModelInfo } from "@opencode/client"
+import { createMemo, createSignal, For } from "solid-js"
 import { useLocal } from "../context/local"
+import { useTheme } from "../context/theme"
 import { DialogSelect } from "../ui/dialog-select"
 import { useDialog } from "../ui/dialog"
 import { DialogIntegration } from "./dialog-integration"
@@ -17,8 +19,19 @@ export function DialogModel(props: { providerID?: string }) {
   const data = useData()
   const dialog = useDialog()
   const location = useLocation()
+  const theme = useTheme().surface("dialog")
   const [query, setQuery] = createSignal("")
-  const favoritePriority = new Set(local.model.favorite().map(modelPreferenceKey))
+  // Under new designs, favoriting does not reorder the list until the dialog is reopened.
+  const favoritesAtOpen = [...local.model.favorite()]
+  const favoritePriority = new Set(favoritesAtOpen.map(modelPreferenceKey))
+  const isFavorite = (value: { providerID: string; modelID: string } | undefined) =>
+    value !== undefined &&
+    local.model.favorite().some((item) => item.providerID === value.providerID && item.modelID === value.modelID)
+  // A styled span keeps its color on the highlighted row, where plain trailing text turns secondary.
+  const trailing = (model: ModelInfo, favorite: boolean) => {
+    if (newDesigns() && favorite) return <span style={{ fg: theme.text.formfield.selected }}>*</span>
+    return free(model) ? "Free" : undefined
+  }
 
   const connected = useConnected()
   const providers = createMemo(
@@ -31,7 +44,7 @@ export function DialogModel(props: { providerID?: string }) {
   const options = createMemo(() => {
     const needle = query().trim()
     const showSections = showExtra() && needle.length === 0
-    const favorites = connected() ? local.model.favorite() : []
+    const favorites = connected() ? (newDesigns() ? favoritesAtOpen : local.model.favorite()) : []
     const recents = local.model.recent()
 
     function toOptions(items: typeof favorites, category: string) {
@@ -48,7 +61,8 @@ export function DialogModel(props: { providerID?: string }) {
             releaseDate: model.time.released,
             description: provider?.name ?? model.providerID,
             category,
-            footer: free(model) ? "Free" : undefined,
+            footer: trailing(model, isFavorite(item)),
+            detail: newDesigns() ? () => <ModelDetail model={model} /> : undefined,
             onSelect: () => {
               onSelect(model.providerID, model.id)
             },
@@ -71,17 +85,19 @@ export function DialogModel(props: { providerID?: string }) {
         .filter((model) => (props.providerID ? model.providerID === props.providerID : true))
         .map((model) => {
           const provider = providers().get(model.providerID)
-          const key = modelPreferenceKey({ providerID: model.providerID, modelID: model.id })
-          const favorite = favorites.some((item) => modelPreferenceKey(item) === key)
+          const value = { providerID: model.providerID, modelID: model.id }
+          const favorite = isFavorite(value)
           return {
-            value: { providerID: model.providerID, modelID: model.id },
+            value,
             providerID: model.providerID,
             providerName: provider?.name ?? model.providerID,
             title: model.name,
             releaseDate: model.time.released,
-            description: favorite ? "(Favorite)" : undefined,
+            description: newDesigns() ? undefined : favorite ? "(Favorite)" : undefined,
             category: connected() ? (provider?.name ?? model.providerID) : undefined,
-            footer: free(model) ? "Free" : undefined,
+            footer: trailing(model, favorite),
+            free: free(model),
+            detail: newDesigns() ? () => <ModelDetail model={model} /> : undefined,
             onSelect() {
               onSelect(model.providerID, model.id)
             },
@@ -105,13 +121,17 @@ export function DialogModel(props: { providerID?: string }) {
     )
 
     if (needle) {
-      return prioritizeFavorites(
+      const results = prioritizeFavorites(
         sortModelOptions(
           fuzzysort.go(needle, modelOptions, { keys: ["title", "category"] }).map((item) => item.obj),
           false,
         ),
         favoritePriority,
       )
+      // Search results name the provider inline. Without a category, the trailing slot keeps the favorite marker
+      // instead of falling back to the provider name.
+      if (!newDesigns()) return results
+      return results.map((option) => ({ ...option, description: option.providerName, category: undefined }))
     }
 
     return [...favoriteOptions, ...recentOptions, ...modelOptions]
@@ -166,7 +186,7 @@ export function DialogModel(props: { providerID?: string }) {
         },
         {
           command: "model.dialog.favorite",
-          title: newDesigns() ? "favorite" : "Favorite",
+          title: newDesigns() ? (option) => (isFavorite(option?.value) ? "unfavorite" : "favorite") : "Favorite",
           hidden: !connected(),
           onTrigger: (option) => {
             local.model.toggleFavorite(option.value as { providerID: string; modelID: string })
@@ -178,7 +198,6 @@ export function DialogModel(props: { providerID?: string }) {
       skipFilter={true}
       title={title()}
       current={local.model.current()}
-      focusCurrent={false}
     />
   )
 }
@@ -192,13 +211,13 @@ export function prioritizeFavorites<T extends { value: { providerID: string; mod
   )
 }
 
+// The server owns model order (`Model.available()`: preferred free models first when signed out, newest first
+// otherwise). This only applies the picker's grouping and keeps the server's order for everything else.
 export function sortModelOptions<
   T extends {
     providerID?: string
     providerName?: string
-    releaseDate: string | number
-    title: string
-    footer?: string
+    free?: boolean
   },
 >(options: T[], grouped = true) {
   return options.toSorted((a, b) => {
@@ -211,16 +230,58 @@ export function sortModelOptions<
     const name = grouped ? (a.providerName ?? "").localeCompare(b.providerName ?? "") : 0
     if (name !== 0) return name
 
-    const free = Number(b.footer === "Free") - Number(a.footer === "Free")
-    if (free !== 0) return free
-
-    const release = Number(b.releaseDate) - Number(a.releaseDate)
-    if (release !== 0) return release
-
-    return a.title.localeCompare(b.title)
+    return Number(b.free === true) - Number(a.free === true)
   })
 }
 
-function free(model: { cost: Array<{ input: number }> }) {
+function free(model: { cost: ReadonlyArray<{ input: number }> }) {
   return model.cost.length > 0 && model.cost.every((cost) => cost.input === 0)
+}
+
+/** Price, input modalities, context window and reasoning support for the selected model. */
+function ModelDetail(props: { model: ModelInfo }) {
+  const theme = useTheme().surface("dialog")
+  const price = () => {
+    if (free(props.model)) return "Free"
+    const cost = props.model.cost[0]
+    if (!cost) return ""
+    return `$${dollars(cost.input)}/$${dollars(cost.output)}`
+  }
+  const facts = () => [
+    props.model.capabilities.input.map(modality).join(", "),
+    tokens(props.model.limit.context),
+    ...(props.model.variants.length > 0 ? ["Reasoning"] : []),
+  ]
+  return (
+    <box flexDirection="row" justifyContent="space-between" gap={2}>
+      <text fg={theme.text.faint} wrapMode="none">
+        {price()}
+      </text>
+      <text fg={theme.text.faint} wrapMode="none" flexShrink={0}>
+        <For each={facts().filter(Boolean)}>
+          {(fact, index) => (
+            <>
+              {index() > 0 && <span style={{ fg: theme.hue.neutral[400] }}> · </span>}
+              {fact}
+            </>
+          )}
+        </For>
+      </text>
+    </box>
+  )
+}
+
+function dollars(value: number) {
+  return String(Number(value.toFixed(2)))
+}
+
+function modality(value: string) {
+  if (value === "pdf") return "PDF"
+  return value.charAt(0).toUpperCase() + value.slice(1)
+}
+
+function tokens(value: number) {
+  if (value >= 1_000_000) return `${Number((value / 1_000_000).toFixed(1))}M`
+  if (value >= 1_000) return `${Math.round(value / 1_000)}K`
+  return String(value)
 }

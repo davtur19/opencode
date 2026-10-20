@@ -410,6 +410,20 @@ interval and 30-minute active window.
 See the [warming guide](/warming) for request behavior, customization,
 and cost considerations.
 
+### Experimental
+
+Experimental features may change or be removed in a future release.
+
+Set `todo` to `true` to give agents a `todowrite` tool for tracking multi-step work.
+
+```jsonc
+{
+  "experimental": {
+    "todo": true,
+  },
+}
+```
+
 ### Skills
 
 Add directories or URLs that OpenCode should search for agent skills.
