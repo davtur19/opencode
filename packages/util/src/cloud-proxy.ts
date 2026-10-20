@@ -14,9 +14,10 @@ export const CLOUD_PROXY_DOMAINS_ENV = "OPENCODE_CLOUD_PROXY_DOMAINS"
 export const CLOUD_PROXY_AUTH_ENV = "OPENCODE_CLOUD_PROXY_AUTH"
 
 // Egresses one session may consume in one step before the client stops rotating. Each gateway
-// 403/429 or 502/503/504 rotates the session's outgoing wire alias, so every retry leaves under a
-// new identity and address; the pool is small and shared, so a stuck step must not walk it. The
-// proxy enforces its own budget as well.
+// 403/429 rotates the session's outgoing wire alias, so every retry leaves under a new identity
+// and address; the pool is small and shared, so a stuck step must not walk it. The proxy
+// enforces its own budget as well. A 5xx does not rotate: the upstream, not the address, is
+// usually the failing part, so it retries on the same egress.
 export const SESSION_ROTATION_LIMIT = 3
 
 export function sessionRotationEnabled() {

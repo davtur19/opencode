@@ -193,13 +193,11 @@ describe("util.proxy", () => {
       expect(sessionToken(later)).toEqual({ boot: expect.any(String), attempt: 1 })
     })
 
-    test("advances the attempt when the gateway reports its upstream unavailable", () => {
+    test("keeps the same egress when the gateway reports its upstream unavailable", () => {
       FetchProxy.noteResponseStatus("ses_unavailable", response(503))
       const proxy = FetchProxy.proxiedInit(url, { headers: sessionHeaders("ses_unavailable") })?.proxy
       if (proxy === undefined) throw new Error("expected a proxied init")
-      const token = sessionToken(proxy)
-      expect(token.attempt).toBe(1)
-      expect(token.status).toBe(503)
+      expect(sessionToken(proxy)).toEqual({ boot: expect.any(String), attempt: 0 })
     })
 
     test("ignores statuses that do not indicate a bad egress", () => {

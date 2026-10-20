@@ -33,9 +33,10 @@ export interface Decision {
 /**
  * Retries one provider failure. `model` resolves the opencode gateway's transient flakes: its
  * intermittent401 on anonymous public requests, its free-tier402 quota blip, and its 403/429 abuse
- * gate or 502/503/504 unavailable endpoint when the session-addressed proxy and its rotating wire
- * alias can move the retry to another egress. Callers without a resolved model keep the plain
- * reason taxonomy so auxiliary requests never mask a real credential or billing failure.
+ * gate when the session-addressed proxy and its rotating wire alias can move the retry to another
+ * egress. A 5xx stays on the same egress and uses the general retry schedule. Callers without a
+ * resolved model keep the plain reason taxonomy so auxiliary requests never mask a real credential
+ * or billing failure.
  */
 export function isRetryable(
   error: AIError,
@@ -102,19 +103,13 @@ export function isRetryable(
  */
 export const RETRY_PHASES = 4
 
-// Each gateway 403/429 or 502/503/504 rotates the session's wire alias, so the retried request
-// leaves under a new identity and address. Rotation is bounded by the step allowance the proxy
-// module grants and by the session-wide budget in SessionEgress. A 5xx keeps retrying on the last
-// egress after that allowance is spent: the address is usually not what failed, and the upstream
-// may heal while a 403/429 would only hit the same block again.
-const isGatewayUnavailable = (error: AIError) =>
-  error.reason._tag === "ProviderInternal" &&
-  (error.reason.http?.status === 502 || error.reason.http?.status === 503 || error.reason.http?.status === 504)
-
+// Only a gateway 403/429 rotates the session's wire alias: the next request must leave under a new
+// identity and address. Rotation is bounded by the step allowance the proxy module grants and by
+// the session-wide budget in SessionEgress. A 5xx stays on the same egress and uses the general
+// retry schedule: the upstream, not the address, is usually the failing part.
 const isEgressFailure = (error: AIError) =>
   (error.reason._tag === "Authentication" && error.reason.http?.status === 403) ||
-  (error.reason._tag === "RateLimit" && error.reason.http?.status === 429) ||
-  isGatewayUnavailable(error)
+  (error.reason._tag === "RateLimit" && error.reason.http?.status === 429)
 
 export const policy = (sessionID: SessionSchema.ID, options?: { readonly phases?: number }) =>
   Effect.gen(function* () {
@@ -130,15 +125,10 @@ export const policy = (sessionID: SessionSchema.ID, options?: { readonly phases?
           isEgressFailure(input.cause) &&
           input.model.providerID === Provider.ID.opencode &&
           sessionRotationEnabled()
-        const unavailable = isGatewayUnavailable(input.cause)
         if (egress) egressFailures++
-        const rotating =
-          egress &&
-          egressFailures <= SESSION_ROTATION_LIMIT &&
-          SessionEgress.canRotate(sessionID)
-        // A 5xx keeps the general model retry allowance once the rotation budget is spent.
-        // A 403/429 stops: another attempt on the same egress would only hit the same block.
-        const allowed = next.retry && (unavailable || !egress || rotating)
+        const allowed =
+          next.retry &&
+          (!egress || (egressFailures <= SESSION_ROTATION_LIMIT && SessionEgress.canRotate(sessionID)))
         const event: PluginHooks.Domains["session"]["retry"] = {
           sessionID,
           agent: input.agent,
@@ -149,7 +139,7 @@ export const policy = (sessionID: SessionSchema.ID, options?: { readonly phases?
         }
         yield* input.hook(event)
         if (!event.decision.retry) return event.decision
-        if (rotating) {
+        if (egress && SessionEgress.canRotate(sessionID)) {
           const alias = SessionEgress.rotate(sessionID)
           yield* Effect.logDebug("session egress rotated", { sessionID, alias })
         }

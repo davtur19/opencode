@@ -124,7 +124,7 @@ describe("SessionRunnerRetry.policy", () => {
     [503, unavailable],
     [504, gatewayTimeout],
   ] as const) {
-    it.effect(`keeps retrying an opencode ${status} after the rotation limit`, () =>
+    it.effect(`keeps retrying an opencode ${status} on the same egress`, () =>
       Effect.gen(function* () {
         const sessionID = SessionSchema.ID.make(`ses_retry_${status}`)
         const policy = yield* SessionRunnerRetry.policy(sessionID)
@@ -136,7 +136,7 @@ describe("SessionRunnerRetry.policy", () => {
         }
 
         expect(results).toEqual([...Array(10).fill(true), false])
-        expect(new Set(aliases).size).toBe(4)
+        expect(new Set(aliases).size).toBe(1)
       }),
     )
   }
@@ -166,7 +166,7 @@ describe("SessionRunnerRetry.policy", () => {
     }),
   )
 
-  it.effect("keeps retrying a 5xx on the last alias once the session budget is spent", () =>
+  it.effect("keeps retrying a 5xx without rotating when the session budget is spent", () =>
     Effect.gen(function* () {
       const sessionID = SessionSchema.ID.make("ses_retry_budget_5xx")
       for (let i = 0; i < SessionEgress.SESSION_EGRESS_BUDGET; i++) SessionEgress.rotate(sessionID)

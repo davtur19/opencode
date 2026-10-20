@@ -134,9 +134,10 @@ function encodeToken(rotation: Rotation) {
   return btoa(JSON.stringify(rotation)).replaceAll("+", "-").replaceAll("/", "_").replace(/=+$/, "")
 }
 
-// A 403 is the abuse gate, a 429 the throttle, and 502/503/504 a gateway or upstream endpoint this
-// egress could not reach. All of them mean the next attempt should leave from another address.
-const EGRESS_STATUSES = new Set([403, 429, 502, 503, 504])
+// A 403 is the abuse gate and a 429 the throttle; both mean the next attempt should leave from
+// another address. A 5xx stays on the same egress: the upstream, not the address, is usually the
+// failing part, so the runner retries it without advancing the proxy attempt.
+const EGRESS_STATUSES = new Set([403, 429])
 
 /**
  * Records the failure the gateway returned inside the tunnel, so the retried request can carry it

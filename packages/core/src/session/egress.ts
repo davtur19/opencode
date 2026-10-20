@@ -2,10 +2,9 @@ export * as SessionEgress from "./egress.js"
 
 import { SessionSchema } from "./schema.js"
 
-// How many wire-identity rotations one session may spend on gateway 403/429 or 502/503/504 before
-// the runner stops rotating. Compaction and an explicit reset start a fresh budget. Once it is
-// spent, a 403/429 surfaces the failure, while a 5xx keeps retrying on the last egress because the
-// upstream, not the address, is usually the failing part.
+// How many wire-identity rotations one session may spend on gateway 403/429 before the runner
+// stops rotating and surfaces the failure. Compaction and an explicit reset start a fresh budget.
+// A 5xx does not rotate: it retries on the same egress.
 export const SESSION_EGRESS_BUDGET = 12
 
 // Bound the per-session state so a long-lived server cannot grow it forever. Evicting a session
@@ -44,7 +43,7 @@ export function identity(sessionID: SessionSchema.ID) {
   return alias
 }
 
-/** Whether the session may still spend a rotation on a gateway rejection. */
+/** Whether the session may still spend a rotation on a gateway 403/429. */
 export function canRotate(sessionID: SessionSchema.ID) {
   return (sessions.get(sessionID)?.rotations ?? 0) < SESSION_EGRESS_BUDGET
 }
