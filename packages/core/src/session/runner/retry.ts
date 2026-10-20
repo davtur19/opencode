@@ -102,12 +102,14 @@ export function isRetryable(
  */
 export const RETRY_PHASES = 4
 
-// Each gateway 403/429 rotates the session's wire alias, so the retried request leaves under a new
-// identity and address. A step gets only the allowance the proxy module grants; the session-wide
-// budget in SessionEgress bounds the walk across steps.
+// Each gateway 403/429 or 502/503/504 rotates the session's wire alias, so the retried request
+// leaves under a new identity and address. A step gets only the allowance the proxy module grants;
+// the session-wide budget in SessionEgress bounds the walk across steps.
 const isEgressFailure = (error: AIError) =>
   (error.reason._tag === "Authentication" && error.reason.http?.status === 403) ||
-  (error.reason._tag === "RateLimit" && error.reason.http?.status === 429)
+  (error.reason._tag === "RateLimit" && error.reason.http?.status === 429) ||
+  (error.reason._tag === "ProviderInternal" &&
+    (error.reason.http?.status === 502 || error.reason.http?.status === 503 || error.reason.http?.status === 504))
 
 export const policy = (sessionID: SessionSchema.ID, options?: { readonly phases?: number }) =>
   Effect.gen(function* () {

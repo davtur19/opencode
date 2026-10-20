@@ -134,6 +134,10 @@ function encodeToken(rotation: Rotation) {
   return btoa(JSON.stringify(rotation)).replaceAll("+", "-").replaceAll("/", "_").replace(/=+$/, "")
 }
 
+// A 403 is the abuse gate, a 429 the throttle, and 502/503/504 a gateway or upstream endpoint this
+// egress could not reach. All of them mean the next attempt should leave from another address.
+const EGRESS_STATUSES = new Set([403, 429, 502, 503, 504])
+
 /**
  * Records the failure the gateway returned inside the tunnel, so the retried request can carry it
  * to the proxy. Only the wrapper sees the status and the headers, and only the retry that follows
@@ -146,7 +150,7 @@ export function noteResponseStatus(
 ) {
   if (key === undefined) return
   if (!sessionRotationEnabled()) return
-  if (response.status !== 403 && response.status !== 429) return
+  if (!EGRESS_STATUSES.has(response.status)) return
   const state = rotations.get(key) ?? { boot, attempt: 0 }
   remember(key, {
     boot: state.boot,

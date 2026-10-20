@@ -25,6 +25,9 @@ const http = (status: number) =>
   new HttpContext({ url: "https://opencode.ai/inference", status, headers: {} })
 const blocked = new AIError({ reason: new AuthenticationError({ message: "blocked", http: http(403) }) })
 const rateLimited = new AIError({ reason: new RateLimitError({ message: "slow down", http: http(429) }) })
+const unavailable = new AIError({
+  reason: new ProviderInternalError({ message: "Upstream request failed: Endpoint is unavailable.", http: http(503) }),
+})
 const opencode = Model.Ref.make({ id: Model.ID.make("model"), providerID: Provider.ID.opencode })
 const other = Model.Ref.make({ id: Model.ID.make("model"), providerID: Provider.ID.make("other") })
 
@@ -102,6 +105,22 @@ describe("SessionRunnerRetry.policy", () => {
       const results: boolean[] = []
       for (let i = 0; i < 5; i++) {
         results.push((yield* policy(inputFor(rateLimited, opencode))).retry)
+        aliases.push(SessionEgress.identity(sessionID))
+      }
+
+      expect(results).toEqual([true, true, true, false, false])
+      expect(new Set(aliases).size).toBe(4)
+    }),
+  )
+
+  it.effect("rotates the wire alias on an opencode 503 and stops at the step limit", () =>
+    Effect.gen(function* () {
+      const sessionID = SessionSchema.ID.make("ses_retry_503")
+      const policy = yield* SessionRunnerRetry.policy(sessionID)
+      const aliases = [SessionEgress.identity(sessionID)]
+      const results: boolean[] = []
+      for (let i = 0; i < 5; i++) {
+        results.push((yield* policy(inputFor(unavailable, opencode))).retry)
         aliases.push(SessionEgress.identity(sessionID))
       }
 
