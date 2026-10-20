@@ -1,4 +1,16 @@
-import { Duration, Effect, Equal, FiberHandle, Option, Schema, SchemaGetter, Scope, Semaphore, Stream } from "effect"
+import {
+  Clock,
+  Duration,
+  Effect,
+  Equal,
+  FiberHandle,
+  Option,
+  Schema,
+  SchemaGetter,
+  Scope,
+  Semaphore,
+  Stream,
+} from "effect"
 import type { IntegrationOAuthMethodRegistration } from "@opencode/plugin/effect/integration"
 import { define } from "@opencode/plugin/effect/plugin"
 import type { SessionHttpResponse } from "@opencode/plugin/effect/session"
@@ -209,8 +221,11 @@ export const OpencodePlugin = define<HttpClient.HttpClient | Bus.Service | Manag
     // Status last reported for the active connection, so inference failures can name the fix.
     let reported: IntegrationConnection.Status | undefined
     let explainers: Effect.Success<ReturnType<typeof ctx.session.hook>>[] = []
+    // When the last Console config load started, so rejected inference can reuse a recent status.
+    let checked = Number.NEGATIVE_INFINITY
 
     const load = Effect.fn("OpencodePlugin.load")(function* () {
+      checked = yield* Clock.currentTimeMillis
       const connection = yield* ctx.integration.connection.active("opencode")
       if (!connection) {
         reported = undefined
@@ -340,6 +355,9 @@ export const OpencodePlugin = define<HttpClient.HttpClient | Bus.Service | Manag
             model.headers = Provider.mergeHeaders(model.headers, config.headers)
             model.body = Provider.mergeOverlay(model.body, config.body)
             if (config.limit !== undefined) model.limit = { ...model.limit, ...config.limit }
+          })
+          // Variants are spelled for the final package, which the update above normalizes from `aisdk:*`.
+          providers.models.update(providerID, modelID, (model) => {
             // The Console's reasoning replaces the base variants; its variants still overlay them below.
             if (config.capabilities?.reasoning !== undefined)
               model.variants = [
@@ -492,17 +510,24 @@ export const OpencodePlugin = define<HttpClient.HttpClient | Bus.Service | Manag
     })
     const refresh = () => loading.withPermit(load().pipe(Effect.andThen(apply)))
     // Annotated: `apply` re-registers the hooks that call `check`, which would otherwise make inference circular.
-    const check = (): Effect.Effect<void> =>
+    // With `maxAge`, a load that started within it is reused; checking inside the permit lets concurrent callers
+    // share the load that was in flight when they arrived.
+    const check = (maxAge = Duration.zero): Effect.Effect<void> =>
       loading.withPermit(
-        load().pipe(Effect.flatMap((next) => (Equal.equals(snapshot, next) ? Effect.void : apply(next)))),
+        Effect.gen(function* () {
+          if ((yield* Clock.currentTimeMillis) - checked < Duration.toMillis(maxAge)) return
+          const next = yield* load()
+          if (!Equal.equals(snapshot, next)) yield* apply(next)
+        }),
       )
 
     // Console inference rejects a missing SSO sign-in with a generic 401/403. Re-check the Console config, which
     // reports the reason, and replace the response with instructions when the connection needs the user.
+    // A client retrying rejected inference would otherwise send one config request per failed response.
     const explain = (event: SessionHttpResponse) =>
       Effect.gen(function* () {
         if (event.response.status !== 401 && event.response.status !== 403) return
-        yield* check()
+        yield* check(Duration.seconds(30))
         const status = reported
         if (!status) return
         void event.response.body?.cancel()

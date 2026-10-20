@@ -26,6 +26,10 @@ import { moveSelection, reconcileSelection } from "./select-controller"
 export interface DialogSelectProps<T> {
   title: string
   titleView?: JSX.Element
+  /** Faint line below the title, under the "new-designs" experiment. Not shown with `searchInTitle`. */
+  description?: string
+  /** Blank rows above the footer under the "new-designs" experiment. Defaults to 1. */
+  footerGap?: number
   placeholder?: string
   footer?: JSX.Element
   emptyView?: JSX.Element
@@ -99,6 +103,8 @@ export interface DialogSelectOption<T = any> {
   details?: string[]
   footer?: JSX.Element | string
   footerColor?: RGBA
+  /** Cells the footer extends into the row's right padding, e.g. 2 for a `DialogSelectChoice` so its value lines up with plain footers. */
+  footerOverhang?: number
   titleWidth?: number
   truncateTitle?: boolean | "left"
   category?: string
@@ -108,8 +114,9 @@ export interface DialogSelectOption<T = any> {
   gutter?: (color: RGBA) => JSX.Element
   margin?: JSX.Element
   /**
-   * Shown below the list while this option is selected, under the "new-designs" experiment. A function is called
-   * each time the option becomes selected, because a rendered element cannot be shown again once it is removed.
+   * Shown below the list while this option is selected, under the "new-designs" experiment. A string is shown in muted
+   * text. A function is called each time the option becomes selected, because a rendered element cannot be shown again
+   * once it is removed.
    */
   detail?: string | (() => JSX.Element)
   onSelect?: (ctx: DialogContext) => void
@@ -255,13 +262,15 @@ export function DialogSelect<T>(props: DialogSelectProps<T>) {
   const limit = createMemo(() => Math.floor(dimensions().height / 2) - 6)
   // Under new designs an overflowing list gives its last row to a "…" indicator.
   const overflows = createMemo(() => newDesigns() && rows() > limit())
-  const height = createMemo(() => Math.min(rows(), limit()) - (overflows() ? 1 : 0))
   // Computed once here so per-row details do not each call useTerminalDimensions(),
   // which registers one renderer resize listener per mounted row.
   const detailsWidth = createMemo(() =>
     dialogSelectContentWidth(Math.min(dialogWidth(dialog.size), dimensions().width)),
   )
   const [moreBelow, setMoreBelow] = createSignal(false)
+  // At the bottom of the list the "…" row hands its row back to the list, so the dialog keeps its height.
+  const ellipsis = () => overflows() && moreBelow()
+  const height = createMemo(() => Math.min(rows(), limit()) - (ellipsis() ? 1 : 0))
   function updateMoreBelow() {
     if (!scroll || scroll.isDestroyed) return
     setMoreBelow(scroll.scrollTop + scroll.viewport.height < scroll.scrollHeight)
@@ -657,7 +666,7 @@ export function DialogSelect<T>(props: DialogSelectProps<T>) {
       focusedBackgroundColor={theme.background.formfield.focused}
       cursorColor={newDesigns() ? theme.text.base : theme.text.formfield.focused}
       cursorStyle={config.cursor}
-      focusedTextColor={theme.text.formfield.focused}
+      focusedTextColor={newDesigns() ? theme.text.formfield.base : theme.text.formfield.focused}
       ref={(r) => {
         input = r
         input.traits = { status: "FILTER" }
@@ -674,6 +683,7 @@ export function DialogSelect<T>(props: DialogSelectProps<T>) {
 
   return (
     <DialogLayout
+      footerGap={props.footerGap}
       header={
         // Rows reserve a gutter, so the header and footer line up with the list's inset rather than the layout's.
         <box paddingLeft={DIALOG_LIST_INSET - DIALOG_INSET} paddingRight={DIALOG_LIST_INSET - DIALOG_INSET}>
@@ -681,7 +691,12 @@ export function DialogSelect<T>(props: DialogSelectProps<T>) {
             when={searchInTitle()}
             fallback={
               <>
-                <DialogHeader title={props.title} titleView={props.titleView} onClose={props.onCancel} />
+                <DialogHeader
+                  title={props.title}
+                  titleView={props.titleView}
+                  description={props.description}
+                  onClose={props.onCancel}
+                />
                 <Show when={props.renderFilter !== false}>
                   <box paddingTop={1}>{searchInput()}</box>
                 </Show>
@@ -792,6 +807,7 @@ export function DialogSelect<T>(props: DialogSelectProps<T>) {
                               flatten() ? (option.searchFooter ?? option.category ?? option.footer) : option.footer
                             }
                             footerColor={option.footerColor}
+                            footerOverhang={option.footerOverhang}
                             titleWidth={option.titleWidth}
                             truncateTitle={option.truncateTitle}
                             description={option.description !== category ? option.description : undefined}
@@ -811,9 +827,9 @@ export function DialogSelect<T>(props: DialogSelectProps<T>) {
               )}
             </For>
           </scrollbox>
-          <Show when={overflows()}>
+          <Show when={ellipsis()}>
             <box paddingLeft={DIALOG_LIST_INSET} flexShrink={0}>
-              <text fg={theme.text.faint}>{moreBelow() ? "…" : " "}</text>
+              <text fg={theme.text.faint}>…</text>
             </box>
           </Show>
           {/* Reserved whenever any option has a detail, so the dialog does not resize as the selection moves. */}
@@ -823,7 +839,7 @@ export function DialogSelect<T>(props: DialogSelectProps<T>) {
                 when={detailView()}
                 keyed
                 fallback={
-                  <text fg={theme.text.faint} wrapMode="word">
+                  <text fg={theme.text.muted} wrapMode="word">
                     {detailText() || " "}
                   </text>
                 }
@@ -836,6 +852,20 @@ export function DialogSelect<T>(props: DialogSelectProps<T>) {
       </DialogBleed>
     </DialogLayout>
   )
+}
+
+/**
+ * Trailing value of a row that can be changed, under the "new-designs" experiment. The selected row shows how:
+ * `‹ dark ›` cycles with ←/→, `opencode ↵` opens a picker. Other rows pad the value to the same width so it does
+ * not shift as the selection moves. Pass it with `footerOverhang: 2` so the value itself ends where plain footers do.
+ */
+export function DialogSelectChoice(props: { value: string; active: boolean; open?: boolean }) {
+  const theme = useTheme().surface("dialog")
+  const text = () => {
+    if (!props.active) return `  ${props.value}  `
+    return props.open ? `  ${props.value} ↵` : `‹ ${props.value} ›`
+  }
+  return <span style={{ fg: props.active ? theme.text.action.primary.focused : theme.text.faint }}>{text()}</span>
 }
 
 function DialogSelectCategory(props: { title: string; first: boolean }) {
@@ -858,6 +888,7 @@ function DialogSelectRow(props: {
   current: boolean
   footer?: JSX.Element | string
   footerColor?: RGBA
+  footerOverhang?: number
   titleWidth?: number
   truncateTitle?: boolean | "left"
   gutter?: (color: RGBA) => JSX.Element
@@ -923,7 +954,7 @@ function DialogSelectRow(props: {
         </Show>
       </text>
       <Show when={props.footer}>
-        <box flexShrink={0}>
+        <box flexShrink={0} marginRight={props.footerOverhang ? -props.footerOverhang : undefined}>
           <text fg={props.active || !props.footerColor ? secondary() : props.footerColor}>{props.footer}</text>
         </box>
       </Show>

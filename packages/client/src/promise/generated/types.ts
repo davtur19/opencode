@@ -2333,6 +2333,7 @@ export type ConfigEntry =
           portable_shell_scanner?: boolean
           todo?: boolean
           subagent_depth?: number
+          location_idle_timeout?: string | false
           policies?: Array<{
             action: "provider.use" | "tool.use" | "integration.use"
             resource: string

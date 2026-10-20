@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test"
 import { go } from "fuzzysort"
-import { prioritizeFavorites, sortModelOptions } from "../../../../src/component/dialog-model"
+import { prioritizeFavorites, sortModelOptions } from "../../../../src/component/model-options"
 
 describe("prioritizeFavorites", () => {
   test("uses the favorite order captured when the dialog opened", () => {

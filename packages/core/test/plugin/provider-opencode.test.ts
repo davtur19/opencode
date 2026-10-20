@@ -615,7 +615,7 @@ describe("OpencodePlugin", () => {
     ),
   )
 
-  it.live("builds Console model variants from its reasoning and applies its release date", () =>
+  it.live("builds Console reasoning variants after provider and model package normalization", () =>
     Effect.acquireUseRelease(
       Effect.sync(() =>
         Bun.serve({
@@ -631,6 +631,24 @@ describe("OpencodePlugin", () => {
                       releaseDate: "2026-02-03",
                       capabilities: { reasoning: { supported: true, effort: ["default", "low", "high"] } },
                       variants: [{ id: "high", headers: { "x-tier": "high" } }],
+                    },
+                    gpt: {
+                      package: "aisdk:@ai-sdk/openai",
+                      capabilities: { reasoning: { supported: true, effort: ["low", "high"] } },
+                      variants: [{ id: "high", headers: { "x-tier": "high" } }],
+                    },
+                    "claude-sonnet-4-5": {
+                      package: "aisdk:@ai-sdk/anthropic",
+                      capabilities: { reasoning: { supported: true, budget: { min: 1024 } } },
+                      limit: { output: 64_000 },
+                    },
+                    "gemini-3.1-pro": {
+                      package: "aisdk:@ai-sdk/google",
+                      capabilities: { reasoning: { supported: true, effort: ["low", "high"] } },
+                    },
+                    "magistral-medium": {
+                      package: "aisdk:@ai-sdk/mistral",
+                      capabilities: { reasoning: { supported: true, effort: ["low", "high"] } },
                     },
                   },
                 },
@@ -661,6 +679,33 @@ describe("OpencodePlugin", () => {
               settings: { reasoningEffort: "high", reasoningSummary: "auto", include: ["reasoning.encrypted_content"] },
               headers: { "x-tier": "high" },
             },
+          ])
+          const gpt = required(yield* models.get(Provider.ID.make("remote"), Model.ID.make("gpt")))
+          expect(gpt.package).toBe("@opencode/ai/providers/openai")
+          expect(gpt.variants).toEqual(reasoner.variants)
+          const claude = required(yield* models.get(Provider.ID.make("remote"), Model.ID.make("claude-sonnet-4-5")))
+          expect(claude.package).toBe("@opencode/ai/providers/anthropic")
+          expect(claude.variants).toEqual([
+            { id: Model.VariantID.make("high"), settings: { thinking: { type: "enabled", budgetTokens: 16_000 } } },
+            { id: Model.VariantID.make("max"), settings: { thinking: { type: "enabled", budgetTokens: 31_999 } } },
+          ])
+          const gemini = required(yield* models.get(Provider.ID.make("remote"), Model.ID.make("gemini-3.1-pro")))
+          expect(gemini.package).toBe("@opencode/ai/providers/google")
+          expect(gemini.variants).toEqual([
+            {
+              id: Model.VariantID.make("low"),
+              settings: { thinkingConfig: { includeThoughts: true, thinkingLevel: "low" } },
+            },
+            {
+              id: Model.VariantID.make("high"),
+              settings: { thinkingConfig: { includeThoughts: true, thinkingLevel: "high" } },
+            },
+          ])
+          const magistral = required(yield* models.get(Provider.ID.make("remote"), Model.ID.make("magistral-medium")))
+          expect(magistral.package).toBe("@opencode/ai/providers/mistral")
+          expect(magistral.variants).toEqual([
+            { id: Model.VariantID.make("low"), settings: { reasoningEffort: "low" } },
+            { id: Model.VariantID.make("high"), settings: { reasoningEffort: "high" } },
           ])
         }),
       (server) => Effect.promise(() => server.stop(true)),
@@ -1152,13 +1197,14 @@ describe("OpencodePlugin", () => {
     ),
   )
 
-  it.live("explains rejected Console inference with the sign-in the connection needs", () =>
+  it.effect("explains rejected Console inference from at most one config check per 30 seconds", () =>
     Effect.acquireUseRelease(
       Effect.sync(() => {
-        const state = { sso: false }
+        const state = { sso: false, requests: 0 }
         const server = Bun.serve({
           port: 0,
           fetch: () => {
+            state.requests++
             if (state.sso)
               return Response.json(
                 { _tag: "SsoRequired", orgId: "org_acme", connectionId: "ssoconn_1" },
@@ -1181,7 +1227,8 @@ describe("OpencodePlugin", () => {
               metadata: { server: server.url.origin, orgID: "org_acme", orgName: "Acme" },
             }),
           })
-          yield* addPlugin()
+          yield* addPlugin().pipe(inProcess(server))
+          yield* drain
           const rejected = (providerID: Provider.ID) =>
             hooks
               .trigger("session", "http.response", {
@@ -1196,24 +1243,36 @@ describe("OpencodePlugin", () => {
                 Effect.flatMap((event) =>
                   Effect.promise(async () => ({ status: event.response.status, body: await event.response.json() })),
                 ),
+                inProcess(server),
               )
           const denied = { status: 403, body: { error: { message: "Workspace access denied" } } }
-
-          expect(yield* rejected(Provider.ID.make("remote"))).toEqual(denied)
-
-          state.sso = true
           const explained = {
             status: 403,
-            body: {
-              error: {
-                type: "authentication_error",
-                message: "Sign in with SSO again to use Acme.",
-              },
-            },
+            body: { error: { type: "authentication_error", message: "Sign in with SSO again to use Acme." } },
           }
-          expect(yield* rejected(Provider.ID.make("remote"))).toEqual(explained)
+          expect(state.requests).toBe(1)
+
+          expect(yield* rejected(Provider.ID.make("remote"))).toEqual(denied)
+          expect(state.requests).toBe(1)
+
+          state.sso = true
+          yield* TestClock.adjust("30 seconds")
+          expect(
+            yield* Effect.all(
+              Array.from({ length: 10 }, () => rejected(Provider.ID.make("remote"))),
+              { concurrency: "unbounded" },
+            ),
+          ).toEqual(Array.from({ length: 10 }, () => explained))
+          expect(state.requests).toBe(2)
+
+          expect(
+            yield* Effect.forEach(Array.from({ length: 20 }), () =>
+              TestClock.adjust("1 second").pipe(Effect.andThen(rejected(Provider.ID.make("remote")))),
+            ),
+          ).toEqual(Array.from({ length: 20 }, () => explained))
           expect(yield* rejected(Provider.ID.opencode)).toEqual(explained)
           expect(yield* rejected(Provider.ID.anthropic)).toEqual(denied)
+          expect(state.requests).toBe(2)
         }),
       ({ server }) => Effect.promise(() => server.stop(true)),
     ),
