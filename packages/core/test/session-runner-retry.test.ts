@@ -28,6 +28,12 @@ const rateLimited = new AIError({ reason: new RateLimitError({ message: "slow do
 const unavailable = new AIError({
   reason: new ProviderInternalError({ message: "Upstream request failed: Endpoint is unavailable.", http: http(503) }),
 })
+const badGateway = new AIError({
+  reason: new ProviderInternalError({ message: "Bad gateway", http: http(502) }),
+})
+const gatewayTimeout = new AIError({
+  reason: new ProviderInternalError({ message: "Gateway timeout", http: http(504) }),
+})
 const opencode = Model.Ref.make({ id: Model.ID.make("model"), providerID: Provider.ID.opencode })
 const other = Model.Ref.make({ id: Model.ID.make("model"), providerID: Provider.ID.make("other") })
 
@@ -113,21 +119,27 @@ describe("SessionRunnerRetry.policy", () => {
     }),
   )
 
-  it.effect("rotates the wire alias on an opencode 503 and stops at the step limit", () =>
-    Effect.gen(function* () {
-      const sessionID = SessionSchema.ID.make("ses_retry_503")
-      const policy = yield* SessionRunnerRetry.policy(sessionID)
-      const aliases = [SessionEgress.identity(sessionID)]
-      const results: boolean[] = []
-      for (let i = 0; i < 5; i++) {
-        results.push((yield* policy(inputFor(unavailable, opencode))).retry)
-        aliases.push(SessionEgress.identity(sessionID))
-      }
+  for (const [status, cause] of [
+    [502, badGateway],
+    [503, unavailable],
+    [504, gatewayTimeout],
+  ] as const) {
+    it.effect(`keeps retrying an opencode ${status} after the rotation limit`, () =>
+      Effect.gen(function* () {
+        const sessionID = SessionSchema.ID.make(`ses_retry_${status}`)
+        const policy = yield* SessionRunnerRetry.policy(sessionID)
+        const aliases = [SessionEgress.identity(sessionID)]
+        const results: boolean[] = []
+        for (let i = 0; i < 11; i++) {
+          results.push((yield* policy(inputFor(cause, opencode))).retry)
+          aliases.push(SessionEgress.identity(sessionID))
+        }
 
-      expect(results).toEqual([true, true, true, false, false])
-      expect(new Set(aliases).size).toBe(4)
-    }),
-  )
+        expect(results).toEqual([...Array(10).fill(true), false])
+        expect(new Set(aliases).size).toBe(4)
+      }),
+    )
+  }
 
   it.effect("leaves another provider's alias alone on a 429", () =>
     Effect.gen(function* () {
@@ -150,6 +162,19 @@ describe("SessionRunnerRetry.policy", () => {
       const decision = yield* policy(inputFor(blocked, opencode))
 
       expect(decision.retry).toBe(false)
+      expect(SessionEgress.identity(sessionID)).toBe(alias)
+    }),
+  )
+
+  it.effect("keeps retrying a 5xx on the last alias once the session budget is spent", () =>
+    Effect.gen(function* () {
+      const sessionID = SessionSchema.ID.make("ses_retry_budget_5xx")
+      for (let i = 0; i < SessionEgress.SESSION_EGRESS_BUDGET; i++) SessionEgress.rotate(sessionID)
+      const alias = SessionEgress.identity(sessionID)
+      const policy = yield* SessionRunnerRetry.policy(sessionID)
+      const decision = yield* policy(inputFor(badGateway, opencode))
+
+      expect(decision.retry).toBe(true)
       expect(SessionEgress.identity(sessionID)).toBe(alias)
     }),
   )
