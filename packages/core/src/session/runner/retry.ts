@@ -10,6 +10,7 @@ import { Clock, Duration, Effect } from "effect"
 import { Bus } from "../../bus.js"
 import { ModelRetry } from "../../model-retry.js"
 import type { PluginHooks } from "../../plugin/hooks.js"
+import { SessionEgress } from "../egress.js"
 import { SessionEvent } from "../event.js"
 import { SessionMessage } from "../message.js"
 import { SessionSchema } from "../schema.js"
@@ -31,10 +32,10 @@ export interface Decision {
 
 /**
  * Retries one provider failure. `model` resolves the opencode gateway's transient flakes: its
- * intermittent401 on anonymous public requests, its free-tier402 quota blip, and its 403 abuse
- * gate when the session-addressed proxy can move the retry to another egress. Callers without a
- * resolved model keep the plain reason taxonomy so auxiliary requests never mask a real
- * credential or billing failure.
+ * intermittent401 on anonymous public requests, its free-tier402 quota blip, and its 403/429 abuse
+ * gate when the session-addressed proxy and its rotating wire alias can move the retry to another
+ * egress. Callers without a resolved model keep the plain reason taxonomy so auxiliary requests
+ * never mask a real credential or billing failure.
  */
 export function isRetryable(
   error: AIError,
@@ -69,8 +70,9 @@ export function isRetryable(
     case "Authentication": {
       if (model?.ref.providerID !== Provider.ID.opencode || model.anonymous !== true) return false
       // A 403 from the free-tier gateway is the abuse gate, not a credential problem, and retrying
-      // it only helps when the next request can leave from another address. That is exactly what
-      // the session-addressed proxy does; without it the retry would hit the same egress again.
+      // it only helps when the next request can leave from another address under another identity.
+      // That is exactly what the session-addressed proxy and the rotating wire alias do; without
+      // them the retry would hit the same egress and session again.
       if (error.reason.http?.status === 403) return sessionRotationEnabled()
       return error.reason.http?.status === 401
     }
@@ -100,35 +102,45 @@ export function isRetryable(
  */
 export const RETRY_PHASES = 4
 
-// Each gateway 403 costs one egress: the client reports the failure in its proxy auth and the
-// retried request leaves from another address. The retry schedule would otherwise let one stuck
-// step walk the whole shared pool, so a step gets only the allowance the proxy module grants, and
-// the client stops advancing its attempt at the same limit.
-const isForbidden = (error: AIError) =>
-  error.reason._tag === "Authentication" && error.reason.http?.status === 403
+// Each gateway 403/429 rotates the session's wire alias, so the retried request leaves under a new
+// identity and address. A step gets only the allowance the proxy module grants; the session-wide
+// budget in SessionEgress bounds the walk across steps.
+const isEgressFailure = (error: AIError) =>
+  (error.reason._tag === "Authentication" && error.reason.http?.status === 403) ||
+  (error.reason._tag === "RateLimit" && error.reason.http?.status === 429)
 
 export const policy = (sessionID: SessionSchema.ID, options?: { readonly phases?: number }) =>
   Effect.gen(function* () {
     const decide = yield* ModelRetry.policy(options?.phases ?? 1)
-    let forbidden = 0
+    let egressFailures = 0
     return (input: Input) =>
       Effect.gen(function* () {
         const next = yield* decide(input)
         if (!next) return { retry: false as const }
-        if (isForbidden(input.cause)) forbidden++
+        // Only the opencode gateway sends the wire alias. Other providers keep their session
+        // affinity and their normal retry schedule.
+        const egress =
+          isEgressFailure(input.cause) &&
+          input.model.providerID === Provider.ID.opencode &&
+          sessionRotationEnabled()
+        if (egress) egressFailures++
+        const allowed =
+          next.retry &&
+          (!egress || (egressFailures <= SESSION_ROTATION_LIMIT && SessionEgress.canRotate(sessionID)))
         const event: PluginHooks.Domains["session"]["retry"] = {
           sessionID,
           agent: input.agent,
           model: input.model,
           error: input.error,
           attempt: next.attempt,
-          decision:
-            next.retry && forbidden <= SESSION_ROTATION_LIMIT
-              ? { retry: true, delay: next.delay }
-              : { retry: false },
+          decision: allowed ? { retry: true, delay: next.delay } : { retry: false },
         }
         yield* input.hook(event)
         if (!event.decision.retry) return event.decision
+        if (egress && SessionEgress.canRotate(sessionID)) {
+          const alias = SessionEgress.rotate(sessionID)
+          yield* Effect.logDebug("session egress rotated", { sessionID, alias })
+        }
         const normalized =
           Number.isFinite(event.decision.delay) && event.decision.delay >= 0
             ? Math.ceil(event.decision.delay)

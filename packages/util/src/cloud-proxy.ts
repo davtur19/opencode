@@ -13,8 +13,10 @@ export const CLOUD_PROXY_DOMAINS_ENV = "OPENCODE_CLOUD_PROXY_DOMAINS"
 // bound to the rejected egress. Without the flag the proxy URL stays untouched.
 export const CLOUD_PROXY_AUTH_ENV = "OPENCODE_CLOUD_PROXY_AUTH"
 
-// Egresses one session may consume before the client stops rotating. The pool is small and
-// shared, so a stuck step must not walk it; the proxy enforces its own budget as well.
+// Egresses one session may consume in one step before the client stops rotating. Each gateway
+// 403/429 rotates the session's outgoing wire alias, so every retry leaves under a new identity
+// and address; the pool is small and shared, so a stuck step must not walk it. The proxy enforces
+// its own budget as well.
 export const SESSION_ROTATION_LIMIT = 3
 
 export function sessionRotationEnabled() {

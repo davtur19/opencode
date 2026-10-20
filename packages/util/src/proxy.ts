@@ -74,7 +74,7 @@ function bodyToText(body: BodyInit): string | undefined {
   return body
 }
 
-// The session id is the default identity: one chat step, one egress. The
+// The session id is the outgoing identity: one chat step, one egress. The
 // affinity is the fallback for the few cloud requests that carry no session id.
 const SESSION_HEADERS = ["x-opencode-session-id", "x-session-affinity", "x-session-id"]
 
@@ -137,8 +137,8 @@ function encodeToken(rotation: Rotation) {
 /**
  * Records the failure the gateway returned inside the tunnel, so the retried request can carry it
  * to the proxy. Only the wrapper sees the status and the headers, and only the retry that follows
- * benefits from them. The attempt stops advancing at the session allowance, which keeps a
- * rejected session from walking the whole egress pool.
+ * benefits from them. The attempt stops advancing at the session allowance; the runner also
+ * rotates its wire alias on the next retry, and this bounds the proxy state in the meantime.
  */
 export function noteResponseStatus(
   key: string | undefined,

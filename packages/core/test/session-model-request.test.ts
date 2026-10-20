@@ -1,6 +1,11 @@
-import { describe, expect, test } from "bun:test"
-import { Message, ToolResultPart, Media } from "@opencode/ai"
-import { boundImages, unsupportedParts } from "@opencode/core/session/model-request"
+import { beforeEach, describe, expect, test } from "bun:test"
+import { LLM, LanguageModel, Message, ToolResultPart, Media } from "@opencode/ai"
+import { OpenAIChat } from "@opencode/ai/protocols"
+import { Provider } from "@opencode/schema/provider"
+import { SessionMessage } from "@opencode/schema/session-message"
+import { SessionEgress } from "@opencode/core/session/egress"
+import { boundImages, refresh, unsupportedParts, wireIdentity } from "@opencode/core/session/model-request"
+import { SessionSchema } from "@opencode/core/session/schema"
 
 const capabilities = (input: string[]) => ({ tools: true, input, output: ["text"] })
 
@@ -228,5 +233,74 @@ describe("SessionModelRequest.boundImages", () => {
         value: [{ type: "text" }, { type: "file", name: "second.png" }],
       },
     })
+  })
+})
+
+const native = /^ses_[0-9a-f]{12}[0-9A-Za-z]{14}$/
+const model = LanguageModel.make({ id: "model", provider: "opencode", route: OpenAIChat.route })
+
+describe("SessionModelRequest.wireIdentity", () => {
+  beforeEach(() => SessionEgress.clear())
+
+  test("uses a stable native alias for the opencode gateway", () => {
+    const input = { id: SessionSchema.ID.make("ses_chat") }
+    const first = wireIdentity(input, Provider.ID.opencode)
+    const second = wireIdentity(input, Provider.ID.opencode)
+
+    expect(first.session).toBe(first.affinity)
+    expect(first.session).toBe(second.session)
+    expect(first.session).not.toBe(input.id)
+    expect(first.session).toMatch(native)
+    expect(first.parent).toBeUndefined()
+  })
+
+  test("keeps the real session and affinity for other providers", () => {
+    const parent = SessionSchema.ID.make("ses_parent")
+    const input = { id: SessionSchema.ID.make("ses_chat"), parentID: parent }
+    const identity = wireIdentity(input, Provider.ID.anthropic)
+
+    expect(identity.session).toBe(input.id)
+    expect(identity.affinity).toBe(parent)
+    expect(identity.parent).toBe(parent)
+  })
+
+  test("gives a parent its own alias on the opencode gateway", () => {
+    const parent = SessionSchema.ID.make("ses_parent")
+    const input = { id: SessionSchema.ID.make("ses_chat"), parentID: parent }
+    const identity = wireIdentity(input, Provider.ID.opencode)
+
+    expect(identity.parent).toBeDefined()
+    expect(identity.parent).not.toBe(parent)
+    expect(identity.parent).toMatch(native)
+  })
+
+  test("replaces a fork source affinity with the alias on the opencode gateway", () => {
+    const source = SessionSchema.ID.make("ses_imported")
+    const input = {
+      id: SessionSchema.ID.make("ses_chat"),
+      fork: { sessionID: source, boundary: { type: "before" as const, messageID: SessionMessage.ID.make("msg_1") } },
+    }
+    const identity = wireIdentity(input, Provider.ID.opencode)
+
+    expect(identity.affinity).toBe(identity.session)
+    expect(identity.affinity).not.toBe(source)
+  })
+
+  test("refreshes an already prepared request after a rotation", () => {
+    const input = { id: SessionSchema.ID.make("ses_chat") }
+    const first = wireIdentity(input, Provider.ID.opencode).session
+    const request = LLM.request({
+      model,
+      prompt: "hello",
+      http: { headers: { "x-opencode-session-id": first, "x-keep": "yes" } },
+      promptCacheKey: first,
+    })
+    const next = SessionEgress.rotate(input.id)
+    const refreshed = refresh(request, input, Provider.ID.opencode)
+
+    expect(refreshed.http?.headers?.["x-opencode-session-id"]).toBe(next)
+    expect(refreshed.http?.headers?.["x-session-affinity"]).toBe(next)
+    expect(refreshed.http?.headers?.["x-keep"]).toBe("yes")
+    expect(refreshed.promptCacheKey).toBe(next)
   })
 })

@@ -22,6 +22,7 @@ import type {
 } from "@opencode/plugin/effect/session"
 import type { Agent } from "@opencode/schema/agent"
 import type { Model } from "@opencode/schema/model"
+import { Provider } from "@opencode/schema/provider"
 import type { Content } from "@opencode/schema/tool"
 import { Cause, Context, Effect, Layer, Result, Stream } from "effect"
 import { HttpClientRequest, HttpClientResponse } from "effect/http"
@@ -32,6 +33,7 @@ import { PluginHooks } from "../plugin/hooks.js"
 import { QuestionTool } from "../tool/plugin/question.js"
 import { Tool } from "../tool.js"
 import { SessionAffinity } from "./affinity.js"
+import { SessionEgress } from "./egress.js"
 import { SessionModelTransport } from "./model-transport.js"
 import { SessionProviderContext } from "./provider-context.js"
 import { SessionRunnerModel } from "./runner/model.js"
@@ -95,6 +97,55 @@ export const outputLimit = (
   if (inputTokens === undefined || limit.context <= 0) return requested
   const room = limit.context - inputTokens.measured - Math.ceil(inputTokens.estimated * (1 + ESTIMATE_ERROR))
   return Math.min(requested, Math.max(OUTPUT_TOKEN_MIN, room))
+}
+
+type EgressSession = Pick<SessionSchema.Info, "id" | "parentID" | "fork">
+
+/**
+ * The identity the gateway sees. The opencode gateway gets a process-local native alias, so a
+ * rotation changes its address and session identity without touching the chat ID; every other
+ * provider keeps the real session and affinity.
+ */
+export const wireIdentity = (session: EgressSession, providerID: Model.Ref["providerID"]) => {
+  const affinity = SessionAffinity.get(session)
+  if (providerID !== Provider.ID.opencode) return { session: session.id, affinity, parent: session.parentID }
+  const alias = SessionEgress.identity(session.id)
+  return {
+    session: alias,
+    affinity: alias,
+    parent: session.parentID ? SessionEgress.identity(session.parentID) : undefined,
+  }
+}
+
+const identityHeaders = (identity: ReturnType<typeof wireIdentity>) => ({
+  "x-opencode-session-id": identity.session,
+  ...(identity.parent ? { "x-opencode-parent-session-id": identity.parent } : {}),
+  "x-session-affinity": identity.affinity,
+  "X-Session-Id": identity.affinity,
+  ...(identity.parent ? { "x-parent-session-id": identity.parent } : {}),
+  "x-opencode-session": identity.affinity,
+})
+
+const cacheKey = (affinity: string) => (/^ses_[0-9a-f]{64}$/.test(affinity) ? affinity.slice(4) : affinity)
+
+/**
+ * Rebuilds the identity headers of an already prepared request from the current alias. Compaction
+ * reuses one prepared request across retries, so it must refresh after the retry policy rotates
+ * the alias; the primary runner rebuilds its request on every attempt instead.
+ */
+export const refresh = (
+  request: LLMRequest,
+  session: EgressSession,
+  providerID: Model.Ref["providerID"],
+) => {
+  const identity = wireIdentity(session, providerID)
+  return LLMRequest.update(request, {
+    http: new HttpOptions({
+      ...request.http,
+      headers: { ...request.http?.headers, ...identityHeaders(identity) },
+    }),
+    promptCacheKey: cacheKey(identity.affinity),
+  })
 }
 
 export const baseTranscript = (input: {
@@ -275,24 +326,19 @@ export const layer = Layer.effect(
       const entries = Object.entries(shaped.options)
       const generation = Object.fromEntries(entries.filter(([k]) => GENERATION_KEYS.has(k))) as GenerationOptionsFields
       const providerOptions = Object.fromEntries(entries.filter(([k]) => !GENERATION_KEYS.has(k)))
-      const affinity = SessionAffinity.get(session)
+      const identity = wireIdentity(session, model.ref.providerID)
       const base = LLM.request({
         model: model.model,
         http: {
           headers: {
-            "x-opencode-session-id": session.id,
-            ...(session.parentID ? { "x-opencode-parent-session-id": session.parentID } : {}),
-            "x-session-affinity": affinity,
-            "X-Session-Id": affinity,
-            ...(session.parentID ? { "x-parent-session-id": session.parentID } : {}),
+            ...identityHeaders(identity),
             "User-Agent": App.useragent(app),
             "x-opencode-project": session.projectID,
-            "x-opencode-session": affinity,
             "x-opencode-client": app.name,
           },
         },
         // TODO: Persist cache lineage so nested forks reuse the root session's cache key.
-        promptCacheKey: /^ses_[0-9a-f]{64}$/.test(affinity) ? affinity.slice(4) : affinity,
+        promptCacheKey: cacheKey(identity.affinity),
         system: shaped.system,
         messages: boundImages(unsupportedParts(shaped.messages, model.capabilities, model.model.provider)),
         tools: Array.from(hooked, ([name, t]) => ({ ...t, name })),
