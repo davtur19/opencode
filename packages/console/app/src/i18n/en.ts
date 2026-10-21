@@ -298,7 +298,7 @@ export const dict = {
 
   "go.faq.q9": "What is the difference between free models and Go?",
   "go.faq.a9":
-    "Free models include Big Pickle plus promotional models available at the time, with a quota of 200 requests/day. Go offers a curated model lineup with higher request quotas enforced across rolling windows: 20% of the monthly allowance per 5 hours, 50% per week, and 100% per month. Model-specific allowances may differ (actual request counts vary by model and usage).",
+    "Free models include Big Pickle plus promotional models available at the time. Go offers a curated model lineup with higher request quotas enforced across rolling windows: 20% of the monthly allowance per 5 hours, 50% per week, and 100% per month. Model-specific allowances may differ (actual request counts vary by model and usage).",
   "go.faq.q10": "Can I get a refund?",
   "go.faq.a10":
     "You may qualify for a refund if the charge was made within the last 14 days and you have not used your Go allowance during that billing period. {{contact}} to request a refund.",

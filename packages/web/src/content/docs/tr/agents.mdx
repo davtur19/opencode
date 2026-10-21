@@ -671,19 +671,9 @@ Mevcut modellerin listesini görmek için `opencode models` komutunu çalıştı
 
 ## Agent Oluşturma
 
-Aşağıdaki komutu kullanarak yeni agent'lar oluşturabilirsiniz:
+Yeni bir agent oluşturmak için proje düzeyinde `.opencode/agents/` dizinine veya global olarak `~/.config/opencode/agents/` dizinine bir Markdown dosyası ekleyin. Dosya adı agent'ın adı olur; frontmatter ise açıklamasını, modunu, modelini ve izinlerini yapılandırır. Dosya biçimi için yukarıdaki [Markdown](#markdown) bölümüne bakın.
 
-```bash
-opencode agent create
-```
-
-Bu etkileşimli komut şunları sağlayacaktır:
-
-1. Agent'ı nereye kaydedeceğinizi sorar; küresel veya projeye özel.
-2. Agent'ın ne yapması gerektiğinin açıklamasını ister.
-3. Uygun bir sistem prompt'u ve tanımlayıcı oluşturur.
-4. Agent'ın hangi araçlara erişebileceğini seçmenize izin verir.
-5. Son olarak agent yapılandırmasıyla bir Markdown dosyası oluşturur.
+OpenCode'un yüklediği agent'ları listelemek için `opencode debug agents` komutunu çalıştırın.
 
 ---
 

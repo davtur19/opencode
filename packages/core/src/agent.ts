@@ -30,8 +30,8 @@ type Data = {
 }
 
 export type Editor = {
-  list: () => readonly Info[]
-  get: (id: ID) => Info | undefined
+  list: () => readonly Types.DeepMutable<Info>[]
+  get: (id: ID) => Types.DeepMutable<Info> | undefined
   default: (id: ID | undefined) => void
   update: (id: ID, fn: (agent: Types.DeepMutable<Info>) => void) => void
   remove: (id: ID) => void
@@ -54,7 +54,7 @@ const layer = Layer.effect(
       name: "agent",
       initial: () => ({ agents: new Map() }),
       editor: (editor) => ({
-        list: () => Array.fromIterable(editor.agents.values()) as Info[],
+        list: () => Array.fromIterable(editor.agents.values()),
         get: (id) => editor.agents.get(id),
         default: (id) => {
           editor.default = id

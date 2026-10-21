@@ -1120,13 +1120,46 @@ describe("V1Migration database workflow", () => {
     )
   })
 
-  test("reassigns V1 sessions whose projects are missing to the global project", async () => {
+  test.each([
+    { worktree: "/repo", directory: ".", expected: "/repo" },
+    { worktree: "/repo", directory: "src", expected: "/repo" },
+    { worktree: "C:/repo", directory: ".", expected: "C:/repo" },
+    { worktree: "//server/share/repo", directory: ".", expected: "//server/share/repo" },
+    { worktree: "/repo", directory: "C:/other", expected: "C:/other" },
+    { worktree: "/repo", directory: "//server/share/other", expected: "//server/share/other" },
+    { worktree: "/repo", directory: "", expected: "" },
+    { worktree: "relative", directory: ".", expected: "" },
+  ])("migrates $directory in $worktree", async (input) => {
+    await database(
+      Effect.gen(function* () {
+        const { db } = yield* Database.Service
+        yield* db.run(sql`
+          INSERT INTO project (id, worktree, time_created, time_updated, sandboxes)
+          VALUES ('saved-project', ${input.worktree}, 1, 2, '[]')
+        `)
+        yield* db.run(sql`
+          INSERT INTO session (id, project_id, slug, directory, title, version, time_created, time_updated)
+          VALUES ('ses_test', 'saved-project', 'test', ${input.directory}, 'Test', '1', 1, 2)
+        `)
+
+        expect(yield* V1Migration.run()).toEqual({ status: "completed" })
+        expect(yield* db.get(sql`SELECT directory FROM session_v2 WHERE id = 'ses_test'`)).toEqual({
+          directory: input.expected,
+        })
+        expect(yield* db.get(sql`SELECT directory FROM session WHERE id = 'ses_test'`)).toEqual({
+          directory: input.directory,
+        })
+      }),
+    )
+  })
+
+  test.each(["/tmp/orphan", "."])("reassigns V1 sessions with missing projects and directory %s", async (directory) => {
     await database(
       Effect.gen(function* () {
         const { db } = yield* Database.Service
         const global = yield* Global.Service
         yield* db.run(
-          sql`INSERT INTO session (id, project_id, slug, directory, title, version, time_created, time_updated) VALUES ('ses_orphan', 'missing-project', 'orphan', '/tmp/orphan', 'Orphan', '1', 1, 2)`,
+          sql`INSERT INTO session (id, project_id, slug, directory, title, version, time_created, time_updated) VALUES ('ses_orphan', 'missing-project', 'orphan', ${directory}, 'Orphan', '1', 1, 2)`,
         )
 
         expect(yield* V1Migration.run()).toEqual({ status: "completed" })
@@ -1135,6 +1168,9 @@ describe("V1Migration database workflow", () => {
         })
         expect(yield* db.get(sql`SELECT worktree FROM project WHERE id = 'global'`)).toEqual({
           worktree: path.parse(global.data).root,
+        })
+        expect(yield* db.get(sql`SELECT directory FROM session_v2 WHERE id = 'ses_orphan'`)).toEqual({
+          directory: directory === "." ? path.parse(global.data).root.replaceAll("\\", "/") : directory,
         })
         expect(yield* db.get(sql`SELECT value FROM kv WHERE key = 'migration.v1-v2'`)).toEqual({
           value: '{"phase":"completed"}',

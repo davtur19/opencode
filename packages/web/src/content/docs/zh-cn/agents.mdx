@@ -671,19 +671,9 @@ Only analyze code and suggest changes.
 
 ## 创建代理
 
-您可以使用以下命令创建新代理：
+要创建新代理，请将 Markdown 文件添加到项目的 `.opencode/agents/` 或全局的 `~/.config/opencode/agents/` 中。文件名即为代理名称，frontmatter 用于配置其描述、模式、模型和权限。文件格式请参阅上文的 [Markdown](#markdown)。
 
-```bash
-opencode agent create
-```
-
-此交互式命令将：
-
-1. 询问代理的保存位置——全局或项目级。
-2. 描述代理应该做什么。
-3. 生成合适的系统提示词和标识符。
-4. 让您选择代理可以访问哪些工具。
-5. 最后，创建一个包含代理配置的 Markdown 文件。
+运行 `opencode debug agents` 可列出 OpenCode 已加载的代理。
 
 ---
 

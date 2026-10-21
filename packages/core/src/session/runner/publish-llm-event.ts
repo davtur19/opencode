@@ -1,4 +1,5 @@
 import { type LLMEvent, type ProviderMetadata, type ToolResultValue } from "@opencode/ai"
+import { isRecord } from "@opencode/ai/utils/record"
 import type { Agent } from "@opencode/schema/agent"
 import type { Model } from "@opencode/schema/model"
 import type { RelativePath } from "@opencode/schema/schema"
@@ -14,6 +15,7 @@ import { Money } from "@opencode/schema/money"
 import { SessionUsage } from "../usage.js"
 import { contentFilterError } from "../to-session-error.js"
 import type { Tool } from "../../tool.js"
+import { stringify } from "../../tool/runtime.js"
 
 type Input = {
   readonly sessionID: SessionSchema.ID
@@ -26,8 +28,7 @@ type Input = {
   readonly assistantMessageID: SessionMessage.ID
 }
 
-const asRecord = (value: unknown): Record<string, unknown> =>
-  typeof value === "object" && value !== null && !Array.isArray(value) ? (value as Record<string, unknown>) : { value }
+const asRecord = (value: unknown): Record<string, unknown> => (isRecord(value) ? value : { value })
 
 const INPUT_EXCERPT_LIMIT = 2048
 
@@ -74,15 +75,6 @@ export interface StepRecord {
 
 /** Derives canonical model content from a provider-hosted tool result. */
 type NonEmptyContent = readonly [Tool.Content, ...Tool.Content[]]
-
-const stringify = (value: unknown) => {
-  if (typeof value === "string") return value
-  try {
-    return JSON.stringify(value) ?? String(value)
-  } catch {
-    return String(value)
-  }
-}
 
 const hostedContent = (result: ToolResultValue): NonEmptyContent => {
   if (result.type === "content" && isReadonlyArrayNonEmpty(result.value)) return result.value

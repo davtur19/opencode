@@ -671,19 +671,9 @@ Kjør `opencode models` for å se en liste over tilgjengelige modeller.
 
 ## Opprette agenter
 
-Du kan opprette nye agenter ved å bruke følgende kommando:
+Opprett en ny agent ved å legge til en markdown-fil i `.opencode/agents/` for prosjektet eller i `~/.config/opencode/agents/` globalt. Filnavnet blir agentens navn, og frontmatter konfigurerer beskrivelse, modus, modell og tillatelser. Se [Markdown](#markdown) ovenfor for filformatet.
 
-```bash
-opencode agent create
-```
-
-Denne interaktive kommandoen vil:
-
-1. Spør hvor du skal lagre agenten; global eller prosjektspesifikk.
-2. Beskrivelse av hva agenten skal gjøre.
-3. Generer en passende systemmelding og identifikator.
-4. La deg velge hvilke verktøy agenten har tilgang til.
-5. Lag til slutt en nedmerkingsfil med agentkonfigurasjonen.
+Kjør `opencode debug agents` for å liste agentene som OpenCode har lastet inn.
 
 ---
 

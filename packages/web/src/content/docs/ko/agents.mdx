@@ -671,19 +671,9 @@ agent config에 지정한 나머지 옵션은 모델 옵션으로 provider에 **
 
 ## 에이전트 생성
 
-아래 명령으로 새 agent를 만들 수 있습니다.
+새 agent를 만들려면 프로젝트용은 `.opencode/agents/`, 전역용은 `~/.config/opencode/agents/`에 Markdown 파일을 추가하세요. 파일 이름이 agent 이름이 되고, frontmatter에서 설명, 모드, 모델, 권한을 설정합니다. 파일 형식은 위의 [Markdown](#markdown)을 참고하세요.
 
-```bash
-opencode agent create
-```
-
-이 인터랙티브 명령은 다음을 수행합니다.
-
-1. agent 저장 위치를 묻습니다(전역/프로젝트).
-2. agent가 수행할 작업의 설명을 받습니다.
-3. 적절한 시스템 prompt와 식별자를 생성합니다.
-4. agent가 접근할 tool을 선택하게 합니다.
-5. 마지막으로 agent config가 담긴 Markdown 파일을 생성합니다.
+`opencode debug agents`를 실행하면 OpenCode가 로드한 agent 목록을 볼 수 있습니다.
 
 ---
 

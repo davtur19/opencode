@@ -720,19 +720,9 @@ Run `opencode models` to see a list of the available models.
 
 ## Create agents
 
-You can create new agents using the following command:
+Create a new agent by adding a markdown file to `.opencode/agents/` for the project or `~/.config/opencode/agents/` globally. The file name becomes the agent name, and the frontmatter configures its description, mode, model, and permissions. See [Markdown](#markdown) above for the file format.
 
-```bash
-opencode agent create
-```
-
-This interactive command will:
-
-1. Ask where to save the agent; global or project-specific.
-2. Description of what the agent should do.
-3. Generate an appropriate system prompt and identifier.
-4. Let you select which permissions the agent should be allowed (anything you don't select is denied).
-5. Finally, create a markdown file with the agent configuration.
+Run `opencode debug agents` to list the agents that OpenCode has loaded.
 
 ---
 

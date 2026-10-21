@@ -671,19 +671,9 @@ Pokrenite `opencode models` da vidite listu dostupnih modela.
 
 ## Kreiranje agenata
 
-Možete kreirati nove agente koristeći sljedeću naredbu:
+Novog agenta kreirate dodavanjem markdown datoteke u `.opencode/agents/` za projekat ili u `~/.config/opencode/agents/` globalno. Naziv datoteke postaje naziv agenta, a frontmatter konfiguriše njegov opis, način rada, model i dozvole. Format datoteke pogledajte u odjeljku [Markdown](#markdown) iznad.
 
-```bash
-opencode agent create
-```
-
-Ova interaktivna komanda će:
-
-1. Pitajte gdje da sačuvate agenta; globalno ili specifično za projekat.
-2. Opis onoga što agent treba da uradi.
-3. Generirajte odgovarajući sistemski prompt i identifikator.
-4. Omogućite vam da odaberete kojim alatima agent može pristupiti.
-5. Konačno, kreirajte markdown datoteku s konfiguracijom agenta.
+Pokrenite `opencode debug agents` da biste vidjeli listu agenata koje je OpenCode učitao.
 
 ---
 
