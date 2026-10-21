@@ -4,6 +4,7 @@ import {
   AuthenticationError,
   HttpContext,
   ProviderInternalError,
+  QuotaExceededError,
   RateLimitError,
   TransportError,
 } from "@opencode/ai"
@@ -25,6 +26,10 @@ const http = (status: number) =>
   new HttpContext({ url: "https://opencode.ai/inference", status, headers: {} })
 const blocked = new AIError({ reason: new AuthenticationError({ message: "blocked", http: http(403) }) })
 const rateLimited = new AIError({ reason: new RateLimitError({ message: "slow down", http: http(429) }) })
+const quotaLimited = new AIError({
+  reason: new QuotaExceededError({ message: "Rate limit exceeded. Please try again later.", http: http(429) }),
+})
+const quotaPayment = new AIError({ reason: new QuotaExceededError({ message: "Payment required", http: http(402) }) })
 const unavailable = new AIError({
   reason: new ProviderInternalError({ message: "Upstream request failed: Endpoint is unavailable.", http: http(503) }),
 })
@@ -116,6 +121,57 @@ describe("SessionRunnerRetry.policy", () => {
 
       expect(results).toEqual([true, true, true, false, false])
       expect(new Set(aliases).size).toBe(4)
+    }),
+  )
+
+  it.effect("rotates the wire alias on an opencode 429 quota cap", () =>
+    Effect.gen(function* () {
+      const sessionID = SessionSchema.ID.make("ses_retry_quota_429")
+      const policy = yield* SessionRunnerRetry.policy(sessionID)
+      const aliases = [SessionEgress.identity(sessionID)]
+      const results: boolean[] = []
+      for (let i = 0; i < 5; i++) {
+        results.push((yield* policy(inputFor(quotaLimited, opencode))).retry)
+        aliases.push(SessionEgress.identity(sessionID))
+      }
+
+      expect(results).toEqual([true, true, true, false, false])
+      expect(new Set(aliases).size).toBe(4)
+    }),
+  )
+
+  it.effect("keeps an opencode 429 quota cap terminal without the proxy", () =>
+    Effect.gen(function* () {
+      delete process.env.OPENCODE_CLOUD_PROXY
+      const sessionID = SessionSchema.ID.make("ses_retry_quota_429_no_proxy")
+      const alias = SessionEgress.identity(sessionID)
+      const policy = yield* SessionRunnerRetry.policy(sessionID)
+      const decision = yield* policy(inputFor(quotaLimited, opencode))
+
+      expect(decision.retry).toBe(false)
+      expect(SessionEgress.identity(sessionID)).toBe(alias)
+    }),
+  )
+
+  it.effect("keeps another provider's 429 quota cap terminal", () =>
+    Effect.gen(function* () {
+      const sessionID = SessionSchema.ID.make("ses_retry_quota_429_other")
+      const alias = SessionEgress.identity(sessionID)
+      const policy = yield* SessionRunnerRetry.policy(sessionID)
+      const decision = yield* policy(inputFor(quotaLimited, other))
+
+      expect(decision.retry).toBe(false)
+      expect(SessionEgress.identity(sessionID)).toBe(alias)
+    }),
+  )
+
+  it.effect("still retries an opencode 402 quota blip", () =>
+    Effect.gen(function* () {
+      const sessionID = SessionSchema.ID.make("ses_retry_quota_402")
+      const policy = yield* SessionRunnerRetry.policy(sessionID)
+      const decision = yield* policy(inputFor(quotaPayment, opencode))
+
+      expect(decision.retry).toBe(true)
     }),
   )
 

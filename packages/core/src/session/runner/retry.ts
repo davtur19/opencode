@@ -32,11 +32,11 @@ export interface Decision {
 
 /**
  * Retries one provider failure. `model` resolves the opencode gateway's transient flakes: its
- * intermittent401 on anonymous public requests, its free-tier402 quota blip, and its 403/429 abuse
- * gate when the session-addressed proxy and its rotating wire alias can move the retry to another
- * egress. A 5xx stays on the same egress and uses the general retry schedule. Callers without a
- * resolved model keep the plain reason taxonomy so auxiliary requests never mask a real credential
- * or billing failure.
+ * intermittent 401 on anonymous public requests, its free-tier 402 quota blip, and its 403/429
+ * rejections when the session-addressed proxy and its rotating wire alias can move the retry to
+ * another egress. A 5xx stays on the same egress and uses the general retry schedule. Callers
+ * without a resolved model keep the plain reason taxonomy so auxiliary requests never mask a real
+ * credential or billing failure.
  */
 export function isRetryable(
   error: AIError,
@@ -77,11 +77,17 @@ export function isRetryable(
       if (error.reason.http?.status === 403) return sessionRotationEnabled()
       return error.reason.http?.status === 401
     }
-    // A402 from the opencode gateway is a transient free-tier quota flake on free models: the
-    // same request succeeds moments later. Other providers' quota rejections are real billing
-    // limits and stay terminal.
+    // A 402 from the opencode gateway is a transient free-tier quota flake on free models: the
+    // same request succeeds moments later. A 429 with the gateway's quota shape is a free-usage
+    // cap, and with the session-addressed proxy active the cap can follow the egress address, so
+    // rotating the wire alias is the only way to move the retry to a fresh one. Without the proxy
+    // the cap is terminal; other providers' quota rejections are real billing limits.
     case "QuotaExceeded":
-      return model?.ref.providerID === Provider.ID.opencode && error.reason.http?.status === 402
+      return (
+        model?.ref.providerID === Provider.ID.opencode &&
+        (error.reason.http?.status === 402 ||
+          (error.reason.http?.status === 429 && sessionRotationEnabled()))
+      )
     case "ContentPolicy":
     case "InvalidRequest":
     case "UnsupportedOperation":
@@ -109,7 +115,8 @@ export const RETRY_PHASES = 4
 // retry schedule: the upstream, not the address, is usually the failing part.
 const isEgressFailure = (error: AIError) =>
   (error.reason._tag === "Authentication" && error.reason.http?.status === 403) ||
-  (error.reason._tag === "RateLimit" && error.reason.http?.status === 429)
+  ((error.reason._tag === "RateLimit" || error.reason._tag === "QuotaExceeded") &&
+    error.reason.http?.status === 429)
 
 export const policy = (sessionID: SessionSchema.ID, options?: { readonly phases?: number }) =>
   Effect.gen(function* () {
