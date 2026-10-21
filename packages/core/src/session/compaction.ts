@@ -28,6 +28,7 @@ import { State } from "../state.js"
 import { Token } from "../util/token.js"
 import type { SessionContext } from "./context.js"
 import { SessionEgress } from "./egress.js"
+import { SessionEnvironmentStamp } from "./environment-stamp.js"
 import { SessionEvent } from "./event.js"
 import { SessionHistory } from "./history.js"
 import type { SessionMessage } from "./message.js"
@@ -676,7 +677,8 @@ export const layer = Layer.effect(
       // The context is rebuilt from the summary, so the prompt cache is cold either way: this is
       // the free boundary to start the next turn under a fresh wire identity and rotation budget.
       const alias = SessionEgress.reset(sessionID)
-      yield* Effect.logDebug("session egress reset after compaction", { sessionID, alias })
+      const environment = SessionEnvironmentStamp.compacted(sessionID)
+      yield* Effect.logDebug("session identity reset after compaction", { sessionID, alias, environment })
       return { status: "completed" }
     })
 

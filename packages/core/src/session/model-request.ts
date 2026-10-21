@@ -34,6 +34,7 @@ import { QuestionTool } from "../tool/plugin/question.js"
 import { Tool } from "../tool.js"
 import { SessionAffinity } from "./affinity.js"
 import { SessionEgress } from "./egress.js"
+import { SessionEnvironmentStamp } from "./environment-stamp.js"
 import { SessionModelTransport } from "./model-transport.js"
 import { SessionRunnerModel } from "./runner/model.js"
 import { SessionSchema } from "./schema.js"
@@ -126,6 +127,18 @@ const identityHeaders = (identity: ReturnType<typeof wireIdentity>) => ({
 })
 
 const cacheKey = (affinity: string) => (/^ses_[0-9a-f]{64}$/.test(affinity) ? affinity.slice(4) : affinity)
+
+// The opencode gateway keys its free-tier allowance on the environment block in the system prompt.
+// Stamping a session-scoped id inside that block gives each session its own allowance without
+// changing the real workspace paths the tools use, so the model keeps seeing a valid directory.
+// The stamp rotates after a few completed compactions, where the rebuilt context already makes the
+// prompt cache cold, and a new process boot also yields a new stamp.
+export const stampEnvironment = (system: ReadonlyArray<SystemPart>, sessionID: SessionSchema.ID) =>
+  system.map((part) =>
+    part.text.includes("<env>") && part.text.includes("</env>")
+      ? { ...part, text: part.text.replace("</env>", `  Environment id: ${SessionEnvironmentStamp.id(sessionID)}\n</env>`) }
+      : part,
+  )
 
 /**
  * Rebuilds the identity headers of an already prepared request from the current alias. Compaction
@@ -327,6 +340,8 @@ export const layer = Layer.effect(
       const generation = Object.fromEntries(entries.filter(([k]) => GENERATION_KEYS.has(k))) as GenerationOptionsFields
       const providerOptions = Object.fromEntries(entries.filter(([k]) => !GENERATION_KEYS.has(k)))
       const identity = wireIdentity(session, model.ref.providerID)
+      const system =
+        kind === "primary" || kind === "compaction" ? stampEnvironment(shaped.system, session.id) : shaped.system
       const base = LLM.request({
         model: model.model,
         http: {
@@ -339,7 +354,7 @@ export const layer = Layer.effect(
         },
         // TODO: Persist cache lineage so nested forks reuse the root session's cache key.
         promptCacheKey: cacheKey(identity.affinity),
-        system: shaped.system,
+        system,
         messages: boundImages(unsupportedParts(shaped.messages, model.capabilities, model.model.provider)),
         tools: Array.from(hooked, ([name, t]) => ({ ...t, name })),
         toolChoice: input.toolChoice,

@@ -1,5 +1,6 @@
 import { describe, expect } from "bun:test"
 import { OpenAIChat } from "@opencode/ai/protocols"
+import { SystemPart } from "@opencode/ai"
 import { Agent } from "@opencode/schema/agent"
 import { Money } from "@opencode/schema/money"
 import { Session } from "@opencode/schema/session"
@@ -152,5 +153,21 @@ describe("SessionModelRequest HTTP hooks", () => {
         "receive:primary:created",
       ])
     }),
+  )
+
+  it.effect("stamps the environment block on primary and compaction requests only", () =>
+    Effect.gen(function* () {
+      const requests = yield* SessionModelRequest.Service.pipe(Effect.provide(SessionModelRequest.layer))
+      const system = [SystemPart.make("<env>\n  Working directory: /project\n</env>")]
+      const input = { session, agent: Agent.ID.make("build"), model, system, messages: [] }
+
+      const primary = yield* requests.primary(input)
+      const compaction = yield* requests.compaction(input)
+      const title = yield* requests.title(input)
+
+      expect(primary.request.system[0]?.text).toContain("Environment id:")
+      expect(compaction.request.system[0]?.text).toContain("Environment id:")
+      expect(title.request.system[0]?.text).not.toContain("Environment id:")
+    }).pipe(Effect.provideService(SessionModelTransport.Service, transport)),
   )
 })

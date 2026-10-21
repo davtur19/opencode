@@ -1,10 +1,11 @@
 import { beforeEach, describe, expect, test } from "bun:test"
-import { LLM, LanguageModel, Message, ToolResultPart, Media } from "@opencode/ai"
+import { LLM, LanguageModel, Message, SystemPart, ToolResultPart, Media } from "@opencode/ai"
 import { OpenAIChat } from "@opencode/ai/protocols"
 import { Provider } from "@opencode/schema/provider"
 import { SessionMessage } from "@opencode/schema/session-message"
 import { SessionEgress } from "@opencode/core/session/egress"
-import { boundImages, refresh, unsupportedParts, wireIdentity } from "@opencode/core/session/model-request"
+import { SessionEnvironmentStamp } from "@opencode/core/session/environment-stamp"
+import { boundImages, refresh, stampEnvironment, unsupportedParts, wireIdentity } from "@opencode/core/session/model-request"
 import { SessionSchema } from "@opencode/core/session/schema"
 
 const capabilities = (input: string[]) => ({ tools: true, input, output: ["text"] })
@@ -317,5 +318,49 @@ describe("SessionModelRequest.wireIdentity", () => {
     expect(refreshed.http?.headers?.["x-session-affinity"]).toBe(next)
     expect(refreshed.http?.headers?.["x-keep"]).toBe("yes")
     expect(refreshed.promptCacheKey).toBe(next)
+  })
+})
+
+describe("SessionModelRequest.stampEnvironment", () => {
+  const environment = SystemPart.make(
+    "<env>\n  Working directory: /project\n  Workspace root folder: /project\n</env>",
+  )
+  const session = (id: string) => SessionSchema.ID.make(id)
+
+  beforeEach(() => SessionEnvironmentStamp.clear())
+
+  test("adds a stable session id inside the environment block", () => {
+    const first = stampEnvironment([environment], session("ses_a"))
+    const second = stampEnvironment([environment], session("ses_a"))
+
+    expect(first).toEqual(second)
+    expect(first[0]?.text).toContain("Working directory: /project")
+    expect(first[0]?.text).toMatch(/  Environment id: [0-9a-f]{12}\n<\/env>/)
+    expect(environment.text).not.toContain("Environment id:")
+  })
+
+  test("rotates the id after the configured completed compactions", () => {
+    const target = session("ses_rotate")
+    const first = stampEnvironment([environment], target)[0]?.text
+
+    for (let index = 1; index < SessionEnvironmentStamp.COMPACTIONS_PER_ROTATION; index++) {
+      SessionEnvironmentStamp.compacted(target)
+      expect(stampEnvironment([environment], target)[0]?.text).toBe(first)
+    }
+
+    SessionEnvironmentStamp.compacted(target)
+    expect(stampEnvironment([environment], target)[0]?.text).not.toBe(first)
+  })
+
+  test("uses a different id for another session", () => {
+    expect(stampEnvironment([environment], session("ses_a"))).not.toEqual(
+      stampEnvironment([environment], session("ses_b")),
+    )
+  })
+
+  test("leaves system parts without an environment block unchanged", () => {
+    const plain = SystemPart.make("plain instructions")
+
+    expect(stampEnvironment([plain], session("ses_a"))[0]).toBe(plain)
   })
 })
