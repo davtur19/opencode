@@ -15,6 +15,7 @@ import { existsSync } from "node:fs"
 import path from "node:path"
 import type { Database as SQLiteDatabase } from "bun:sqlite"
 import { Project } from "@opencode/schema/project"
+import { Agent } from "@opencode/schema/agent"
 
 export type SourceMessage = {
   readonly id: string
@@ -469,7 +470,7 @@ export function transformSession(input: TransformInput): TransformResult {
   return {
     messages: migrated,
     session: {
-      agent: input.session.agent ?? (latestUser?.value.role === "user" ? latestUser.value.agent : null),
+      agent: input.session.agent ?? (latestUser?.value.role === "user" ? Agent.ID.make(latestUser.value.agent) : null),
       model:
         input.session.model ??
         (latestUser?.value.role === "user"

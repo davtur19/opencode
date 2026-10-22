@@ -203,7 +203,6 @@ export const dict = {
     "All Zen models are hosted in the US. Providers follow a zero-retention policy and do not use your data for model training, with the",
   "zen.privacy.exceptionsLink": "following exceptions",
 
-  "go.promo.minimaxM31FlashFree": "MiniMax M3.1 Flash Free is now available in Go, free for a limited time.",
   "go.title": "OpenCode Go | Low cost coding models for everyone",
   "go.meta.description": "Go costs $10/month, with generous usage limits and reliable access to leading coding models.",
   "go.hero.title": "Low cost coding models for everyone",

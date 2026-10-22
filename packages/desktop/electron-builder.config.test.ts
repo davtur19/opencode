@@ -60,6 +60,11 @@ test.each(channels)("channel identity for $channel", ({ channel, appId }) => {
       fpm?.some((entry) => entry.endsWith("opencode-desktop.desktop=/usr/share/applications/opencode-desktop.desktop")),
     ).toBe(channel === "prod")
   }
+
+  // Shared Electron binaries must not ship /usr/lib/.build-id links that collide with other Electron RPMs.
+  // fpm rejects flags after the first src=dest mapping, so the flag must come first.
+  expect(config.rpm?.fpm?.[0]).toBe("--rpm-rpmbuild-define=_build_id_links none")
+  expect(config.deb?.fpm).not.toContain("--rpm-rpmbuild-define=_build_id_links none")
 })
 
 test("legacy Linux launcher stays hidden", async () => {

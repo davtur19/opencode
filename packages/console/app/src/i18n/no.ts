@@ -204,7 +204,6 @@ export const dict = {
     "Alle Zen-modeller hostes i USA. Leverandører følger en policy om null oppbevaring og bruker ikke dataene dine til modelltrening, med",
   "zen.privacy.exceptionsLink": "følgende unntak",
 
-  "go.promo.minimaxM31FlashFree": "MiniMax M3.1 Flash Free er nå tilgjengelig i Go, gratis i en begrenset periode.",
   "go.title": "OpenCode Go | Rimelige kodemodeller for alle",
   "go.meta.description":
     "Go koster $10/måned, med sjenerøse bruksgrenser og pålitelig tilgang til ledende kodemodeller.",

@@ -1851,7 +1851,7 @@ describe("SessionRunnerLLM", () => {
     )
     yield* s.db
       .update(SessionTable)
-      .set({ agent: "reviewer" })
+      .set({ agent: Agent.ID.make("reviewer") })
       .where(eq(SessionTable.id, sessionID))
       .run()
       .pipe(Effect.orDie)
@@ -1871,7 +1871,7 @@ describe("SessionRunnerLLM", () => {
   scenario("fails before the model request when the selected agent is unavailable", function* (s) {
     yield* s.db
       .update(SessionTable)
-      .set({ agent: "explore" })
+      .set({ agent: Agent.ID.make("explore") })
       .where(eq(SessionTable.id, sessionID))
       .run()
       .pipe(Effect.orDie)

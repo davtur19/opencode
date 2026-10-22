@@ -24,6 +24,13 @@ const legacyDesktopEntry = path.join(packageDir, "resources", "linux", "opencode
 
 const legacyDesktopEntryFpm = `${legacyDesktopEntry}=/usr/share/applications/opencode-desktop.desktop`
 
+// rpmbuild adds /usr/lib/.build-id links for every ELF file. The bundled Electron
+// binaries are byte-identical across apps on the same Electron version, so those
+// links collide with other Electron RPMs (Slack, Unity Hub, ...) and rpm/zypper
+// refuse to install or update. They only serve debuginfo lookup, so skip them.
+// fpm only accepts flags before the first src=dest mapping, so keep this first.
+const rpmNoBuildIdLinksFpm = "--rpm-rpmbuild-define=_build_id_links none"
+
 const metainfoFpm = (appId: string) =>
   `${path.join(packageDir, "resources", `${appId}.metainfo.xml`)}=/usr/share/metainfo/${appId}.metainfo.xml`
 
@@ -223,7 +230,7 @@ export function getConfig() {
         appId,
         productName: "OpenCode Dev",
         deb: { fpm: [metainfoFpm(appId)] },
-        rpm: { packageName: "opencode-dev", fpm: [metainfoFpm(appId)] },
+        rpm: { packageName: "opencode-dev", fpm: [rpmNoBuildIdLinksFpm, metainfoFpm(appId)] },
       }
     }
 
@@ -239,7 +246,7 @@ export function getConfig() {
           channel: "latest",
         },
         deb: { fpm: [metainfoFpm(appId)] },
-        rpm: { packageName: "opencode-beta", fpm: [metainfoFpm(appId)] },
+        rpm: { packageName: "opencode-beta", fpm: [rpmNoBuildIdLinksFpm, metainfoFpm(appId)] },
       }
     }
 
@@ -255,7 +262,7 @@ export function getConfig() {
           channel: "latest",
         },
         deb: { fpm: [metainfoFpm(appId), legacyDesktopEntryFpm] },
-        rpm: { packageName: "opencode", fpm: [metainfoFpm(appId), legacyDesktopEntryFpm] },
+        rpm: { packageName: "opencode", fpm: [rpmNoBuildIdLinksFpm, metainfoFpm(appId), legacyDesktopEntryFpm] },
       }
     }
   }

@@ -26,7 +26,7 @@ if (tailwindGenerate && typeof tailwindHotUpdate === "function") {
 // The markdown worker imports these directly, so they are served unbundled to keep worker startup
 // stable. Vite applies `exclude` to every import inside a pre-bundle too, which would leave a bare
 // `import "marked"` in mermaid's chunk that the browser cannot resolve from this package.
-const workerDeps = ["@shikijs/stream", "marked", "marked-shiki", "remend"]
+const workerDeps = ["@pierre/highlights", "marked", "remend"]
 
 // The Office previews load their wasm and fonts through `new URL(..., import.meta.url)`, which a pre-bundle would move
 // away from the files.

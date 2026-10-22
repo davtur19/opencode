@@ -8,6 +8,7 @@ import { SessionMessage } from "@opencode/core/session/message"
 import { SessionSchema } from "@opencode/core/session/schema"
 import { SessionTable } from "@opencode/core/session/sql"
 import { Project } from "@opencode/core/project"
+import { Agent } from "@opencode/schema/agent"
 import { ProjectTable } from "@opencode/core/project/sql"
 import { AbsolutePath } from "@opencode/core/schema"
 import { Global } from "@opencode/util/global"
@@ -661,7 +662,7 @@ describe("V1Migration.transformSession", () => {
     const compact = user("msg_000000000027aaaaaaaaaaaaaa", {}, 3)
     const summary = assistant("msg_000000000028aaaaaaaaaaaaaa", compact.id, { summary: true }, 4)
     const existing = session({
-      agent: "existing",
+      agent: Agent.ID.make("existing"),
       model: { id: "existing-model", providerID: "existing-provider", variant: "existing" },
     })
     const result = transform(
@@ -680,7 +681,7 @@ describe("V1Migration.transformSession", () => {
       metadata: { recent: "[User]: question\n\n[Assistant]: answer" },
     })
     expect(result.messages[2].data).not.toHaveProperty("recent")
-    expect(result.session.agent).toBe("existing")
+    expect(result.session.agent).toBe(Agent.ID.make("existing"))
     expect(result.session.model).toEqual(existing.model)
   })
 
@@ -722,7 +723,7 @@ describe("V1Migration.transformSession", () => {
       },
     ])
     expect(result.session).toEqual({
-      agent: "review",
+      agent: Agent.ID.make("review"),
       model: { id: "m2", providerID: "p2", variant: "default" },
       cost: 7,
       tokens_input: 8,

@@ -205,7 +205,6 @@ export const dict = {
     "Tüm Zen modelleri ABD'de barındırılmaktadır. Sağlayıcılar sıfır saklama politikası izler ve verilerinizi model eğitimi için kullanmaz; şu",
   "zen.privacy.exceptionsLink": "aşağıdaki istisnalar",
 
-  "go.promo.minimaxM31FlashFree": "MiniMax M3.1 Flash Free artık Go'da sınırlı bir süre için ücretsiz sunuluyor.",
   "go.title": "OpenCode Go | Herkes için düşük maliyetli kodlama modelleri",
   "go.meta.description":
     "Go ayda 10$'dır; cömert kullanım limitleri ve önde gelen kodlama modellerine güvenilir erişim sunar.",

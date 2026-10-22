@@ -40,7 +40,7 @@ export type Editor = {
 export interface Interface extends State.Transformable<Editor> {
   readonly get: (id: ID) => Effect.Effect<Info | undefined>
   readonly resolve: (id?: ID | string) => Effect.Effect<Info | undefined>
-  readonly select: (id?: ID | string) => Effect.Effect<Selection>
+  readonly select: (id?: ID) => Effect.Effect<Selection>
   readonly list: () => Effect.Effect<Info[]>
 }
 
@@ -77,7 +77,7 @@ const layer = Layer.effect(
       const data = state.get()
       const configured = data.default ? selectable(data.agents.get(data.default)) : undefined
       if (configured) return configured
-      const build = selectable(data.agents.get(ID.make("build")))
+      const build = selectable(data.agents.get(defaultID))
       if (build) return build
       for (const agent of data.agents.values()) {
         const fallback = selectable(agent)
@@ -96,10 +96,7 @@ const layer = Layer.effect(
         return selectedDefault()
       }),
       select: Effect.fn("Agent.select")(function* (id) {
-        if (id !== undefined) {
-          const selected = ID.make(id)
-          return { id: selected, info: state.get().agents.get(selected) }
-        }
+        if (id !== undefined) return { id, info: state.get().agents.get(id) }
         const info = selectedDefault()
         return { id: info?.id ?? defaultID, info }
       }),

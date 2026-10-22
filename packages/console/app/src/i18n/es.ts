@@ -206,7 +206,6 @@ export const dict = {
     "Todos los modelos Zen están alojados en EE. UU. Los proveedores siguen una política de cero retención y no usan tus datos para entrenamiento de modelos, con las",
   "zen.privacy.exceptionsLink": "siguientes excepciones",
 
-  "go.promo.minimaxM31FlashFree": "MiniMax M3.1 Flash Free ya está disponible en Go, gratis por tiempo limitado.",
   "go.title": "OpenCode Go | Modelos de programación de bajo coste para todos",
   "go.meta.description":
     "Go cuesta 10 $/mes, con límites de uso generosos y acceso fiable a modelos de programación líderes.",

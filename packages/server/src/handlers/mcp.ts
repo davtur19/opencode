@@ -15,15 +15,7 @@ export const McpHandler = HttpApiBuilder.group(Api, "server.mcp", (handlers) =>
         "mcp.list",
         Effect.fn(function* () {
           const service = yield* Mcp.Service
-          return yield* response(
-            service
-              .servers()
-              .pipe(
-                Effect.map((servers) =>
-                  servers.map((info) => ({ name: info.name, status: info.status, integrationID: info.integrationID })),
-                ),
-              ),
-          )
+          return yield* response(service.servers())
         }),
       )
       .handle(
