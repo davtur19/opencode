@@ -1535,6 +1535,8 @@ test("cancels MCP elicitation forms when the server gives up on them", async () 
         yield* Effect.gen(function* () {
           const service = yield* Mcp.Service
           const forms = yield* Form.Service
+          // Boot leaves the server down, so start it before the tool call lands.
+          yield* settled(service)
           const call = yield* service.callTool({ server: "resources", name: "url-elicitation" }).pipe(Effect.forkScoped)
           const { form } = yield* Deferred.await(created)
           yield* Fiber.await(call)

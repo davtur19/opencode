@@ -7,7 +7,7 @@ import type { Session } from "@opencode/schema/session"
 import type { Transport } from "@modelcontextprotocol/client"
 import { createHash } from "node:crypto"
 import { isDeepStrictEqual } from "node:util"
-import { Cause, Context, Effect, Exit, FiberSet, Latch, Layer, Schema, Scope, Semaphore, Stream, Types } from "effect"
+import { Cause, Context, Effect, Exit, Fiber, FiberSet, Latch, Layer, Schema, Scope, Semaphore, Stream, Types } from "effect"
 import { makeLocationNode } from "@opencode/util/effect/app-node"
 import { Credential } from "../credential.js"
 import { Bus } from "../bus.js"
@@ -829,7 +829,11 @@ export const layer = (options?: Options) =>
               if ((entry.failures ?? 0) >= DEMAND_RETRY_LIMIT) return false
               if (Date.now() - (entry.lastAttempt ?? 0) < DEMAND_RETRY_COOLDOWN) return false
             }
-            yield* startServer(name, entry)
+            // A demand start runs in the caller's fiber, which may lack the Location context entirely
+            // (e.g. tests, or hosts outside a location tree); elicitations and form events then publish
+            // unlocated and clients drop them. Fork into the layer's captured runtime instead, and join
+            // so demand still returns after the server is connected. The caller already holds the lock.
+            yield* Fiber.join(fork(startServer(name, entry)))
             return true
           }).pipe(locks.withLock(name))
         }),
