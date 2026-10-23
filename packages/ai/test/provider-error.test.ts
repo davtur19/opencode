@@ -17,6 +17,9 @@ describe("provider error classification", () => {
       "Too many tokens",
       "Input validation error: `inputs` tokens + `max_new_tokens` must be <= 131073. Given: 600035 `inputs` tokens and 16 `max_new_tokens`",
       "Token limit exceeded",
+      "Prompt exceeds max length",
+      "The input is too long for the selected model.",
+      "This text request is too large for the model's configured input limit.",
     ]
 
     expect(messages.every(isContextOverflow)).toBe(true)
@@ -200,6 +203,18 @@ describe("provider error classification", () => {
     const stability = { id: "a1b2", name: "content_moderation", errors: ["Your request was flagged"] }
     expect(
       classifyProviderFailure({ message: "Forbidden", status: 403, rawBody: JSON.stringify(stability) })._tag,
+    ).toBe("ContentPolicy")
+  })
+
+  test("classifies Alibaba Model Studio data inspection failures", () => {
+    const alibaba = {
+      request_id: "1537ecc9-6873-93f7-9865-6fe4eb1d7851",
+      code: "DataInspectionFailed",
+      message: "Green net check failed for text (input): Input data may contain inappropriate content.",
+    }
+
+    expect(
+      classifyProviderFailure({ message: alibaba.message, status: 400, rawBody: JSON.stringify(alibaba) })._tag,
     ).toBe("ContentPolicy")
   })
 

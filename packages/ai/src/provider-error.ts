@@ -17,7 +17,9 @@ import { isRecord } from "./utils/record.js"
 
 const patterns = [
   /prompt is too long/i,
-  /input is too long for requested model/i,
+  /input is too long for (?:the )?(?:requested|selected) model/i,
+  // OpenCode Go
+  /too large for the model'?s configured input limit/i,
   // Cloudflare Workers AI reports this as HTTP 413.
   /exceeded this model context window limit/i,
   /exceeds the context window/i,
@@ -44,8 +46,8 @@ const patterns = [
   /context[_ ]length[_ ]exceeded/i,
   /context length is only \d+ tokens/i,
   /input length.*exceeds.*context length/i,
-  // Z.ai code 1261 arrives as `Prompt too long` or `Prompt 超长`.
-  /prompt (?:too long|超长)/i,
+  // Z.ai code 1261 arrives as `Prompt too long`, `Prompt exceeds max length` or `Prompt 超长`.
+  /prompt (?:too long|exceeds max length|超长)/i,
   /too large for model with \d+ maximum context length/i,
   /prompt has [\d,]+ tokens?, but the configured context size is [\d,]+ tokens?/i,
   /model_context_window_exceeded/i,
@@ -151,7 +153,8 @@ const INVALID_REQUEST_CODES = new Set([
 ])
 // Azure OpenAI reports `content_filter` with `innererror.code` ResponsibleAIPolicyViolation.
 // OpenRouter tags provider failures with a typed `error_type`; its Responses skin also
-// emits `image_content_policy_violation` as the native code.
+// emits `image_content_policy_violation` as the native code. Alibaba Model Studio reports
+// moderation rejections as `DataInspectionFailed`.
 const CONTENT_POLICY_CODES = new Set([
   "content_filter",
   "content_moderation",
@@ -159,6 +162,7 @@ const CONTENT_POLICY_CODES = new Set([
   "content_policy_violation",
   "image_content_policy_violation",
   "refusal",
+  "datainspectionfailed",
 ])
 // OpenCode Zen replaces upstream codes outside its allow-list but keeps the original
 // as a `[code]` label at the start of the rewritten message.
