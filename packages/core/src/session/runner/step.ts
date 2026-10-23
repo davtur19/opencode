@@ -59,7 +59,7 @@ interface Input {
   /** The runner owns compaction policy; the attempt invokes it only before durable output. */
   readonly recoverOverflow: Effect.Effect<boolean>
   /** Step-scoped so the stall watchdog counts silence that began in an earlier attempt. */
-  readonly stall: { lastEventAt: number | undefined }
+  readonly stall: { lastEventAt: number | undefined; attemptStartedAt: number | undefined }
 }
 
 const TOOLS_INTERRUPTED = { type: "aborted", message: "Tool execution interrupted" } as const
@@ -71,6 +71,10 @@ const DOOM_LOOP_MARKER = { doomLoop: "warn" } as const
 const DOOM_LOOP_STOP = "Doom loop repeated after warning. Stopping this turn."
 const STALL_TIMEOUT_MS = 90 * 1000
 const STALL_CHECK_INTERVAL_MS = 5 * 1000
+// Silence before the first provider event is a slow time to first token, not a stalled stream:
+// reasoning models can legitimately stay quiet for minutes. Generous, but finite, so a dead
+// provider still fails the attempt instead of idling until the transport's idle timeout.
+const TTFT_TIMEOUT_MS = 10 * 60 * 1000
 const doomLoopWarning = (name: string) =>
   `Doom loop detected: the same ${name} tool call was repeated with identical input. Do not repeat it — change your approach, arguments, or use a different tool. The turn continues after this warning.`
 
@@ -219,10 +223,15 @@ export const make = Effect.gen(function* () {
     const watchdog = Effect.gen(function* () {
       while (true) {
         yield* Effect.sleep(STALL_CHECK_INTERVAL_MS)
-        const last = input.stall.lastEventAt
-        if (last === undefined) continue
         if (publisher.hasPendingTools()) continue
-        if ((yield* Clock.currentTimeMillis) - last >= STALL_TIMEOUT_MS)
+        // No event in this attempt yet: silence counts from the attempt start against the slower
+        // TTFT budget. Once any event has arrived (in this or an earlier attempt), silence counts
+        // from the last event against the tight stall budget, which also keeps a retry whose
+        // predecessor went silent from paying the attempt budget again.
+        const sawEvent = input.stall.lastEventAt !== undefined
+        const base = input.stall.lastEventAt ?? input.stall.attemptStartedAt
+        if (base === undefined) continue
+        if ((yield* Clock.currentTimeMillis) - base >= (sawEvent ? STALL_TIMEOUT_MS : TTFT_TIMEOUT_MS))
           return yield* new AIError({
             reason: new InvalidProviderOutputError({
               message: "The provider response went silent without completing.",
@@ -235,6 +244,7 @@ export const make = Effect.gen(function* () {
     // Keep the final tool and Step events uninterruptible, even when the work itself is cancelled.
     return yield* Effect.uninterruptibleMask((restore) =>
       Effect.gen(function* () {
+        input.stall.attemptStartedAt = yield* Clock.currentTimeMillis
         const stream = yield* restore(Effect.raceFirst(providerStream, watchdog)).pipe(Effect.exit)
         const streamFailure = Option.getOrUndefined(Exit.findErrorOption(stream))
         const streamInterrupted = Exit.hasInterrupts(stream)

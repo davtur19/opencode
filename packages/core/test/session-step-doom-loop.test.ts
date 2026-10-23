@@ -107,7 +107,7 @@ const setup = Effect.fn("setup")(function* (overrides: Partial<Permission.Interf
         retry: (_cause, _error, retry) => Effect.succeed(retry ? { retry: true, attempt: 2, delay: 0 } : { retry: false }),
         recoverContinuation: true,
         recoverOverflow: Effect.succeed(false),
-        stall: { lastEventAt: undefined },
+        stall: { lastEventAt: undefined, attemptStartedAt: undefined },
       })
       .pipe(Effect.exit)
   return { db, llm, run }

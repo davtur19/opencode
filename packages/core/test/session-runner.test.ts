@@ -6281,7 +6281,8 @@ describe("SessionRunnerLLM", () => {
     const scheduled = yield* subscribeRetries(s)
     const run = yield* s.resume.pipe(Effect.forkChild)
     yield* gate.started
-    // Time to first token is not a stall: with no stream event the watchdog never fires.
+    // Time to first token gets the slower TTFT tier instead of the tight stall budget:
+    // 300 seconds leaves a silent attempt waiting far inside the ten minute budget.
     yield* TestClock.adjust("300 seconds")
     expect(Option.isNone(yield* Queue.poll(scheduled))).toBeTrue()
     expect(s.requests).toHaveLength(1)
@@ -6293,6 +6294,43 @@ describe("SessionRunnerLLM", () => {
     expect(yield* s.context).toMatchObject([
       Expected.user("Slow first token"),
       Expected.assistant({ finish: "stop" }, [Expected.text("Answer after slow start")]),
+    ])
+  })
+
+  scenario("expires the TTFT budget when the provider streams no event", function* (s) {
+    yield* s.admit("Silent provider")
+    const gate = yield* s.llm.gate
+    yield* s.llm.push(
+      TestLLM.text("Held behind the gate", "silent-held"),
+      TestLLM.text("Recovered after silent start", "silent-recovered"),
+    )
+
+    const scheduled = yield* subscribeRetries(s)
+    const run = yield* s.resume.pipe(Effect.forkChild)
+    yield* gate.started
+    // The pre-first-token tier is generous but finite: silence just under the budget keeps
+    // the attempt waiting, past the budget the attempt fails incomplete-stream.
+    yield* TestClock.adjust("9 minutes")
+    expect(Option.isNone(yield* Queue.poll(scheduled))).toBeTrue()
+    expect(s.requests).toHaveLength(1)
+
+    yield* TestClock.adjust("65 seconds")
+    yield* Queue.take(scheduled)
+    // The stalled attempt's request was intercepted by the gate, so opening it here hands
+    // the retried attempt its queued recovery response instead of leaving the gate armed.
+    yield* gate.release
+    yield* TestClock.adjust("2400 millis")
+    yield* Fiber.join(run)
+
+    expect(s.requests).toHaveLength(2)
+    expect(
+      (yield* recordedEventTypes(sessionID)).filter((type) => type === "session.retry.scheduled.1"),
+    ).toHaveLength(1)
+    // A stalled attempt that never emitted anything leaves no assistant part behind; the
+    // previous response was never started, so the runner schedules a plain retry.
+    expect(yield* s.context).toMatchObject([
+      Expected.user("Silent provider"),
+      Expected.assistant({ finish: "stop" }, [Expected.text("Recovered after silent start")]),
     ])
   })
 

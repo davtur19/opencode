@@ -163,7 +163,7 @@ const run = (snapshots: Layer.Layer<Snapshot.Service>) =>
           retry: () => Effect.succeed({ retry: false as const }),
           recoverContinuation: false,
           recoverOverflow: Effect.succeed(false),
-          stall: { lastEventAt: undefined },
+          stall: { lastEventAt: undefined, attemptStartedAt: undefined },
         })
       }
     return { ms: performance.now() - start, spawns: spawns - before }

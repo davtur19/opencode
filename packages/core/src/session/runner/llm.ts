@@ -206,8 +206,9 @@ const layer = Layer.effect(
       let assistantMessageID = SessionMessage.ID.create()
       const retry = yield* SessionRunnerRetry.make(bus, sessionID)
       // Stream activity persists across this step's attempts so the stall watchdog also sees
-      // silence that began in an earlier attempt.
-      const stall = { lastEventAt: undefined }
+      // silence that began in an earlier attempt; each attempt re-seeds attemptStartedAt so
+      // pre-first-event silence still has its own budget to expire.
+      const stall = { lastEventAt: undefined, attemptStartedAt: undefined }
       let initial: SessionContext.Loaded | undefined = first
       let recoverOverflow = true
       let recoverContinuation = true
