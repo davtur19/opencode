@@ -154,16 +154,41 @@ const validateStandard = (
     }),
   )
 
+// Effect and Zod schemas are immutable and their JSON Schema projection is deterministic.
+// Arbitrary StandardSchema vendors may compute theirs from external state, so leave them uncached.
+const inputJsonSchemas = new WeakMap<Tool.ValueSchema<any>, JsonSchema.JsonSchema>()
+const outputJsonSchemas = new WeakMap<Tool.ValueSchema<any>, JsonSchema.JsonSchema>()
+
 const inputJsonSchema = (schema: Tool.ValueSchema<any>): JsonSchema.JsonSchema => {
   if (schema === undefined || schema === null) return {}
-  if (isStandardSchema(schema)) return standardJsonSchema(schema, "input")
-  if (!Schema.isSchema(schema)) return schema
-  return emptyInputJsonSchema(schema) ?? toJsonSchema(schema)
+  const cacheable = Schema.isSchema(schema) || schema instanceof $ZodType
+  if (cacheable) {
+    const cached = inputJsonSchemas.get(schema)
+    if (cached !== undefined) return cached
+  }
+  const result = isStandardSchema(schema)
+    ? standardJsonSchema(schema, "input")
+    : !Schema.isSchema(schema)
+      ? schema
+      : emptyInputJsonSchema(schema) ?? toJsonSchema(schema)
+  if (cacheable) inputJsonSchemas.set(schema, result)
+  return result
 }
 
 const outputJsonSchema = (schema: Tool.ValueSchema<any>): JsonSchema.JsonSchema => {
-  if (isStandardSchema(schema)) return standardJsonSchema(schema, "output")
-  return Schema.isSchema(schema) ? toJsonSchema(schema) : schema
+  if (schema === undefined || schema === null) return {}
+  const cacheable = Schema.isSchema(schema) || schema instanceof $ZodType
+  if (cacheable) {
+    const cached = outputJsonSchemas.get(schema)
+    if (cached !== undefined) return cached
+  }
+  const result = isStandardSchema(schema)
+    ? standardJsonSchema(schema, "output")
+    : Schema.isSchema(schema)
+      ? toJsonSchema(schema)
+      : schema
+  if (cacheable) outputJsonSchemas.set(schema, result)
+  return result
 }
 
 const standardJsonSchema = (schema: StandardSchemaV1<any, any>, io: "input" | "output"): JsonSchema.JsonSchema => {
