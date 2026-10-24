@@ -685,6 +685,91 @@ describe("Integration", () => {
         }),
     )
   })
+
+  it.effect("refreshes the cached list when credentials, definitions, env, or status change", () =>
+    Effect.acquireUseRelease(
+      Effect.sync(() => {
+        const previous = process.env.INTEGRATION_TEST_CACHE_KEY
+        process.env.INTEGRATION_TEST_CACHE_KEY = "secret"
+        delete process.env.INTEGRATION_TEST_CACHE_MISSING
+        return previous
+      }),
+      () =>
+        Effect.gen(function* () {
+          const integrations = yield* Integration.Service
+          const credentials = yield* Credential.Service
+          const integrationID = Integration.ID.make("cache")
+          const alphaID = Integration.ID.make("alpha")
+          yield* integrations.transform((editor) => {
+            editor.update(integrationID, (integration) => (integration.name = "Cache"))
+            editor.method.update({
+              integrationID,
+              method: {
+                type: "env",
+                names: ["INTEGRATION_TEST_CACHE_KEY", "INTEGRATION_TEST_CACHE_MISSING"],
+              },
+            })
+          })
+
+          const initial = yield* integrations.list()
+          expect(initial.find((item) => item.id === integrationID)?.connections).toEqual([
+            { type: "env", name: "INTEGRATION_TEST_CACHE_KEY" },
+          ])
+          expect(yield* integrations.list()).toEqual(initial)
+
+          const created = yield* credentials.create({
+            integrationID,
+            label: "Cached",
+            value: Credential.Key.make({ type: "key", key: "secret" }),
+          })
+          const withCredential = yield* integrations.list()
+          expect(withCredential.find((item) => item.id === integrationID)?.connections).toEqual([
+            { type: "credential", id: created.id, label: "Cached", method: "key" },
+            { type: "env", name: "INTEGRATION_TEST_CACHE_KEY" },
+          ])
+
+          const connection = withCredential.find((item) => item.id === integrationID)?.connections[0]
+          if (!connection) return yield* Effect.die(new Error("missing cached connection"))
+          yield* integrations.connection.status({
+            integrationID,
+            connection,
+            status: { status: "needs_auth", message: "expired" },
+          })
+          expect((yield* integrations.list()).find((item) => item.id === integrationID)?.connections[0]).toEqual({
+            type: "credential",
+            id: created.id,
+            label: "Cached",
+            method: "key",
+            status: { status: "needs_auth", message: "expired" },
+          })
+
+          yield* integrations.connection.status({ integrationID, connection, status: undefined })
+          expect((yield* integrations.list()).find((item) => item.id === integrationID)?.connections[0]).toEqual({
+            type: "credential",
+            id: created.id,
+            label: "Cached",
+            method: "key",
+          })
+
+          yield* integrations.transform((editor) => {
+            editor.update(integrationID, (integration) => (integration.name = "Cache Renamed"))
+            editor.update(alphaID, (integration) => (integration.name = "Alpha"))
+          })
+          expect((yield* integrations.list()).map((item) => item.id)).toEqual([alphaID, integrationID])
+
+          delete process.env.INTEGRATION_TEST_CACHE_KEY
+          expect((yield* integrations.list()).find((item) => item.id === integrationID)?.connections).toEqual([
+            { type: "credential", id: created.id, label: "Cached", method: "key" },
+          ])
+        }),
+      (previous) =>
+        Effect.sync(() => {
+          if (previous === undefined) delete process.env.INTEGRATION_TEST_CACHE_KEY
+          else process.env.INTEGRATION_TEST_CACHE_KEY = previous
+          delete process.env.INTEGRATION_TEST_CACHE_MISSING
+        }),
+    ),
+  )
 })
 
 describe("AuthorizationError", () => {
