@@ -715,7 +715,24 @@ describe("Integration", () => {
           expect(initial.find((item) => item.id === integrationID)?.connections).toEqual([
             { type: "env", name: "INTEGRATION_TEST_CACHE_KEY" },
           ])
-          expect(yield* integrations.list()).toEqual(initial)
+          const cached = yield* integrations.list()
+          expect(cached).toEqual(initial)
+
+          const first = initial.find((item) => item.id === integrationID)
+          if (!first) return yield* Effect.die(new Error("missing cached integration"))
+          Object.assign(first, { name: "Mutated", connections: [] })
+          expect((yield* integrations.list()).find((item) => item.id === integrationID)).toMatchObject({
+            name: "Cache",
+            connections: [{ type: "env", name: "INTEGRATION_TEST_CACHE_KEY" }],
+          })
+
+          const second = cached.find((item) => item.id === integrationID)
+          if (!second) return yield* Effect.die(new Error("missing cached integration"))
+          Object.assign(second, { name: "Mutated again", connections: [] })
+          expect((yield* integrations.list()).find((item) => item.id === integrationID)).toMatchObject({
+            name: "Cache",
+            connections: [{ type: "env", name: "INTEGRATION_TEST_CACHE_KEY" }],
+          })
 
           const created = yield* credentials.create({
             integrationID,
