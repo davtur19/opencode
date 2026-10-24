@@ -19,6 +19,7 @@ import { encodeJson } from "../utils/json.js"
 import { JsonObject, knownString, lenient, optionalNull, ProviderShared } from "./shared.js"
 import { Lifecycle } from "./utils/lifecycle.js"
 import { MediaInput } from "./utils/media-input.js"
+import { GeminiGenerateContent } from "./utils/gemini-generate-content.js"
 import { ToolStream } from "./utils/tool-stream.js"
 
 const ADAPTER = "google-interactions"
@@ -223,7 +224,10 @@ const mediaContent = Effect.fnUntraced(function* (asset: Media.Asset) {
     )
   const type: (typeof MediaContent.Type)["type"] =
     asset.kind === "image" || asset.kind === "audio" || asset.kind === "video" ? asset.kind : "document"
-  const uri = MediaInput.refID(asset, ProviderID.make("google"))
+  const uri =
+    asset.kind === "video" && asset.source.type === "url" && /^https?:\/\//i.test(asset.source.url)
+      ? asset.source.url
+      : MediaInput.refID(asset, ProviderID.make("google"))
   if (uri !== undefined) return { type, uri, mime_type: asset.mediaType }
   const inline = yield* ProviderShared.requireInlineMedia("Google Interactions", asset)
   return { type, data: inline.base64, mime_type: inline.mime }
@@ -307,7 +311,7 @@ const lowerToolResult = Effect.fnUntraced(function* (part: ToolResultPart) {
 
   return yield* Effect.forEach(part.result.value, (item): Effect.Effect<typeof Content.Type, AIError> => {
     if (item.type === "text") return Effect.succeed({ type: "text", text: item.text })
-    return mediaContent(ProviderShared.toolFileMedia(item).media)
+    return mediaContent(GeminiGenerateContent.toolMedia(item))
   })
 })
 

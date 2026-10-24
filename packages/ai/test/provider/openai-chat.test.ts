@@ -1177,6 +1177,42 @@ describe("OpenAI Chat route", () => {
     }),
   )
 
+  it.effect("reports the cost the endpoint billed", () =>
+    Effect.gen(function* () {
+      const response = yield* LLMClient.generate(request).pipe(
+        Effect.provide(
+          fixedResponse(
+            sseEvents(
+              deltaChunk({ content: "Hello" }, "stop"),
+              usageChunk({ prompt_tokens: 5, completion_tokens: 2, cost: 0, opencode: { allowance: 0.0042 } }),
+            ),
+          ),
+        ),
+      )
+
+      expect(response.usage).toMatchObject({ inputTokens: 5, outputTokens: 2, cost: 0 })
+    }),
+  )
+
+  it.effect("drops a malformed billed cost without failing the stream", () =>
+    Effect.gen(function* () {
+      const response = yield* LLMClient.generate(request).pipe(
+        Effect.provide(
+          fixedResponse(
+            sseEvents(
+              deltaChunk({ content: "Hello" }, "stop"),
+              usageChunk({ prompt_tokens: 5, completion_tokens: 2, cost: -1, opencode: { allowance: "lots" } }),
+            ),
+          ),
+        ),
+      )
+
+      expect(response.text).toBe("Hello")
+      expect(response.usage).toMatchObject({ inputTokens: 5, outputTokens: 2 })
+      expect(response.usage?.cost).toBeUndefined()
+    }),
+  )
+
   it.effect("uses the configured provider metadata namespace for reasoning and usage", () =>
     Effect.gen(function* () {
       const selected = LanguageModel.update(model, {
@@ -2072,47 +2108,14 @@ describe("OpenAI Chat route", () => {
     }),
   )
 
-  it.effect("rejects unknown finish reasons without finalizing streamed tool calls", () =>
+  it.effect("maps unknown finish reasons to unknown and keeps the raw value", () =>
     Effect.gen(function* () {
-      const body = sseEvents(
-        deltaChunk({
-          tool_calls: [{ index: 0, id: "call_1", function: { name: "lookup", arguments: '{"query":"weather"' } }],
-        }),
-        deltaChunk({}, "future_reason"),
-      )
-      const events = yield* Ref.make<ReadonlyArray<LLMEvent>>([])
-      const error = yield* LLMClient.stream(
-        LLMRequest.update(request, {
-          tools: [ToolDefinition.make({ name: "lookup", description: "Lookup data", inputSchema: { type: "object" } })],
-        }),
-      ).pipe(
-        Stream.tap((event) => Ref.update(events, (current) => [...current, event])),
-        Stream.runDrain,
-        Effect.provide(fixedResponse(body)),
-        Effect.flip,
+      const response = yield* LLMClient.generate(request).pipe(
+        Effect.provide(fixedResponse(sseEvents(deltaChunk({ content: "Hello" }), deltaChunk({}, "future_reason")))),
       )
 
-      expect(error).toMatchObject({
-        reason: { _tag: "UnknownProvider" },
-        message: "Provider finish_reason: future_reason",
-      })
-      expect(yield* Ref.get(events)).toEqual([
-        { type: "step-start", index: 0 },
-        {
-          type: "tool-input-start",
-          id: "call_1",
-          name: "lookup",
-          providerExecuted: undefined,
-          providerMetadata: undefined,
-        },
-        {
-          type: "tool-input-delta",
-          id: "call_1",
-          name: "lookup",
-          text: '{"query":"weather"',
-          input: { query: "weather" },
-        },
-      ])
+      expect(response.text).toBe("Hello")
+      expect(response.finishReason).toEqual({ normalized: "unknown", raw: "future_reason" })
     }),
   )
 
