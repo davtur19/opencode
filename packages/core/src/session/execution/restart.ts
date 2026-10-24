@@ -1,6 +1,6 @@
 export * as SessionRestart from "./restart.js"
 
-import { Context, Effect, Layer } from "effect"
+import { Context, Effect, Layer, Semaphore } from "effect"
 import { and, eq, isNotNull, sql } from "drizzle-orm"
 import { makeGlobalNode } from "@opencode/util/effect/app-node"
 import { Bus } from "../../bus.js"
@@ -40,9 +40,18 @@ export interface Options {
    * never accumulate: the budget is per-turn, not per-session.
    */
   readonly maxAttempts?: number
+  /**
+   * Bounds how many claimed turns resume into active drains at once. A boot
+   * after a crash, SIGKILL, or an OOM-driven shutdown must not slam the
+   * recovering machine with every interrupted Session re-running
+   * simultaneously: the backlog queues for a slot instead, released once each
+   * turns settles. Infinity keeps the previous fully eager behavior.
+   */
+  readonly maxResumeConcurrency?: number
 }
 
 const DEFAULT_MAX_ATTEMPTS = 10
+const DEFAULT_MAX_RESUME_CONCURRENCY = 16
 
 export interface Interface {
   /**
@@ -86,6 +95,12 @@ export const layer = (options?: Options) =>
       const db = (yield* Database.Service).db
       const scope = yield* Effect.scope
       const maxAttempts = options?.maxAttempts ?? DEFAULT_MAX_ATTEMPTS
+      // The per-attempt budget guards against crash loops; this second bound keeps the
+      // initial wave of resumptions from running every claimed turn at once.
+      const maxResumeConcurrency =
+        options?.maxResumeConcurrency ?? DEFAULT_MAX_RESUME_CONCURRENCY
+      const permits =
+        maxResumeConcurrency === Number.POSITIVE_INFINITY ? undefined : Semaphore.makeUnsafe(maxResumeConcurrency)
       // The boot instant, captured once when the layer is constructed. Anything
       // created after this point belongs to post-boot activity and is never
       // touched, even if a sweep overlaps live work.
@@ -308,12 +323,19 @@ export const layer = (options?: Options) =>
 
           // Background completion can wake a parent, so inspect local ownership only after recovery.
           const resumed = yield* execution.active
+          // Resume decisions stay synchronous with the sweep (budget accounting, exhausted
+          // terminalization); only the drain itself queues for a slot, held until it settles.
+          // Infinity keeps the previous fully eager behavior.
+          const gated = permits
+            ? permits.withPermits(1)
+            : <A, E, R>(self: Effect.Effect<A, E, R>): Effect.Effect<A, E, R> => self
           yield* Effect.forEach(
             (yield* store.listSuspended()).filter((sessionID) => !resumed.has(sessionID)),
             (sessionID) =>
-              execution
-                .resume(sessionID)
-                .pipe(Effect.ignore, Effect.forkIn(scope), Effect.when(prepareResume(sessionID))),
+              gated(execution.resume(sessionID).pipe(Effect.ignore)).pipe(
+                Effect.forkIn(scope),
+                Effect.when(prepareResume(sessionID)),
+              ),
             { concurrency: "unbounded", discard: true },
           )
           // Async observers consult this set at delivery; later completions wake parents normally.

@@ -541,6 +541,36 @@ describe("SessionRunCoordinator", () => {
     }),
   )
 
+  it.effect("runs many keys concurrently without a shared throttle", () =>
+    Effect.gen(function* () {
+      const count = 128
+      const gate = yield* Deferred.make<void>()
+      const allActive = yield* Deferred.make<void>()
+      let active = 0
+      let peak = 0
+      const coordinator = yield* SessionRunCoordinator.make<string, never>({
+        drain: () =>
+          Effect.sync(() => {
+            active++
+            peak = Math.max(peak, active)
+          }).pipe(
+            Effect.tap(() => (peak === count ? Deferred.succeed(allActive, undefined) : Effect.void)),
+            Effect.andThen(Deferred.await(gate)),
+          ),
+      })
+
+      const fibers: Fiber.Fiber<void>[] = []
+      for (let index = 0; index < count; index++) {
+        fibers.push(yield* coordinator.run(`key-${index}`).pipe(Effect.forkChild))
+      }
+      yield* Deferred.await(allActive)
+      expect(peak).toBe(count)
+
+      yield* Deferred.succeed(gate, undefined)
+      yield* Effect.forEach(fibers, Fiber.join, { discard: true })
+    }),
+  )
+
   it.effect("settles once per execution across coalesced drains", () =>
     Effect.gen(function* () {
       const started = yield* Deferred.make<void>()

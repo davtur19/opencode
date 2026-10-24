@@ -28,6 +28,7 @@ import { SessionStore } from "@opencode/core/session/store"
 import { Cause, Context, DateTime, Deferred, Effect, Exit, Fiber, Layer, LayerMap, Schema, Scope } from "effect"
 import { eq } from "drizzle-orm"
 import { testEffect } from "./lib/effect"
+import { advance } from "./lib/clock"
 
 const it = testEffect(
   AppNodeBuilder.build(
@@ -241,6 +242,83 @@ describe("SessionExecution lifecycle", () => {
       yield* Deferred.await(fourStarted)
 
       expect([...(yield* execution.active)].toSorted()).toEqual(sessionIDs.toSorted())
+    }),
+  )
+
+  it.effect("resumes the full backlog at once when the sweep is unbounded", () =>
+    Effect.gen(function* () {
+      const database = yield* Database.Service
+      const sessionIDs = Array.from({ length: 48 }, (_, index) => Session.ID.make(`ses_resume_unbounded_${index}`))
+      yield* seedSessions(database, sessionIDs, { time_suspended: Date.now() })
+
+      const gate = yield* Deferred.make<void>()
+      const allStarted = yield* Deferred.make<void>()
+      const started: Session.ID[] = []
+      const scope = yield* Scope.make()
+      yield* Effect.addFinalizer(() => Scope.close(scope, Exit.void))
+      const context = yield* buildExecution(
+        scope,
+        ({ sessionID }) =>
+          Effect.sync(() => {
+            started.push(sessionID)
+            if (started.length === sessionIDs.length) Deferred.doneUnsafe(allStarted, Effect.void)
+          }).pipe(Effect.andThen(Deferred.await(gate))),
+        { maxResumeConcurrency: Number.POSITIVE_INFINITY },
+      )
+      const execution = Context.get(context, SessionExecution.Service)
+
+      // Every claimed drain runs simultaneously: an unbounded sweep never queues.
+      yield* Context.get(context, SessionRestart.Service).resumeSuspendedSessions.pipe(Effect.forkIn(scope))
+      yield* Deferred.await(allStarted)
+
+      expect(started).toHaveLength(sessionIDs.length)
+      expect((yield* execution.active).size).toBe(sessionIDs.length)
+    }),
+  )
+
+  it.effect("bounds resumed drain concurrency when the sweep is bounded", () =>
+    Effect.gen(function* () {
+      const database = yield* Database.Service
+      const concurrency = 4
+      const sessionIDs = Array.from({ length: 16 }, (_, index) => Session.ID.make(`ses_resume_bounded_${index}`))
+      yield* seedSessions(database, sessionIDs, { time_suspended: Date.now() })
+
+      const gate = yield* Deferred.make<void>()
+      const firstWaveActive = yield* Deferred.make<void>()
+      const started: Session.ID[] = []
+      const scope = yield* Scope.make()
+      yield* Effect.addFinalizer(() => Scope.close(scope, Exit.void))
+      const context = yield* buildExecution(
+        scope,
+        ({ sessionID }) =>
+          Effect.sync(() => {
+            started.push(sessionID)
+            if (started.length === concurrency) Deferred.doneUnsafe(firstWaveActive, Effect.void)
+          }).pipe(Effect.andThen(Deferred.await(gate))),
+        { maxResumeConcurrency: concurrency },
+      )
+      const execution = Context.get(context, SessionExecution.Service)
+
+      // Fellows wait for a slot instead of piling onto the recovering machine,
+      // so only the bounded wave drains while the gate holds.
+      yield* Context.get(context, SessionRestart.Service).resumeSuspendedSessions.pipe(Effect.forkIn(scope))
+      yield* Deferred.await(firstWaveActive)
+      yield* Effect.yieldNow
+
+      expect(started).toHaveLength(concurrency)
+      expect((yield* execution.active).size).toBe(concurrency)
+
+      // Settling the first wave hands its slots to the backlog until every
+      // claimed Session has been resumed exactly once.
+      yield* Deferred.succeed(gate, undefined)
+      yield* advance(() => started.length === sessionIDs.length)
+      yield* Effect.forEach(sessionIDs, execution.awaitIdle, { discard: true })
+
+      expect(started).toHaveLength(sessionIDs.length)
+      expect(new Set(started).size).toBe(sessionIDs.length)
+      expect(yield* execution.active).toEqual(new Set())
+      const rows = yield* claims(database)
+      for (const sessionID of sessionIDs) expect(rows[sessionID]).toBe(false)
     }),
   )
 
