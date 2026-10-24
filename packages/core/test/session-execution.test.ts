@@ -322,6 +322,46 @@ describe("SessionExecution lifecycle", () => {
     }),
   )
 
+  it.effect("defaults the resume sweep to a bounded first wave", () =>
+    Effect.gen(function* () {
+      const database = yield* Database.Service
+      // Pinned deliberately: the default is what keeps a post-crash boot from
+      // re-running every claimed turn at once, so changing it is a behavior change.
+      const defaultConcurrency = 16
+      const sessionIDs = Array.from({ length: 40 }, (_, index) => Session.ID.make(`ses_resume_default_${index}`))
+      yield* seedSessions(database, sessionIDs, { time_suspended: Date.now() })
+
+      const gate = yield* Deferred.make<void>()
+      const firstWaveActive = yield* Deferred.make<void>()
+      const started: Session.ID[] = []
+      const scope = yield* Scope.make()
+      yield* Effect.addFinalizer(() => Scope.close(scope, Exit.void))
+      const context = yield* buildExecution(scope, ({ sessionID }) =>
+        Effect.sync(() => {
+          started.push(sessionID)
+          if (started.length === defaultConcurrency) Deferred.doneUnsafe(firstWaveActive, Effect.void)
+        }).pipe(Effect.andThen(Deferred.await(gate))),
+      )
+      const execution = Context.get(context, SessionExecution.Service)
+
+      yield* Context.get(context, SessionRestart.Service).resumeSuspendedSessions.pipe(Effect.forkIn(scope))
+      yield* Deferred.await(firstWaveActive)
+      yield* Effect.yieldNow
+
+      expect(started).toHaveLength(defaultConcurrency)
+      expect((yield* execution.active).size).toBe(defaultConcurrency)
+
+      yield* Deferred.succeed(gate, undefined)
+      yield* advance(() => started.length === sessionIDs.length)
+      yield* Effect.forEach(sessionIDs, execution.awaitIdle, { discard: true })
+
+      expect(new Set(started).size).toBe(sessionIDs.length)
+      expect(yield* execution.active).toEqual(new Set())
+      const rows = yield* claims(database)
+      for (const sessionID of sessionIDs) expect(rows[sessionID]).toBe(false)
+    }),
+  )
+
   it.effect("resumes each claimed Session at most once", () =>
     Effect.gen(function* () {
       const database = yield* Database.Service
