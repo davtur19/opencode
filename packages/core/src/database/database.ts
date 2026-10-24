@@ -14,6 +14,12 @@ import { makeGlobalNode } from "@opencode/util/effect/app-node"
 const makeDatabase = EffectDrizzleSqlite.makeWithDefaults()
 type DatabaseShape = Effect.Success<typeof makeDatabase>
 
+// 8192 pages is 32 MiB at SQLite's default page size. The default 1000-page threshold
+// checkpoints every ~80 durable commits under concurrent Sessions, putting 10-50 ms
+// stalls on the commit path. A larger bound keeps those checkpoints rare without
+// leaving the WAL unbounded.
+const WAL_AUTOCHECKPOINT_PAGES = 8192
+
 export interface Interface {
   db: DatabaseShape
 }
@@ -41,6 +47,7 @@ const databaseLayer = (lock: Effect.Effect<Semaphore.Semaphore>) =>
         yield* db.run("PRAGMA synchronous = NORMAL")
         yield* db.run("PRAGMA busy_timeout = 5000")
         yield* db.run("PRAGMA cache_size = -64000")
+        yield* db.run(`PRAGMA wal_autocheckpoint = ${WAL_AUTOCHECKPOINT_PAGES}`)
         yield* db.run("PRAGMA wal_checkpoint(PASSIVE)")
       }
       // Durable Object SQLite always enforces foreign keys and rejects the pragma.
