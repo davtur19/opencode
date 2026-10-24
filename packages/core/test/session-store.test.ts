@@ -2,6 +2,9 @@ import { describe, expect } from "bun:test"
 import { Effect } from "effect"
 import { Bus } from "@opencode/core/bus"
 import { Database } from "@opencode/core/database/database"
+import { Agent } from "@opencode/core/agent"
+import { Model } from "@opencode/core/model"
+import { Provider } from "@opencode/core/provider"
 import { AppNodeBuilder } from "@opencode/core/effect/app-node-builder"
 import { ProjectTable } from "@opencode/core/project/sql"
 import { SessionProjector } from "@opencode/core/session/projector"
@@ -185,6 +188,56 @@ describe("SessionStore", () => {
           cursor: { id: SessionMessage.ID.make("msg_foreign"), direction: "next" },
         }),
       ).toEqual([])
+    }),
+  )
+
+  it.effect("reads only assistant messages with a stale tool", () =>
+    Effect.gen(function* () {
+      const sessionID = Session.ID.make("ses_stale")
+      const otherID = Session.ID.make("ses_other")
+      const bus = yield* seedSessions([
+        { id: sessionID, updated: 0 },
+        { id: otherID, updated: 0 },
+      ])
+      const store = yield* SessionStore.Service
+      const agent = Agent.ID.make("build")
+      const model = { id: Model.ID.make("model"), providerID: Provider.ID.make("provider") }
+      const start = (target: Session.ID, assistantMessageID: SessionMessage.ID) =>
+        bus.publish(SessionEvent.Step.Started, { sessionID: target, assistantMessageID, agent, model, started: 0 })
+      const call = (target: Session.ID, assistantMessageID: SessionMessage.ID, id: string) =>
+        Effect.gen(function* () {
+          yield* bus.publish(SessionEvent.Tool.Input.Started, {
+            sessionID: target,
+            assistantMessageID,
+            id,
+            name: "bash",
+          })
+          yield* bus.publish(SessionEvent.Tool.Called, {
+            sessionID: target,
+            assistantMessageID,
+            id,
+            input: {},
+            executed: true,
+          })
+        })
+      const stale = SessionMessage.ID.make("msg_stale")
+      const done = SessionMessage.ID.make("msg_done")
+      const foreign = SessionMessage.ID.make("msg_foreign_stale")
+      yield* start(sessionID, stale)
+      yield* call(sessionID, stale, "call_stale")
+      yield* start(sessionID, done)
+      yield* call(sessionID, done, "call_done")
+      yield* bus.publish(SessionEvent.Tool.Success, {
+        sessionID,
+        assistantMessageID: done,
+        id: "call_done",
+        content: [{ type: "text", text: "done" }],
+        executed: true,
+      })
+      yield* start(otherID, foreign)
+      yield* call(otherID, foreign, "call_foreign")
+
+      expect((yield* store.staleToolMessages(sessionID)).map((message) => String(message.id))).toEqual(["msg_stale"])
     }),
   )
 })

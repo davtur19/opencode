@@ -56,6 +56,8 @@ export interface Interface {
   readonly list: (input?: ListInput) => Effect.Effect<Session.Info[]>
   readonly messages: (input: MessagesInput) => Effect.Effect<SessionMessage.Info[], MessageDecodeError>
   readonly context: (sessionID: Session.ID) => Effect.Effect<SessionMessage.Info[], MessageDecodeError>
+  /** Assistant messages whose content still has a streaming or running tool. */
+  readonly staleToolMessages: (sessionID: Session.ID) => Effect.Effect<SessionMessage.Info[], MessageDecodeError>
   readonly message: (
     messageID: SessionMessage.ID,
   ) => Effect.Effect<{ readonly sessionID: Session.ID; readonly message: SessionMessage.Info } | undefined>
@@ -180,6 +182,27 @@ const layer = Layer.effect(
         )
       }),
       context: Effect.fn("SessionStore.context")((sessionID) => SessionHistory.load(db, sessionID, "latest")),
+      staleToolMessages: Effect.fn("SessionStore.staleToolMessages")(function* (sessionID) {
+        const rows = yield* db
+          .select()
+          .from(SessionMessageTable)
+          .where(
+            and(
+              eq(SessionMessageTable.session_id, sessionID),
+              eq(SessionMessageTable.type, "assistant"),
+              sql`exists (
+                select 1
+                from json_each(${SessionMessageTable.data}, '$.content')
+                where json_extract(value, '$.type') = 'tool'
+                  and json_extract(value, '$.state.status') in ('streaming', 'running')
+              )`,
+            ),
+          )
+          .orderBy(asc(SessionMessageTable.seq))
+          .all()
+          .pipe(Effect.orDie)
+        return yield* Effect.forEach(rows, SessionHistory.decodeMessageRow, { concurrency: 1 })
+      }),
       message: Effect.fn("SessionStore.message")(function* (messageID) {
         const row = yield* db
           .select()

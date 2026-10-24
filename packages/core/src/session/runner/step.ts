@@ -339,15 +339,21 @@ export const make = Effect.gen(function* () {
         const record = publisher.record()
         if (record.finish || record.failure) {
           const startSnapshot = yield* Fiber.join(pendingStartSnapshot)
-          const snapshot = yield* snapshots.capture()
+          // No local tool ran, so the step changed no files: its start tree is also its end tree.
+          // Skip the second capture and diff, which serialize per repository.
+          const snapshot = toolRuns.length === 0 ? startSnapshot : yield* snapshots.capture()
           const files =
-            startSnapshot && snapshot
-              ? startSnapshot === snapshot
-                ? []
-                : yield* snapshots
-                    .files({ from: startSnapshot, to: snapshot })
-                    .pipe(Effect.orElseSucceed(() => undefined))
-              : undefined
+            toolRuns.length === 0
+              ? snapshot === undefined
+                ? undefined
+                : []
+              : startSnapshot && snapshot
+                ? startSnapshot === snapshot
+                  ? []
+                  : yield* snapshots
+                      .files({ from: startSnapshot, to: snapshot })
+                      .pipe(Effect.orElseSucceed(() => undefined))
+                : undefined
           const usage = record.finish
             ? { cost: SessionUsage.calculateCost(input.model.cost, record.finish.tokens), tokens: record.finish.tokens }
             : undefined

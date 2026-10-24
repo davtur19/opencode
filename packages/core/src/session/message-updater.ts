@@ -49,7 +49,9 @@ export function update(adapter: Adapter, event: SessionEvent.DurableEvent) {
     Effect.gen(function* () {
       const assistant = yield* adapter.getAssistant(messageID)
       if (!assistant) return
-      yield* adapter.updateAssistant(produce(assistant, recipe))
+      const next = produce(assistant, recipe)
+      if (next === assistant) return
+      yield* adapter.updateAssistant(next)
     })
 
   const clearCurrentRetry = Effect.gen(function* () {
