@@ -121,22 +121,31 @@ const identityHeaders = (identity: ReturnType<typeof wireIdentity>) => ({
 
 const cacheKey = (affinity: string) => (/^ses_[0-9a-f]{64}$/.test(affinity) ? affinity.slice(4) : affinity)
 
+const ENVIRONMENT_ID_LINE = /^ {2}Environment id: [^\n]*\n/gm
+
 // The opencode gateway keys its free-tier allowance on the environment block in the system prompt.
 // Stamping a session-scoped id inside that block gives each session its own allowance without
 // changing the real workspace paths the tools use, so the model keeps seeing a valid directory.
 // The stamp rotates after every completed compaction, where the rebuilt context already makes the
-// prompt cache cold, and a new process boot also yields a new stamp.
+// prompt cache cold, and a new process boot also yields a new stamp. Stamping is idempotent so a
+// refreshed request replaces the id instead of carrying two.
 export const stampEnvironment = (system: ReadonlyArray<SystemPart>, sessionID: SessionSchema.ID) =>
   system.map((part) =>
     part.text.includes("<env>") && part.text.includes("</env>")
-      ? { ...part, text: part.text.replace("</env>", `  Environment id: ${SessionEnvironmentStamp.id(sessionID)}\n</env>`) }
+      ? {
+          ...part,
+          text: part.text
+            .replace(ENVIRONMENT_ID_LINE, "")
+            .replace("</env>", `  Environment id: ${SessionEnvironmentStamp.id(sessionID)}\n</env>`),
+        }
       : part,
   )
 
 /**
- * Rebuilds the identity headers of an already prepared request from the current alias. Compaction
- * reuses one prepared request across retries, so it must refresh after the retry policy rotates
- * the alias; the primary runner rebuilds its request on every attempt instead.
+ * Rebuilds the identity of an already prepared request from the current alias and environment
+ * stamp. Compaction reuses one prepared request across retries, so it must refresh after the
+ * retry policy rotates the alias or an explicit reset changes the environment; the primary runner
+ * rebuilds its request on every attempt instead.
  */
 export const refresh = (
   request: LLMRequest,
@@ -150,6 +159,7 @@ export const refresh = (
       headers: { ...request.http?.headers, ...identityHeaders(identity) },
     }),
     promptCacheKey: cacheKey(identity.affinity),
+    system: stampEnvironment(request.system, session.id),
   })
 }
 
@@ -338,8 +348,9 @@ export const layer = Layer.effect(
       const generation = Object.fromEntries(entries.filter(([k]) => GENERATION_KEYS.has(k))) as GenerationOptionsFields
       const providerOptions = Object.fromEntries(entries.filter(([k]) => !GENERATION_KEYS.has(k)))
       const identity = wireIdentity(session, model.ref.providerID)
-      const system =
-        kind === "primary" || kind === "compaction" ? stampEnvironment(shaped.system, session.id) : shaped.system
+      // Titles are provider bookkeeping, not session turns: the gateway never charges them, so they
+      // keep the provider default and carry no environment id. Every other flow carries the session's.
+      const system = kind === "title" ? shaped.system : stampEnvironment(shaped.system, session.id)
       const base = LLM.request({
         model: model.model,
         http: {

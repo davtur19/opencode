@@ -522,7 +522,15 @@ const layer = Layer.effect(
         yield* result.get(sessionID)
         const alias = SessionEgress.reset(sessionID)
         const environmentID = SessionEnvironmentStamp.reset(sessionID)
-        yield* Effect.logDebug("session identity reset", { sessionID, alias, environmentID })
+        // A stateful WebSocket carries the handshake identity for its whole life. An idle reset
+        // closes it so the next step opens a new one; an active turn keeps its request, and the
+        // rotated identity applies to its next attempt instead.
+        if (yield* execution.isActive(sessionID)) {
+          yield* Effect.logDebug("session identity reset during active turn", { sessionID, alias, environmentID })
+        } else {
+          yield* transport.close(sessionID)
+          yield* Effect.logDebug("session identity reset", { sessionID, alias, environmentID })
+        }
         return { environmentID }
       }),
       wait: (sessionID) => sessions.forSession(sessionID).wait(),

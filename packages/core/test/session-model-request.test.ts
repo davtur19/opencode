@@ -319,6 +319,23 @@ describe("SessionModelRequest.wireIdentity", () => {
     expect(refreshed.http?.headers?.["x-keep"]).toBe("yes")
     expect(refreshed.promptCacheKey).toBe(next)
   })
+
+  test("refreshes the environment stamp after an identity reset", () => {
+    SessionEnvironmentStamp.clear()
+    const input = { id: SessionSchema.ID.make("ses_env_refresh") }
+    const request = LLM.request({
+      model,
+      system: stampEnvironment([SystemPart.make("<env>\n  Working directory: /project\n</env>")], input.id),
+      prompt: "hello",
+    })
+
+    SessionEnvironmentStamp.reset(input.id)
+    const refreshed = refresh(request, input, Provider.ID.opencode)
+    const text = refreshed.system[0]?.text ?? ""
+
+    expect(text).toContain(`Environment id: ${SessionEnvironmentStamp.id(input.id)}`)
+    expect(text.match(/Environment id:/g)).toHaveLength(1)
+  })
 })
 
 describe("SessionModelRequest.stampEnvironment", () => {
@@ -345,6 +362,17 @@ describe("SessionModelRequest.stampEnvironment", () => {
 
     SessionEnvironmentStamp.compacted(target)
     expect(stampEnvironment([environment], target)[0]?.text).not.toBe(first)
+  })
+
+  test("replaces the id instead of adding a second one", () => {
+    const target = session("ses_idempotent")
+    const first = stampEnvironment([environment], target)
+    expect(stampEnvironment(first, target)).toEqual(first)
+
+    SessionEnvironmentStamp.reset(target)
+    const rotated = stampEnvironment(first, target)[0]?.text ?? ""
+    expect(rotated).toContain(`Environment id: ${SessionEnvironmentStamp.id(target)}`)
+    expect(rotated.match(/Environment id:/g)).toHaveLength(1)
   })
 
   test("uses a different id for another session", () => {
