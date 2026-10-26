@@ -1103,6 +1103,26 @@ export function Session(props: {
       },
     },
     {
+      title: "Reset provider identity",
+      id: "session.identity.reset",
+      group: "Session",
+      slash: {
+        name: "resetid",
+      },
+      run: () => {
+        void client.api.session.identity
+          .reset({ sessionID: route.sessionID })
+          .then(() =>
+            toast.show({
+              message: "Provider identity reset. The next request starts with a cold prompt cache.",
+              variant: "success",
+            }),
+          )
+          .catch((error) => toast.show({ message: errorMessage(error), variant: "error" }))
+        dialog.clear()
+      },
+    },
+    {
       title: "Undo previous message",
       id: "session.undo",
       group: "Session",

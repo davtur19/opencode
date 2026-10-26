@@ -3890,6 +3890,10 @@ export type SessionCompactInput = {
 
 export type SessionCompactOutput = { data: SessionInboxCompaction }["data"]
 
+export type SessionIdentityResetInput = { readonly sessionID: { readonly sessionID: string }["sessionID"] }
+
+export type SessionIdentityResetOutput = { data: { environmentID: string } }["data"]
+
 export type SessionWaitInput = { readonly sessionID: { readonly sessionID: string }["sessionID"] }
 
 export type SessionWaitOutput = void

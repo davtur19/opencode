@@ -15,23 +15,30 @@ describe("SessionEnvironmentStamp", () => {
     expect(SessionEnvironmentStamp.id(session("ses_a"))).not.toBe(SessionEnvironmentStamp.id(session("ses_b")))
   })
 
-  test("rotates on the configured completed compaction boundary", () => {
+  test("rotates on every completed compaction", () => {
     const target = session("ses_a")
     const first = SessionEnvironmentStamp.id(target)
-    const kept = Array.from({ length: SessionEnvironmentStamp.COMPACTIONS_PER_ROTATION - 1 }, () =>
-      SessionEnvironmentStamp.compacted(target),
-    )
+    const second = SessionEnvironmentStamp.compacted(target)
 
-    expect(kept.every((value) => value === first)).toBe(true)
-    expect(SessionEnvironmentStamp.compacted(target)).not.toBe(first)
-    expect(SessionEnvironmentStamp.id(target)).not.toBe(first)
+    expect(second).not.toBe(first)
+    expect(SessionEnvironmentStamp.id(target)).toBe(second)
+    expect(SessionEnvironmentStamp.compacted(target)).not.toBe(second)
   })
 
-  test("clear resets the compaction count", () => {
+  test("rotates on an explicit reset and restarts the compaction count", () => {
     const target = session("ses_a")
     const first = SessionEnvironmentStamp.id(target)
-    for (let index = 0; index < SessionEnvironmentStamp.COMPACTIONS_PER_ROTATION; index++)
-      SessionEnvironmentStamp.compacted(target)
+    const reset = SessionEnvironmentStamp.reset(target)
+
+    expect(reset).not.toBe(first)
+    expect(SessionEnvironmentStamp.id(target)).toBe(reset)
+    expect(SessionEnvironmentStamp.compacted(target)).not.toBe(reset)
+  })
+
+  test("clear resets the stamp", () => {
+    const target = session("ses_a")
+    const first = SessionEnvironmentStamp.id(target)
+    SessionEnvironmentStamp.compacted(target)
     expect(SessionEnvironmentStamp.id(target)).not.toBe(first)
 
     SessionEnvironmentStamp.clear()

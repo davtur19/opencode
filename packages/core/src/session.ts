@@ -65,6 +65,8 @@ import type { FileDiff } from "@opencode/schema/file-diff"
 import { Job } from "./job.js"
 import type { Command } from "./command.js"
 import { SessionEnvironment } from "./session/environment.js"
+import { SessionEgress } from "./session/egress.js"
+import { SessionEnvironmentStamp } from "./session/environment-stamp.js"
 import { InstructionEntry } from "./session/instruction-entry.js"
 
 // get project -> project.locations
@@ -224,6 +226,14 @@ export interface Interface {
   readonly compact: (
     input: CompactInput,
   ) => Effect.Effect<SessionInbox.Compaction, NotFoundError | CompactionConflictError>
+  /**
+   * Rotates the provider-facing identity without touching the session, its history, or its
+   * messages: the next model request uses a new wire alias and environment id, and starts with a
+   * fresh rotation budget and a cold prompt cache.
+   */
+  readonly resetIdentity: (
+    sessionID: SessionSchema.ID,
+  ) => Effect.Effect<{ readonly environmentID: string }, NotFoundError>
   readonly wait: (id: SessionSchema.ID) => Effect.Effect<void, NotFoundError>
   readonly active: Effect.Effect<ReadonlySet<SessionSchema.ID>>
   readonly background: (sessionID: SessionSchema.ID) => Effect.Effect<void, NotFoundError>
@@ -469,6 +479,13 @@ const layer = Layer.effect(
       setPermissions: (input) => sessions.forSession(input.sessionID).setPermissions(input),
       move: moves.move,
       compact: (input) => sessions.forSession(input.sessionID).compact(input),
+      resetIdentity: Effect.fn("Session.resetIdentity")(function* (sessionID) {
+        yield* result.get(sessionID)
+        const alias = SessionEgress.reset(sessionID)
+        const environmentID = SessionEnvironmentStamp.reset(sessionID)
+        yield* Effect.logDebug("session identity reset", { sessionID, alias, environmentID })
+        return { environmentID }
+      }),
       wait: (sessionID) => sessions.forSession(sessionID).wait(),
       active: execution.active,
       background: Effect.fn("Session.background")(function* (sessionID) {

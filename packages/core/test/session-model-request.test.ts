@@ -339,14 +339,9 @@ describe("SessionModelRequest.stampEnvironment", () => {
     expect(environment.text).not.toContain("Environment id:")
   })
 
-  test("rotates the id after the configured completed compactions", () => {
+  test("rotates the id after every completed compaction", () => {
     const target = session("ses_rotate")
     const first = stampEnvironment([environment], target)[0]?.text
-
-    for (let index = 1; index < SessionEnvironmentStamp.COMPACTIONS_PER_ROTATION; index++) {
-      SessionEnvironmentStamp.compacted(target)
-      expect(stampEnvironment([environment], target)[0]?.text).toBe(first)
-    }
 
     SessionEnvironmentStamp.compacted(target)
     expect(stampEnvironment([environment], target)[0]?.text).not.toBe(first)

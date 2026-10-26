@@ -59,6 +59,8 @@ import type {
   SessionShellOutput,
   SessionCompactInput,
   SessionCompactOutput,
+  SessionIdentityResetInput,
+  SessionIdentityResetOutput,
   SessionWaitInput,
   SessionWaitOutput,
   SessionRevertStageInput,
@@ -596,6 +598,14 @@ const EndpointSessionCompact = (raw: RawClient["server.session"]) => (input: Ses
     ),
   )
 
+const EndpointSessionIdentityReset = (raw: RawClient["server.session"]) => (input: SessionIdentityResetInput) =>
+  preserveEffect<SessionIdentityResetOutput>()(
+    raw["session.identity.reset"]({ params: { sessionID: input["sessionID"] } }).pipe(
+      Effect.mapError(mapClientError),
+      Effect.map((value) => value.data),
+    ),
+  )
+
 const EndpointSessionWait = (raw: RawClient["server.session"]) => (input: SessionWaitInput) =>
   preserveEffect<SessionWaitOutput>()(
     raw["session.wait"]({ params: { sessionID: input["sessionID"] } }).pipe(Effect.mapError(mapClientError)),
@@ -809,6 +819,7 @@ const adaptGroupSession = (raw: RawClient["server.session"]) => ({
   synthetic: EndpointSessionSynthetic(raw),
   shell: EndpointSessionShell(raw),
   compact: EndpointSessionCompact(raw),
+  identity: { reset: EndpointSessionIdentityReset(raw) },
   wait: EndpointSessionWait(raw),
   revert: {
     stage: EndpointSessionRevertStage(raw),

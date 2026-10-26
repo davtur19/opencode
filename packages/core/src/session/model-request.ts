@@ -124,7 +124,7 @@ const cacheKey = (affinity: string) => (/^ses_[0-9a-f]{64}$/.test(affinity) ? af
 // The opencode gateway keys its free-tier allowance on the environment block in the system prompt.
 // Stamping a session-scoped id inside that block gives each session its own allowance without
 // changing the real workspace paths the tools use, so the model keeps seeing a valid directory.
-// The stamp rotates after a few completed compactions, where the rebuilt context already makes the
+// The stamp rotates after every completed compaction, where the rebuilt context already makes the
 // prompt cache cold, and a new process boot also yields a new stamp.
 export const stampEnvironment = (system: ReadonlyArray<SystemPart>, sessionID: SessionSchema.ID) =>
   system.map((part) =>

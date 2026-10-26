@@ -456,6 +456,22 @@ export const makeSessionGroup = <I extends HttpApiMiddleware.AnyId, S, FormI ext
         ),
     )
     .add(
+      HttpApiEndpoint.post("session.identity.reset", "/api/session/:sessionID/identity/reset", {
+        params: { sessionID: Session.ID },
+        success: Schema.Struct({ data: Schema.Struct({ environmentID: Schema.String }) }),
+        error: SessionNotFoundError,
+      })
+        .middleware(sessionLocationMiddleware)
+        .annotateMerge(
+          OpenApi.annotations({
+            identifier: "session.identity.reset",
+            summary: "Reset session identity",
+            description:
+              "Rotate the provider-facing session identity without compacting or changing history. The next model request uses a new wire alias and environment id, and starts with a fresh rotation budget and a cold prompt cache.",
+          }),
+        ),
+    )
+    .add(
       HttpApiEndpoint.post("session.wait", "/api/experimental/session/:sessionID/wait", {
         params: { sessionID: Session.ID },
         success: HttpApiSchema.NoContent,

@@ -53,6 +53,8 @@ import type {
   SessionShellOutput,
   SessionCompactInput,
   SessionCompactOutput,
+  SessionIdentityResetInput,
+  SessionIdentityResetOutput,
   SessionWaitInput,
   SessionWaitOutput,
   SessionRevertStageInput,
@@ -825,6 +827,19 @@ export function make(options: ClientOptions) {
           },
           requestOptions,
         ).then((value) => value.data),
+      identity: {
+        reset: (input: SessionIdentityResetInput, requestOptions?: RequestOptions) =>
+          request<{ readonly data: SessionIdentityResetOutput }>(
+            {
+              method: "POST",
+              path: `/api/session/${encodeURIComponent(input.sessionID)}/identity/reset`,
+              successStatus: 200,
+              declaredStatuses: [400, 401, 404],
+              empty: false,
+            },
+            requestOptions,
+          ).then((value) => value.data),
+      },
       wait: (input: SessionWaitInput, requestOptions?: RequestOptions) =>
         request<SessionWaitOutput>(
           {
