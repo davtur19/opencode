@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, test } from "bun:test"
-import { LLM, LanguageModel, Message, SystemPart, ToolResultPart, Media } from "@opencode/ai"
+import { LLM, LanguageModel, Message, SystemPart, ToolResultPart, Media } from "@opencode/ai/effect"
 import { OpenAIChat } from "@opencode/ai/protocols"
 import { Provider } from "@opencode/schema/provider"
 import { SessionMessage } from "@opencode/schema/session-message"
