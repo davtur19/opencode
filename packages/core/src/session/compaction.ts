@@ -654,7 +654,7 @@ export const layer = Layer.effect(
           agent: context.agent.id,
           model: context.model.ref,
           hook: prepared.retry,
-          retry: SessionRunnerRetry.isRetryable(cause),
+          retry: SessionRunnerRetry.isRetryable(cause, context.model),
         })
         if (!decision.retry) return yield* Effect.fail<Failure>({ error })
         yield* Effect.sleep(decision.delay)

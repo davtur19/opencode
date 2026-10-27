@@ -101,17 +101,24 @@ type EgressSession = Pick<SessionSchema.Info, "id" | "parentID" | "fork">
  */
 export const wireIdentity = (session: EgressSession, providerID: Model.Ref["providerID"]) => {
   const affinity = SessionAffinity.get(session)
-  if (providerID !== Provider.ID.opencode) return { session: session.id, affinity, parent: session.parentID }
+  if (providerID !== Provider.ID.opencode)
+    return { session: session.id, affinity, parent: session.parentID, egress: undefined }
   const alias = SessionEgress.identity(session.id)
   return {
     session: alias,
     affinity: alias,
     parent: session.parentID ? SessionEgress.identity(session.parentID) : undefined,
+    // The proxy must key on an identity that survives the alias rotation a gateway retry performs,
+    // or the retry cannot report the relay that just failed under the key that used it. The
+    // environment stamp is that epoch: retries keep it, while compaction and an explicit reset
+    // rotate it together with the alias.
+    egress: SessionEnvironmentStamp.id(session.id),
   }
 }
 
 const identityHeaders = (identity: ReturnType<typeof wireIdentity>) => ({
   "x-opencode-session-id": identity.session,
+  ...(identity.egress === undefined ? {} : { "x-opencode-proxy-session": identity.egress }),
   ...(identity.parent ? { "x-opencode-parent-session-id": identity.parent } : {}),
   "x-session-affinity": identity.affinity,
   "X-Session-Id": identity.affinity,

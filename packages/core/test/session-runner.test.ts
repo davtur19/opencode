@@ -13,6 +13,7 @@ import {
   TransportError,
   InvalidProviderOutputError,
   InvalidRequestError,
+  QuotaExceededError,
   RateLimitError,
   UnknownProviderError,
 } from "@opencode/ai/effect"
@@ -700,6 +701,15 @@ const payloadTooLarge = () =>
 const rateLimited = (retryAfterMs?: number) =>
   new AIError({
     reason: new RateLimitError({ message: "Rate limited", retryAfterMs }),
+  })
+
+const freeUsageLimit = () =>
+  new AIError({
+    reason: new QuotaExceededError({
+      message: "Free usage limit reached",
+      body: JSON.stringify({ type: "error", error: { type: "FreeUsageLimitError" } }),
+      http: new HttpContext({ url: "https://opencode.ai/inference", status: 429, headers: {} }),
+    }),
   })
 
 const setupOverflowRecovery = Effect.fnUntraced(function* (s: Scenario) {
@@ -2746,6 +2756,60 @@ describe("SessionRunnerLLM", () => {
     })
     expect(JSON.stringify(yield* s.messages)).not.toContain("discarded-draft")
     expect((yield* s.session.get(sessionID))?.tokens.input).toBe(50)
+  })
+
+  scenario("retries a compaction rejected by the free usage limit", function* (s) {
+    yield* s.llm.push(TestLLM.text("Earlier answer", "free-limit-history"))
+    yield* s.runPrompt("Earlier question")
+    s.requests.length = 0
+    s.currentModel = LanguageModel.make({ id: "free-model", provider: "opencode", route: OpenAIChat.route })
+    yield* Effect.acquireRelease(
+      Effect.sync(() => {
+        const env = {
+          proxy: process.env.OPENCODE_CLOUD_PROXY,
+          auth: process.env.OPENCODE_CLOUD_PROXY_AUTH,
+        }
+        process.env.OPENCODE_CLOUD_PROXY = "http://proxy.invalid:8080"
+        process.env.OPENCODE_CLOUD_PROXY_AUTH = "1"
+        return env
+      }),
+      (env) =>
+        Effect.sync(() => {
+          if (env.proxy === undefined) delete process.env.OPENCODE_CLOUD_PROXY
+          else process.env.OPENCODE_CLOUD_PROXY = env.proxy
+          if (env.auth === undefined) delete process.env.OPENCODE_CLOUD_PROXY_AUTH
+          else process.env.OPENCODE_CLOUD_PROXY_AUTH = env.auth
+        }),
+    )
+    const hooks = yield* PluginHooks.Service
+    const retries: PluginHooks.Domains["session"]["retry"][] = []
+    yield* hooks.register("session", "retry", (event) =>
+      Effect.sync(() => {
+        retries.push({ ...event })
+        // The free-limit 429 must arrive here as a retry. Without the resolved model, compaction
+        // would treat the quota rejection as terminal and surface it after one request.
+        expect(event.decision).toMatchObject({ retry: true })
+        event.decision = { retry: true, delay: 0 }
+      }),
+    )
+    yield* s.llm.push(Stream.fail(freeUsageLimit()), TestLLM.text("## Objective\n- Accepted summary", "accepted"))
+    const compaction = yield* s.session.compact({ sessionID })
+    yield* s.resume
+
+    expect(s.requests).toHaveLength(2)
+    expect(retries).toHaveLength(1)
+    // The retry rotates the wire alias but keeps the proxy egress key, so the proxy can report
+    // the relay the failed attempt used and move the retry to another address.
+    expect(s.requests[1].http?.headers?.["x-opencode-session-id"]).not.toBe(
+      s.requests[0].http?.headers?.["x-opencode-session-id"],
+    )
+    expect(s.requests[1].http?.headers?.["x-opencode-proxy-session"]).toBe(
+      s.requests[0].http?.headers?.["x-opencode-proxy-session"],
+    )
+    expect((yield* s.messages).find((message) => message.id === compaction.id)).toMatchObject({
+      status: "completed",
+      summary: "## Objective\n- Accepted summary",
+    })
   })
 
   scenario("bounds compaction network retries across a template correction", function* (s) {

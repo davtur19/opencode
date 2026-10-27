@@ -256,7 +256,10 @@ const native = /^ses_[0-9a-f]{12}[0-9A-Za-z]{14}$/
 const model = LanguageModel.make({ id: "model", provider: "opencode", route: OpenAIChat.route })
 
 describe("SessionModelRequest.wireIdentity", () => {
-  beforeEach(() => SessionEgress.clear())
+  beforeEach(() => {
+    SessionEgress.clear()
+    SessionEnvironmentStamp.clear()
+  })
 
   test("uses a stable native alias for the opencode gateway", () => {
     const input = { id: SessionSchema.ID.make("ses_chat") }
@@ -268,6 +271,8 @@ describe("SessionModelRequest.wireIdentity", () => {
     expect(first.session).not.toBe(input.id)
     expect(first.session).toMatch(native)
     expect(first.parent).toBeUndefined()
+    expect(first.egress).toBe(second.egress)
+    expect(first.egress).toMatch(/^[0-9a-f]{12}$/)
   })
 
   test("keeps the real session and affinity for other providers", () => {
@@ -278,6 +283,7 @@ describe("SessionModelRequest.wireIdentity", () => {
     expect(identity.session).toBe(input.id)
     expect(identity.affinity).toBe(parent)
     expect(identity.parent).toBe(parent)
+    expect(identity.egress).toBeUndefined()
   })
 
   test("gives a parent its own alias on the opencode gateway", () => {
@@ -304,20 +310,35 @@ describe("SessionModelRequest.wireIdentity", () => {
 
   test("refreshes an already prepared request after a rotation", () => {
     const input = { id: SessionSchema.ID.make("ses_chat") }
-    const first = wireIdentity(input, Provider.ID.opencode).session
+    const first = wireIdentity(input, Provider.ID.opencode)
     const request = LLM.request({
       model,
       prompt: "hello",
-      http: { headers: { "x-opencode-session-id": first, "x-keep": "yes" } },
-      promptCacheKey: first,
+      http: { headers: { "x-opencode-session-id": first.session, "x-keep": "yes" } },
+      promptCacheKey: first.session,
     })
     const next = SessionEgress.rotate(input.id)
     const refreshed = refresh(request, input, Provider.ID.opencode)
 
     expect(refreshed.http?.headers?.["x-opencode-session-id"]).toBe(next)
     expect(refreshed.http?.headers?.["x-session-affinity"]).toBe(next)
+    // The proxy key must survive the alias rotation so the retry can report the failed relay.
+    expect(refreshed.http?.headers?.["x-opencode-proxy-session"]).toBe(first.egress)
     expect(refreshed.http?.headers?.["x-keep"]).toBe("yes")
     expect(refreshed.promptCacheKey).toBe(next)
+  })
+
+  test("rotates the proxy key with the environment after an identity reset", () => {
+    const input = { id: SessionSchema.ID.make("ses_egress_reset") }
+    const first = wireIdentity(input, Provider.ID.opencode)
+    const request = LLM.request({ model, prompt: "hello" })
+
+    SessionEgress.reset(input.id)
+    SessionEnvironmentStamp.reset(input.id)
+    const refreshed = refresh(request, input, Provider.ID.opencode)
+
+    expect(refreshed.http?.headers?.["x-opencode-session-id"]).not.toBe(first.session)
+    expect(refreshed.http?.headers?.["x-opencode-proxy-session"]).not.toBe(first.egress)
   })
 
   test("refreshes the environment stamp after an identity reset", () => {

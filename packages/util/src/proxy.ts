@@ -74,9 +74,16 @@ function bodyToText(body: BodyInit): string | undefined {
   return body
 }
 
-// The session id is the outgoing identity: one chat step, one egress. The
-// affinity is the fallback for the few cloud requests that carry no session id.
-const SESSION_HEADERS = ["x-opencode-session-id", "x-session-affinity", "x-session-id"]
+// The dedicated proxy key is the egress epoch: it survives the wire alias a gateway retry
+// rotates, so the retry can report the relay the failed attempt used. The session id remains the
+// fallback for requests that predate the header, and the affinity for the few cloud requests that
+// carry no session id at all.
+const SESSION_HEADERS = [
+  "x-opencode-proxy-session",
+  "x-opencode-session-id",
+  "x-session-affinity",
+  "x-session-id",
+]
 
 // Bound the per-session state so a long-lived server cannot grow it forever.
 const SESSION_TRACKED = 256
@@ -142,8 +149,9 @@ const EGRESS_STATUSES = new Set([403, 429])
 /**
  * Records the failure the gateway returned inside the tunnel, so the retried request can carry it
  * to the proxy. Only the wrapper sees the status and the headers, and only the retry that follows
- * benefits from them. The attempt stops advancing at the session allowance; the runner also
- * rotates its wire alias on the next retry, and this bounds the proxy state in the meantime.
+ * benefits from them. The attempt always advances: the proxy blocks the relay recorded for the
+ * previous attempt, so reusing a capped attempt would block the wrong relay and let the retry land
+ * on the one that just failed. The epoch key bounds the state instead.
  */
 export function noteResponseStatus(
   key: string | undefined,
@@ -155,7 +163,7 @@ export function noteResponseStatus(
   const state = rotations.get(key) ?? { boot, attempt: 0 }
   remember(key, {
     boot: state.boot,
-    attempt: Math.min(state.attempt + 1, SESSION_ROTATION_LIMIT),
+    attempt: state.attempt + 1,
     status: response.status,
     cfRay: response.headers.get("cf-ray") ?? undefined,
     logID: response.headers.get("x-opencode-log-id") ?? undefined,

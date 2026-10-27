@@ -185,6 +185,23 @@ describe("util.proxy", () => {
       expect(token.logID).toBe("log-1")
     })
 
+    test("keeps the proxy key when a retry rotates the wire alias", () => {
+      FetchProxy.noteResponseStatus("egress_epoch", response(429, { "cf-ray": "ray-1" }))
+      // The runner rotates the alias before retrying; the egress key is what reports the failure.
+      const proxy = FetchProxy.proxiedInit(url, {
+        headers: {
+          "x-opencode-session-id": "ses_alias_two",
+          "x-opencode-proxy-session": "egress_epoch",
+        },
+      })?.proxy
+      if (proxy === undefined) throw new Error("expected a proxied init")
+      expect(new URL(proxy).username).toBe("egress_epoch")
+      const token = sessionToken(proxy)
+      expect(token.attempt).toBe(1)
+      expect(token.status).toBe(429)
+      expect(token.cfRay).toBe("ray-1")
+    })
+
     test("reports a failure to the next request only", () => {
       FetchProxy.noteResponseStatus("ses_once", response(429))
       FetchProxy.proxiedInit(url, { headers: sessionHeaders("ses_once") })
@@ -208,11 +225,11 @@ describe("util.proxy", () => {
       expect(sessionToken(proxy).attempt).toBe(0)
     })
 
-    test("stops advancing at the session allowance so one session cannot walk the pool", () => {
+    test("keeps advancing so each failure reports the relay it actually used", () => {
       for (let index = 0; index < 6; index++) FetchProxy.noteResponseStatus("ses_limit", response(403))
       const proxy = FetchProxy.proxiedInit(url, { headers: sessionHeaders("ses_limit") })?.proxy
       if (proxy === undefined) throw new Error("expected a proxied init")
-      expect(sessionToken(proxy).attempt).toBe(FetchProxy.SESSION_ROTATION_LIMIT)
+      expect(sessionToken(proxy).attempt).toBe(6)
       expect(sessionToken(proxy).status).toBe(403)
     })
   })
