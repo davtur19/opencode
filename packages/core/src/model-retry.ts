@@ -105,7 +105,7 @@ const notRun = (error: AIError) => {
 /** Retry a one-shot call only when the provider clearly didn't run it: rate limits, overload, unreachable hosts. */
 export const retryOneShot = <A, R>(effect: Effect.Effect<A, AIError, R>) =>
   Effect.gen(function* () {
-    const decide = yield* policy
+    const decide = yield* policy()
     let retries = 0
     while (true) {
       const result = yield* Effect.result(effect)

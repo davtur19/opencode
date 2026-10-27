@@ -130,12 +130,13 @@ const cacheKey = (affinity: string) => (/^ses_[0-9a-f]{64}$/.test(affinity) ? af
 
 const ENVIRONMENT_ID_LINE = /^ {2}Environment id: [^\n]*\n/gm
 
-// The opencode gateway keys its free-tier allowance on the environment block in the system prompt.
-// Stamping a session-scoped id inside that block gives each session its own allowance without
-// changing the real workspace paths the tools use, so the model keeps seeing a valid directory.
-// The stamp rotates after every completed compaction, where the rebuilt context already makes the
-// prompt cache cold, and a new process boot also yields a new stamp. Stamping is idempotent so a
-// refreshed request replaces the id instead of carrying two.
+// The opencode gateway keys its free-tier allowance on the egress address, the /64 of the
+// x-real-ip the proxy exits from, and resets that allowance at UTC midnight. The environment
+// stamp is the proxy's egress epoch: the proxy maps it to a stable address inside the routed /48,
+// so rotating the stamp moves the session to another /64 without changing the real workspace
+// paths the tools use. The stamp rotates after every completed compaction, where the rebuilt
+// context already makes the prompt cache cold, and a new process boot also yields a new stamp.
+// Stamping is idempotent so a refreshed request replaces the id instead of carrying two.
 export const stampEnvironment = (system: ReadonlyArray<SystemPart>, sessionID: SessionSchema.ID) =>
   system.map((part) =>
     part.text.includes("<env>") && part.text.includes("</env>")
