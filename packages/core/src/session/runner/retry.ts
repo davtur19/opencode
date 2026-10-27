@@ -111,8 +111,10 @@ export const RETRY_PHASES = 4
 
 // Only a gateway 403/429 rotates the session's wire alias: the next request must leave under a new
 // identity and address. Rotation is bounded by the step allowance the proxy module grants and by
-// the session-wide budget in SessionEgress. A 5xx stays on the same egress and uses the general
-// retry schedule: the upstream, not the address, is usually the failing part.
+// the session-wide budget in SessionEgress. SessionEgress.identity also refreshes an alias that
+// reaches the gateway's timestamp window, so the first request after a long idle period does not
+// need a 429 to get a usable identity. A 5xx stays on the same egress and uses the general retry
+// schedule: the upstream, not the address, is usually the failing part.
 const isEgressFailure = (error: AIError) =>
   (error.reason._tag === "Authentication" && error.reason.http?.status === 403) ||
   ((error.reason._tag === "RateLimit" || error.reason._tag === "QuotaExceeded") &&

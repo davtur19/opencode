@@ -2,6 +2,11 @@ export * as SessionEgress from "./egress.js"
 
 import { SessionSchema } from "./schema.js"
 
+// The gateway accepts only a wire session id whose embedded timestamp is inside its freshness
+// window: about 90 days in the past and 26 hours in the future. The real session id can live for
+// years, so refresh the alias well before it can age out.
+export const ALIAS_MAX_AGE_MS = 80 * 24 * 60 * 60 * 1000
+
 // How many wire-identity rotations one session may spend on gateway 403/429 before the runner
 // stops rotating and surfaces the failure. Compaction and an explicit reset start a fresh budget.
 // A 5xx does not rotate: it retries on the same egress.
@@ -15,6 +20,7 @@ const SESSION_TRACKED = 256
 type Egress = {
   readonly alias: SessionSchema.ID
   readonly rotations: number
+  readonly createdAt: number
 }
 
 const sessions = new Map<SessionSchema.ID, Egress>()
@@ -30,17 +36,16 @@ function remember(sessionID: SessionSchema.ID, egress: Egress) {
 /**
  * The outgoing identity for a session: a native session ID that is never persisted locally and
  * never replaces the chat ID. The gateway sees this alias; the client, its events, and its UI keep
- * the real session ID.
+ * the real session ID. An alias that has reached the gateway's timestamp window is replaced before
+ * it is sent, so a long-lived process does not keep using an identity the gateway now rejects.
  */
 export function identity(sessionID: SessionSchema.ID) {
   const current = sessions.get(sessionID)
-  if (current) {
+  if (current && Date.now() - current.createdAt < ALIAS_MAX_AGE_MS) {
     remember(sessionID, current)
     return current.alias
   }
-  const alias = SessionSchema.ID.create()
-  remember(sessionID, { alias, rotations: 0 })
-  return alias
+  return reset(sessionID)
 }
 
 /** Whether the session may still spend a rotation on a gateway 403/429. */
@@ -52,14 +57,17 @@ export function canRotate(sessionID: SessionSchema.ID) {
 export function rotate(sessionID: SessionSchema.ID) {
   const current = sessions.get(sessionID)
   const alias = SessionSchema.ID.create()
-  remember(sessionID, { alias, rotations: (current?.rotations ?? 0) + 1 })
+  remember(sessionID, { alias, rotations: (current?.rotations ?? 0) + 1, createdAt: Date.now() })
   return alias
 }
 
-/** Replaces the outgoing identity after a successful compaction and starts a fresh budget. */
+/**
+ * Replaces the outgoing identity after a successful compaction, an explicit reset, or when the
+ * alias reaches the gateway's timestamp window, and starts a fresh budget.
+ */
 export function reset(sessionID: SessionSchema.ID) {
   const alias = SessionSchema.ID.create()
-  remember(sessionID, { alias, rotations: 0 })
+  remember(sessionID, { alias, rotations: 0, createdAt: Date.now() })
   return alias
 }
 

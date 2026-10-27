@@ -137,6 +137,9 @@ const ENVIRONMENT_ID_LINE = /^ {2}Environment id: [^\n]*\n/gm
 // paths the tools use. The stamp rotates after every completed compaction, where the rebuilt
 // context already makes the prompt cache cold, and a new process boot also yields a new stamp.
 // Stamping is idempotent so a refreshed request replaces the id instead of carrying two.
+// The gateway also rejects a wire session id whose embedded timestamp is outside its freshness
+// window (about 90 days back and 26 hours forward). The real session id can live for years, so
+// SessionEgress refreshes the alias before it can age out.
 export const stampEnvironment = (system: ReadonlyArray<SystemPart>, sessionID: SessionSchema.ID) =>
   system.map((part) =>
     part.text.includes("<env>") && part.text.includes("</env>")

@@ -8,6 +8,10 @@ export { SESSION_ROTATION_LIMIT, sessionRotationEnabled }
 // endpoints). Requests to these go through the configured proxy; every other
 // domain (model providers, github, telemetry, ...) is left untouched so Bun's
 // env-based proxy (HTTP(S)_PROXY / NO_PROXY) still applies to them as before.
+// The gateway also gates on the TLS client stack: only the CLI's Bun/BoringSSL
+// fetch passes. Replaying the same request through curl, Python, or a
+// Node/OpenSSL client returns the same free-limit 429 even with valid ids,
+// headers, body, and a fresh egress. Keep cloud traffic on the runtime fetch.
 const OPENCODE_DOMAINS = [
   "opencode.ai",
   "www.opencode.ai",

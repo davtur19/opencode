@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, test } from "bun:test"
+import { afterEach, beforeEach, describe, expect, setSystemTime, test } from "bun:test"
 import { LLM, LanguageModel, Message, SystemPart, ToolResultPart, Media } from "@opencode/ai/effect"
 import { OpenAIChat } from "@opencode/ai/protocols"
 import { Provider } from "@opencode/schema/provider"
@@ -260,6 +260,7 @@ describe("SessionModelRequest.wireIdentity", () => {
     SessionEgress.clear()
     SessionEnvironmentStamp.clear()
   })
+  afterEach(() => setSystemTime())
 
   test("uses a stable native alias for the opencode gateway", () => {
     const input = { id: SessionSchema.ID.make("ses_chat") }
@@ -306,6 +307,18 @@ describe("SessionModelRequest.wireIdentity", () => {
 
     expect(identity.affinity).toBe(identity.session)
     expect(identity.affinity).not.toBe(source)
+  })
+
+  test("refreshes a stale alias without rotating the egress epoch", () => {
+    const input = { id: SessionSchema.ID.make("ses_chat_stale_alias") }
+    const first = wireIdentity(input, Provider.ID.opencode)
+
+    setSystemTime(new Date(Date.now() + SessionEgress.ALIAS_MAX_AGE_MS))
+    const next = wireIdentity(input, Provider.ID.opencode)
+
+    expect(next.session).not.toBe(first.session)
+    expect(next.session).toMatch(native)
+    expect(next.egress).toBe(first.egress)
   })
 
   test("refreshes an already prepared request after a rotation", () => {
