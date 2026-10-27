@@ -64,13 +64,14 @@ afterEach(() => {
   SessionEnvironmentStamp.clear()
 })
 
-const inputFor = (cause: AIError, model: Model.Ref) => ({
+const inputFor = (cause: AIError, model: Model.Ref, anonymous = true) => ({
   cause,
   error: toSessionError(cause),
   agent: Agent.ID.make("build"),
   model,
+  anonymous,
   hook: () => Effect.void,
-  retry: SessionRunnerRetry.isRetryable(cause, { ref: model, anonymous: true }),
+  retry: SessionRunnerRetry.isRetryable(cause, { ref: model, anonymous }),
 })
 
 // Decisions for `count` consecutive failures of the same cause within one step.
@@ -140,6 +141,28 @@ describe("SessionRunnerRetry.policy", () => {
 
       expect(results).toEqual([true, true, true, false, false])
       expect(new Set(aliases).size).toBe(4)
+    }),
+  )
+
+  it.effect("never rotates a credentialed opencode request or a foreign provider", () =>
+    Effect.gen(function* () {
+      const sessionID = SessionSchema.ID.make("ses_retry_paid")
+      const foreignID = SessionSchema.ID.make("ses_retry_foreign")
+      const policy = yield* SessionRunnerRetry.policy(sessionID)
+      const alias = SessionEgress.identity(sessionID)
+      const otherAlias = SessionEgress.identity(foreignID)
+
+      // A normal retry is still allowed where the provider taxonomy allows it; what must never
+      // happen is a new wire identity or a new egress key.
+      for (const cause of [rateLimited, quotaLimited, blocked]) {
+        yield* policy(inputFor(cause, opencode, false))
+        yield* policy(inputFor(cause, other))
+      }
+      expect(SessionEgress.identity(sessionID)).toBe(alias)
+      expect(SessionEgress.identity(foreignID)).toBe(otherAlias)
+      // The paid gateway quota block is terminal, not a free-tier flake.
+      expect((yield* policy(inputFor(quotaLimited, opencode, false))).retry).toBeFalse()
+      expect((yield* policy(inputFor(blocked, opencode, false))).retry).toBeFalse()
     }),
   )
 

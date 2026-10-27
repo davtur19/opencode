@@ -457,7 +457,9 @@ describe("toSessionError", () => {
     delete process.env.OPENCODE_CLOUD_PROXY
     delete process.env.OPENCODE_CLOUD_PROXY_AUTH
     expect(SessionRunnerRetry.isRetryable(quota, opencode)).toBeTrue()
-    expect(SessionRunnerRetry.isRetryable(quota, credentialed)).toBeTrue()
+    // A credentialed opencode request has a real account behind it: a 402 is a subscription
+    // limit, not the free-tier flake, so the retry-and-rotate path is for anonymous traffic only.
+    expect(SessionRunnerRetry.isRetryable(quota, credentialed)).toBeFalse()
     expect(SessionRunnerRetry.isRetryable(quota, foreign)).toBeFalse()
     expect(SessionRunnerRetry.isRetryable(llm(new QuotaExceededError({ message: "Payment Required" })), opencode)).toBeFalse()
     if (savedProxy === undefined) delete process.env.OPENCODE_CLOUD_PROXY

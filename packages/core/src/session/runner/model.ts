@@ -53,6 +53,8 @@ export const resolved = (
     readonly limit: Model.Info["limit"]
     readonly compaction?: Provider.Compaction
     readonly transport?: Provider.Transport
+    /** No credential resolves: the request uses the provider's free (anonymous) path. */
+    readonly anonymous?: boolean
   },
 ): Resolved => ({
   model,
@@ -66,6 +68,7 @@ export const resolved = (
   limit: options.limit,
   compaction: options.compaction,
   transport: options.transport,
+  ...(options.anonymous === true ? { anonymous: true } : {}),
 })
 
 const layer = Layer.effect(

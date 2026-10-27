@@ -21,6 +21,8 @@ interface Input {
   readonly error: SessionError.Error
   readonly agent: Agent.ID
   readonly model: Model.Ref
+  /** No credential resolved: the request uses the opencode gateway's free (public) path. */
+  readonly anonymous?: boolean | undefined
   readonly hook: (event: PluginHooks.Domains["session"]["retry"]) => Effect.Effect<void>
   readonly retry: boolean
 }
@@ -86,6 +88,9 @@ export function isRetryable(
     case "QuotaExceeded":
       return (
         model?.ref.providerID === Provider.ID.opencode &&
+        // Only the anonymous free path rotates: a credentialed opencode 429/402 is a real
+        // account or subscription limit, and other providers' quota rejections are billing limits.
+        model.anonymous === true &&
         (error.reason.http?.status === 402 ||
           (error.reason.http?.status === 429 && sessionRotationEnabled()))
       )
@@ -132,11 +137,13 @@ export const policy = (sessionID: SessionSchema.ID, options?: { readonly phases?
       Effect.gen(function* () {
         const next = yield* decide(input)
         if (!next) return { retry: false as const }
-        // Only the opencode gateway sends the wire alias. Other providers keep their session
-        // affinity and their normal retry schedule.
+        // Only an anonymous free-tier request rotates its egress and wire alias. Every other
+        // request (credentialed opencode, DeepSeek, Anthropic, ...) keeps the normal retry
+        // schedule on the same address and the same real session identity.
         const egress =
           isEgressFailure(input.cause) &&
           input.model.providerID === Provider.ID.opencode &&
+          input.anonymous === true &&
           sessionRotationEnabled()
         if (egress) egressFailures++
         const rotating = egress && egressFailures <= SESSION_ROTATION_LIMIT

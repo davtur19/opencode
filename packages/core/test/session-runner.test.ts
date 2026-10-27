@@ -341,6 +341,8 @@ const layer = Layer.unwrap(
               limit: modelLimits.get(String(selected.id)) ?? defaultModelLimit,
               variant: session.model?.variant,
               compaction: state.compaction,
+              // The gateway scenarios model the free (anonymous) path; other providers stay credentialed.
+              anonymous: selected.provider === "opencode",
             })
           }),
         ),
@@ -4885,14 +4887,10 @@ describe("SessionRunnerLLM", () => {
   scenario("adds session correlation headers to model requests", function* (s) {
     yield* s.runPrompt("Run correlated request")
 
+    // The session-correlation headers belong to the opencode gateway only; a foreign provider
+    // (the harness default is "fake") must receive nothing but the client user agent.
     expect(s.requests[0]?.http?.headers).toEqual({
-      "x-opencode-session-id": sessionID,
-      "x-session-affinity": sessionID,
-      "X-Session-Id": sessionID,
       "User-Agent": App.useragent(App.make()),
-      "x-opencode-project": Project.ID.global,
-      "x-opencode-session": sessionID,
-      "x-opencode-client": "opencode",
     })
   })
 
@@ -4907,14 +4905,6 @@ describe("SessionRunnerLLM", () => {
       .pipe(Effect.orDie)
     yield* s.runPrompt("Run child request")
 
-    expect(s.requests[0]?.http?.headers).toMatchObject({
-      "x-opencode-session-id": sessionID,
-      "x-opencode-parent-session-id": parentID,
-      "x-session-affinity": parentID,
-      "X-Session-Id": parentID,
-      "x-parent-session-id": parentID,
-      "x-opencode-session": parentID,
-    })
     expect(s.requests[0]?.promptCacheKey).toBe(parentID)
   })
 

@@ -278,6 +278,7 @@ const layer = Layer.effect(
               error,
               agent: loaded.agent.id,
               model: loaded.model.ref,
+              anonymous: loaded.model.anonymous,
               hook: prepared.retry,
               retry: proposed,
             }),

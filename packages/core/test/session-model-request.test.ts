@@ -264,8 +264,8 @@ describe("SessionModelRequest.wireIdentity", () => {
 
   test("uses a stable native alias for the opencode gateway", () => {
     const input = { id: SessionSchema.ID.make("ses_chat") }
-    const first = wireIdentity(input, Provider.ID.opencode)
-    const second = wireIdentity(input, Provider.ID.opencode)
+    const first = wireIdentity(input, Provider.ID.opencode, true)
+    const second = wireIdentity(input, Provider.ID.opencode, true)
 
     expect(first.session).toBe(first.affinity)
     expect(first.session).toBe(second.session)
@@ -290,7 +290,7 @@ describe("SessionModelRequest.wireIdentity", () => {
   test("gives a parent its own alias on the opencode gateway", () => {
     const parent = SessionSchema.ID.make("ses_parent")
     const input = { id: SessionSchema.ID.make("ses_chat"), parentID: parent }
-    const identity = wireIdentity(input, Provider.ID.opencode)
+    const identity = wireIdentity(input, Provider.ID.opencode, true)
 
     expect(identity.parent).toBeDefined()
     expect(identity.parent).not.toBe(parent)
@@ -303,7 +303,7 @@ describe("SessionModelRequest.wireIdentity", () => {
       id: SessionSchema.ID.make("ses_chat"),
       fork: { sessionID: source, boundary: { type: "before" as const, messageID: SessionMessage.ID.make("msg_1") } },
     }
-    const identity = wireIdentity(input, Provider.ID.opencode)
+    const identity = wireIdentity(input, Provider.ID.opencode, true)
 
     expect(identity.affinity).toBe(identity.session)
     expect(identity.affinity).not.toBe(source)
@@ -311,10 +311,10 @@ describe("SessionModelRequest.wireIdentity", () => {
 
   test("refreshes a stale alias without rotating the egress epoch", () => {
     const input = { id: SessionSchema.ID.make("ses_chat_stale_alias") }
-    const first = wireIdentity(input, Provider.ID.opencode)
+    const first = wireIdentity(input, Provider.ID.opencode, true)
 
     setSystemTime(new Date(Date.now() + SessionEgress.ALIAS_MAX_AGE_MS))
-    const next = wireIdentity(input, Provider.ID.opencode)
+    const next = wireIdentity(input, Provider.ID.opencode, true)
 
     expect(next.session).not.toBe(first.session)
     expect(next.session).toMatch(native)
@@ -323,7 +323,7 @@ describe("SessionModelRequest.wireIdentity", () => {
 
   test("refreshes an already prepared request after a rotation", () => {
     const input = { id: SessionSchema.ID.make("ses_chat") }
-    const first = wireIdentity(input, Provider.ID.opencode)
+    const first = wireIdentity(input, Provider.ID.opencode, true)
     const request = LLM.request({
       model,
       prompt: "hello",
@@ -331,7 +331,7 @@ describe("SessionModelRequest.wireIdentity", () => {
       promptCacheKey: first.session,
     })
     const next = SessionEgress.rotate(input.id)
-    const refreshed = refresh(request, input, Provider.ID.opencode)
+    const refreshed = refresh(request, input, Provider.ID.opencode, true)
 
     expect(refreshed.http?.headers?.["x-opencode-session-id"]).toBe(next)
     expect(refreshed.http?.headers?.["x-session-affinity"]).toBe(next)
@@ -343,12 +343,12 @@ describe("SessionModelRequest.wireIdentity", () => {
 
   test("rotates the proxy key with the environment after an identity reset", () => {
     const input = { id: SessionSchema.ID.make("ses_egress_reset") }
-    const first = wireIdentity(input, Provider.ID.opencode)
+    const first = wireIdentity(input, Provider.ID.opencode, true)
     const request = LLM.request({ model, prompt: "hello" })
 
     SessionEgress.reset(input.id)
     SessionEnvironmentStamp.reset(input.id)
-    const refreshed = refresh(request, input, Provider.ID.opencode)
+    const refreshed = refresh(request, input, Provider.ID.opencode, true)
 
     expect(refreshed.http?.headers?.["x-opencode-session-id"]).not.toBe(first.session)
     expect(refreshed.http?.headers?.["x-opencode-proxy-session"]).not.toBe(first.egress)
@@ -364,11 +364,45 @@ describe("SessionModelRequest.wireIdentity", () => {
     })
 
     SessionEnvironmentStamp.reset(input.id)
-    const refreshed = refresh(request, input, Provider.ID.opencode)
+    const refreshed = refresh(request, input, Provider.ID.opencode, true)
     const text = refreshed.system[0]?.text ?? ""
 
     expect(text).toContain(`Environment id: ${SessionEnvironmentStamp.id(input.id)}`)
     expect(text.match(/Environment id:/g)).toHaveLength(1)
+  })
+
+  test("keeps the real identity and an untouched prompt when the opencode request is credentialed", () => {
+    const input = { id: SessionSchema.ID.make("ses_paid") }
+    const identity = wireIdentity(input, Provider.ID.opencode, false)
+
+    expect(identity.session).toBe(input.id)
+    expect(identity.egress).toBeUndefined()
+
+    const request = LLM.request({
+      model,
+      system: [SystemPart.make("<env>\n  Working directory: /project\n</env>")],
+      prompt: "hello",
+      http: { headers: { "x-keep": "yes" } },
+    })
+    const refreshed = refresh(request, input, Provider.ID.opencode, false)
+
+    expect(refreshed.http?.headers?.["x-opencode-session-id"]).toBeUndefined()
+    expect(refreshed.http?.headers?.["x-opencode-proxy-session"]).toBeUndefined()
+    expect(refreshed.http?.headers?.["x-keep"]).toBe("yes")
+    expect(refreshed.system[0]?.text).not.toContain("Environment id:")
+  })
+
+  test("leaves a non-gateway provider completely unmodified", () => {
+    const input = { id: SessionSchema.ID.make("ses_deepseek") }
+    const request = LLM.request({
+      model,
+      system: [SystemPart.make("<env>\n  Working directory: /project\n</env>")],
+      prompt: "hello",
+    })
+    const refreshed = refresh(request, input, Provider.ID.make("deepseek"), true)
+
+    expect(refreshed.system[0]?.text).not.toContain("Environment id:")
+    expect(refreshed.http?.headers?.["x-opencode-session-id"]).toBeUndefined()
   })
 })
 

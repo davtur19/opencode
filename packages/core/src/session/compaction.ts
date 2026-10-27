@@ -17,6 +17,7 @@ import {
 import type { StreamOptions } from "@opencode/ai/route"
 import type { SessionCompactionResult } from "@opencode/plugin/effect/session"
 import type { SessionError } from "@opencode/schema/session-error"
+import { Provider } from "@opencode/schema/provider"
 import { makeLocationNode } from "@opencode/util/effect/app-node"
 import { Context, Effect, Exit, Fiber, Layer, Result, Scope, Stream } from "effect"
 import { Agent } from "../agent.js"
@@ -641,7 +642,15 @@ export const layer = Layer.effect(
 
         const size = request === prepared.request ? measured : undefined
         const attempt = yield* Effect.result(
-          send(SessionModelRequest.refresh(request, context.session, context.model.ref.providerID), size),
+          send(
+            SessionModelRequest.refresh(
+              request,
+              context.session,
+              context.model.ref.providerID,
+              context.model.anonymous,
+            ),
+            size,
+          ),
         )
         if (Result.isSuccess(attempt)) return attempt.success
         const cause = attempt.failure
@@ -671,6 +680,7 @@ export const layer = Layer.effect(
           error,
           agent: context.agent.id,
           model: context.model.ref,
+          anonymous: context.model.anonymous,
           hook: prepared.retry,
           retry: SessionRunnerRetry.isRetryable(cause, context.model),
         })
@@ -923,9 +933,12 @@ export const layer = Layer.effect(
       )
       // The context is rebuilt from the summary, so the prompt cache is cold either way: this is
       // the free boundary to start the next turn under a fresh wire identity and rotation budget.
-      const alias = SessionEgress.reset(sessionID)
-      const environment = SessionEnvironmentStamp.compacted(sessionID)
-      yield* Effect.logDebug("session identity reset after compaction", { sessionID, alias, environment })
+      // Only the anonymous free tier carries that identity; other models keep their real session.
+      if (context.model.ref.providerID === Provider.ID.opencode && context.model.anonymous === true) {
+        const alias = SessionEgress.reset(sessionID)
+        const environment = SessionEnvironmentStamp.compacted(sessionID)
+        yield* Effect.logDebug("session identity reset after compaction", { sessionID, alias, environment })
+      }
       return { status: "completed" }
     })
 

@@ -1,7 +1,7 @@
 import { describe, expect } from "bun:test"
 import { ToolDefinition } from "@opencode/ai/effect"
 import { OpenAIChat } from "@opencode/ai/protocols"
-import { SystemPart } from "@opencode/ai/effect"
+import { LanguageModel, SystemPart } from "@opencode/ai/effect"
 import { Agent } from "@opencode/schema/agent"
 import { Money } from "@opencode/schema/money"
 import { Session } from "@opencode/schema/session"
@@ -243,7 +243,17 @@ describe("SessionModelRequest HTTP hooks", () => {
     Effect.gen(function* () {
       const requests = yield* SessionModelRequest.Service.pipe(Effect.provide(SessionModelRequest.layer))
       const system = [SystemPart.make("<env>\n  Working directory: /project\n</env>")]
-      const input = { session, agent: Agent.ID.make("build"), model, system, messages: [] }
+      // The environment stamp exists only for the free gateway; use an anonymous gateway model.
+      const gateway = SessionRunnerModel.resolved(
+        LanguageModel.make({ id: "free", provider: "opencode", route: OpenAIChat.route }),
+        {
+          capabilities: model.capabilities,
+          cost: [],
+          limit: model.limit,
+          anonymous: true,
+        },
+      )
+      const input = { session, agent: Agent.ID.make("build"), model: gateway, system, messages: [] }
 
       const primary = yield* requests.primary(input)
       const compaction = yield* requests.compaction(input)

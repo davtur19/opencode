@@ -99,9 +99,15 @@ type EgressSession = Pick<SessionSchema.Info, "id" | "parentID" | "fork">
  * rotation changes its address and session identity without touching the chat ID; every other
  * provider keeps the real session and affinity.
  */
-export const wireIdentity = (session: EgressSession, providerID: Model.Ref["providerID"]) => {
+export const wireIdentity = (
+  session: EgressSession,
+  providerID: Model.Ref["providerID"],
+  anonymous?: boolean,
+) => {
   const affinity = SessionAffinity.get(session)
-  if (providerID !== Provider.ID.opencode)
+  // The alias only exists to survive the free gateway's session-identity blocks. A credentialed
+  // opencode request, and every other provider, keeps the real session and affinity.
+  if (providerID !== Provider.ID.opencode || anonymous !== true)
     return { session: session.id, affinity, parent: session.parentID, egress: undefined }
   const alias = SessionEgress.identity(session.id)
   return {
@@ -162,15 +168,17 @@ export const refresh = (
   request: LLMRequest,
   session: EgressSession,
   providerID: Model.Ref["providerID"],
+  anonymous?: boolean,
 ) => {
-  const identity = wireIdentity(session, providerID)
+  const free = providerID === Provider.ID.opencode && anonymous === true
+  const identity = wireIdentity(session, providerID, anonymous)
   return LLMRequest.update(request, {
     http: new HttpOptions({
       ...request.http,
-      headers: { ...request.http?.headers, ...identityHeaders(identity) },
+      headers: { ...request.http?.headers, ...(free ? identityHeaders(identity) : {}) },
     }),
     promptCacheKey: cacheKey(identity.affinity),
-    system: stampEnvironment(request.system, session.id),
+    system: free ? stampEnvironment(request.system, session.id) : request.system,
   })
 }
 
@@ -358,18 +366,21 @@ export const layer = Layer.effect(
       const entries = Object.entries(shaped.options)
       const generation = Object.fromEntries(entries.filter(([k]) => GENERATION_KEYS.has(k))) as GenerationOptionsFields
       const providerOptions = Object.fromEntries(entries.filter(([k]) => !GENERATION_KEYS.has(k)))
-      const identity = wireIdentity(session, model.ref.providerID)
+      // Free-tier gateway traffic only: the wire alias, the identity headers, and the environment
+      // stamp are all gateway/egress bookkeeping. A credentialed request and every other provider
+      // (DeepSeek, Anthropic, OpenRouter, ...) keep the real identity and an untouched system prompt.
+      const cloudFree = model.ref.providerID === Provider.ID.opencode && model.anonymous === true
+      const identity = wireIdentity(session, model.ref.providerID, model.anonymous)
       // Titles are provider bookkeeping, not session turns: the gateway never charges them, so they
       // keep the provider default and carry no environment id. Every other flow carries the session's.
-      const system = kind === "title" ? shaped.system : stampEnvironment(shaped.system, session.id)
+      const system = kind === "title" || !cloudFree ? shaped.system : stampEnvironment(shaped.system, session.id)
       const base = LLM.request({
         model: model.model,
         http: {
           headers: {
-            ...identityHeaders(identity),
+            ...(cloudFree ? identityHeaders(identity) : {}),
             "User-Agent": App.useragent(app),
-            "x-opencode-project": session.projectID,
-            "x-opencode-client": app.name,
+            ...(cloudFree ? { "x-opencode-project": session.projectID, "x-opencode-client": app.name } : {}),
           },
         },
         // TODO: Persist cache lineage so nested forks reuse the root session's cache key.
