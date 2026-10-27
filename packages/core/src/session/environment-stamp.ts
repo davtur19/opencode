@@ -49,7 +49,7 @@ export function compacted(sessionID: SessionSchema.ID) {
   return stamp(sessionID, generation)
 }
 
-/** Rotates the stamp on an explicit identity reset and restarts the compaction count. */
+/** Rotates the stamp on an identity reset, manual or automatic, and restarts the compaction count. */
 export function reset(sessionID: SessionSchema.ID) {
   const current = sessions.get(sessionID) ?? { generation: 0, compactions: 0 }
   const generation = current.generation + 1

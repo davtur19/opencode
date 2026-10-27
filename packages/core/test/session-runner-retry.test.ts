@@ -12,6 +12,7 @@ import { Agent } from "@opencode/schema/agent"
 import { Model } from "@opencode/schema/model"
 import { Provider } from "@opencode/core/provider"
 import { SessionEgress } from "@opencode/core/session/egress"
+import { SessionEnvironmentStamp } from "@opencode/core/session/environment-stamp"
 import { SessionSchema } from "@opencode/core/session/schema"
 import { SessionRunnerRetry } from "@opencode/core/session/runner/retry"
 import { toSessionError } from "@opencode/core/session/to-session-error"
@@ -51,6 +52,7 @@ beforeEach(() => {
   process.env.OPENCODE_CLOUD_PROXY = "http://proxy.invalid:8080"
   process.env.OPENCODE_CLOUD_PROXY_AUTH = "1"
   SessionEgress.clear()
+  SessionEnvironmentStamp.clear()
 })
 
 afterEach(() => {
@@ -59,6 +61,7 @@ afterEach(() => {
   if (env.auth === undefined) delete process.env.OPENCODE_CLOUD_PROXY_AUTH
   else process.env.OPENCODE_CLOUD_PROXY_AUTH = env.auth
   SessionEgress.clear()
+  SessionEnvironmentStamp.clear()
 })
 
 const inputFor = (cause: AIError, model: Model.Ref) => ({
@@ -140,6 +143,22 @@ describe("SessionRunnerRetry.policy", () => {
     }),
   )
 
+  it.effect("rotates the wire alias on an opencode 402 usage-limit block and stops at the step limit", () =>
+    Effect.gen(function* () {
+      const sessionID = SessionSchema.ID.make("ses_retry_402")
+      const policy = yield* SessionRunnerRetry.policy(sessionID)
+      const aliases = [SessionEgress.identity(sessionID)]
+      const results: boolean[] = []
+      for (let i = 0; i < 5; i++) {
+        results.push((yield* policy(inputFor(quotaPayment, opencode))).retry)
+        aliases.push(SessionEgress.identity(sessionID))
+      }
+
+      expect(results).toEqual([true, true, true, false, false])
+      expect(new Set(aliases).size).toBe(4)
+    }),
+  )
+
   it.effect("keeps an opencode 429 quota cap terminal without the proxy", () =>
     Effect.gen(function* () {
       delete process.env.OPENCODE_CLOUD_PROXY
@@ -162,16 +181,6 @@ describe("SessionRunnerRetry.policy", () => {
 
       expect(decision.retry).toBe(false)
       expect(SessionEgress.identity(sessionID)).toBe(alias)
-    }),
-  )
-
-  it.effect("still retries an opencode 402 quota blip", () =>
-    Effect.gen(function* () {
-      const sessionID = SessionSchema.ID.make("ses_retry_quota_402")
-      const policy = yield* SessionRunnerRetry.policy(sessionID)
-      const decision = yield* policy(inputFor(quotaPayment, opencode))
-
-      expect(decision.retry).toBe(true)
     }),
   )
 
@@ -209,20 +218,23 @@ describe("SessionRunnerRetry.policy", () => {
     }),
   )
 
-  it.effect("stops rotating once the session budget is spent", () =>
+  it.effect("renews the session identity once the rotation budget is spent", () =>
     Effect.gen(function* () {
       const sessionID = SessionSchema.ID.make("ses_retry_budget")
       for (let i = 0; i < SessionEgress.SESSION_EGRESS_BUDGET; i++) SessionEgress.rotate(sessionID)
       const alias = SessionEgress.identity(sessionID)
+      const environmentID = SessionEnvironmentStamp.id(sessionID)
       const policy = yield* SessionRunnerRetry.policy(sessionID)
       const decision = yield* policy(inputFor(blocked, opencode))
 
-      expect(decision.retry).toBe(false)
-      expect(SessionEgress.identity(sessionID)).toBe(alias)
+      expect(decision.retry).toBe(true)
+      expect(SessionEgress.identity(sessionID)).not.toBe(alias)
+      expect(SessionEnvironmentStamp.id(sessionID)).not.toBe(environmentID)
+      expect(SessionEgress.canRotate(sessionID)).toBe(true)
     }),
   )
 
-  it.effect("keeps retrying a 5xx without rotating when the session budget is spent", () =>
+  it.effect("keeps retrying a 502 without rotating when the session budget is spent", () =>
     Effect.gen(function* () {
       const sessionID = SessionSchema.ID.make("ses_retry_budget_5xx")
       for (let i = 0; i < SessionEgress.SESSION_EGRESS_BUDGET; i++) SessionEgress.rotate(sessionID)

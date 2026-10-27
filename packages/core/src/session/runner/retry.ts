@@ -11,6 +11,7 @@ import { Bus } from "../../bus.js"
 import { ModelRetry } from "../../model-retry.js"
 import type { PluginHooks } from "../../plugin/hooks.js"
 import { SessionEgress } from "../egress.js"
+import { SessionEnvironmentStamp } from "../environment-stamp.js"
 import { SessionEvent } from "../event.js"
 import { SessionMessage } from "../message.js"
 import { SessionSchema } from "../schema.js"
@@ -32,10 +33,10 @@ export interface Decision {
 
 /**
  * Retries one provider failure. `model` resolves the opencode gateway's transient flakes: its
- * intermittent 401 on anonymous public requests, its free-tier 402 quota blip, and its 403/429
- * rejections when the session-addressed proxy and its rotating wire alias can move the retry to
- * another egress. A 5xx stays on the same egress and uses the general retry schedule. Callers
- * without a resolved model keep the plain reason taxonomy so auxiliary requests never mask a real
+ * intermittent 401 on anonymous public requests and its usage-limit or abuse blocks (402/403/429)
+ * when the session-addressed proxy and its rotating wire alias can move the retry to another
+ * egress. A 5xx stays on the same egress and uses the general retry schedule. Callers without a
+ * resolved model keep the plain reason taxonomy so auxiliary requests never mask a real
  * credential or billing failure.
  */
 export function isRetryable(
@@ -109,16 +110,19 @@ export function isRetryable(
  */
 export const RETRY_PHASES = 4
 
-// Only a gateway 403/429 rotates the session's wire alias: the next request must leave under a new
-// identity and address. Rotation is bounded by the step allowance the proxy module grants and by
-// the session-wide budget in SessionEgress. SessionEgress.identity also refreshes an alias that
-// reaches the gateway's timestamp window, so the first request after a long idle period does not
-// need a 429 to get a usable identity. A 5xx stays on the same egress and uses the general retry
-// schedule: the upstream, not the address, is usually the failing part.
+// Every gateway block about a usage limit rotates the session's wire alias and proxy attempt: the
+// quota blocks on 402/429, the 403 abuse gate, and throttle 429s. The next request must leave
+// under a new identity and address. Rotation is bounded by the step allowance the proxy
+// module grants; when the session-wide budget is spent, the policy renews the alias and
+// environment stamp instead of surfacing the failure, so a long session keeps rotating
+// automatically. SessionEgress.identity also refreshes an alias that reaches the gateway's
+// timestamp window, so the first request after a long idle period does not need a rejection to get
+// a usable identity. A 5xx stays on the same egress and uses the general retry schedule: the
+// upstream, not the address, is usually the failing part.
 const isEgressFailure = (error: AIError) =>
   (error.reason._tag === "Authentication" && error.reason.http?.status === 403) ||
-  ((error.reason._tag === "RateLimit" || error.reason._tag === "QuotaExceeded") &&
-    error.reason.http?.status === 429)
+  error.reason._tag === "RateLimit" ||
+  error.reason._tag === "QuotaExceeded"
 
 export const policy = (sessionID: SessionSchema.ID, options?: { readonly phases?: number }) =>
   Effect.gen(function* () {
@@ -135,9 +139,8 @@ export const policy = (sessionID: SessionSchema.ID, options?: { readonly phases?
           input.model.providerID === Provider.ID.opencode &&
           sessionRotationEnabled()
         if (egress) egressFailures++
-        const allowed =
-          next.retry &&
-          (!egress || (egressFailures <= SESSION_ROTATION_LIMIT && SessionEgress.canRotate(sessionID)))
+        const rotating = egress && egressFailures <= SESSION_ROTATION_LIMIT
+        const allowed = next.retry && (!egress || rotating)
         const event: PluginHooks.Domains["session"]["retry"] = {
           sessionID,
           agent: input.agent,
@@ -148,9 +151,17 @@ export const policy = (sessionID: SessionSchema.ID, options?: { readonly phases?
         }
         yield* input.hook(event)
         if (!event.decision.retry) return event.decision
-        if (egress && SessionEgress.canRotate(sessionID)) {
-          const alias = SessionEgress.rotate(sessionID)
-          yield* Effect.logDebug("session egress rotated", { sessionID, alias })
+        if (rotating) {
+          if (SessionEgress.canRotate(sessionID)) {
+            const alias = SessionEgress.rotate(sessionID)
+            yield* Effect.logDebug("session egress rotated", { sessionID, alias })
+          } else {
+            // The session budget is spent: renew the whole identity instead of letting a long
+            // session stop rotating for good. `/resetid` remains the manual equivalent.
+            const alias = SessionEgress.reset(sessionID)
+            const environmentID = SessionEnvironmentStamp.reset(sessionID)
+            yield* Effect.logDebug("session egress renewed", { sessionID, alias, environmentID })
+          }
         }
         const normalized =
           Number.isFinite(event.decision.delay) && event.decision.delay >= 0

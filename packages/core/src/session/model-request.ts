@@ -110,8 +110,8 @@ export const wireIdentity = (session: EgressSession, providerID: Model.Ref["prov
     parent: session.parentID ? SessionEgress.identity(session.parentID) : undefined,
     // The proxy must key on an identity that survives the alias rotation a gateway retry performs,
     // or the retry cannot report the relay that just failed under the key that used it. The
-    // environment stamp is that epoch: retries keep it, while compaction and an explicit reset
-    // rotate it together with the alias.
+    // environment stamp is that epoch: retries keep it, while compaction, an explicit reset, and
+    // the automatic renewal after the rotation budget rotate it together with the alias.
     egress: SessionEnvironmentStamp.id(session.id),
   }
 }

@@ -7,9 +7,10 @@ import { SessionSchema } from "./schema.js"
 // years, so refresh the alias well before it can age out.
 export const ALIAS_MAX_AGE_MS = 80 * 24 * 60 * 60 * 1000
 
-// How many wire-identity rotations one session may spend on gateway 403/429 before the runner
-// stops rotating and surfaces the failure. Compaction and an explicit reset start a fresh budget.
-// A 5xx does not rotate: it retries on the same egress.
+// How many wire-identity rotations one session may spend on a gateway usage-limit block (402), an
+// abuse gate (403), or a throttle (429) before the runner renews the whole identity (alias and
+// environment stamp) and starts a fresh budget. Compaction and an explicit reset also start a
+// fresh budget. A 5xx does not rotate: it retries on the same egress.
 export const SESSION_EGRESS_BUDGET = 12
 
 // Bound the per-session state so a long-lived server cannot grow it forever. Evicting a session
@@ -48,7 +49,7 @@ export function identity(sessionID: SessionSchema.ID) {
   return reset(sessionID)
 }
 
-/** Whether the session may still spend a rotation on a gateway 403/429. */
+/** Whether the session may still spend a rotation on a gateway usage-limit block. */
 export function canRotate(sessionID: SessionSchema.ID) {
   return (sessions.get(sessionID)?.rotations ?? 0) < SESSION_EGRESS_BUDGET
 }
