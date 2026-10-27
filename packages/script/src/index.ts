@@ -19,13 +19,10 @@ if (!semver.satisfies(process.versions.bun, expectedBunVersionRange)) {
 
 const env = {
   OPENCODE_CHANNEL: process.env["OPENCODE_CHANNEL"],
-  OPENCODE_BUMP: process.env["OPENCODE_BUMP"],
   OPENCODE_VERSION: process.env["OPENCODE_VERSION"],
-  OPENCODE_RELEASE: process.env["OPENCODE_RELEASE"],
 }
 const CHANNEL = await (async () => {
   if (env.OPENCODE_CHANNEL) return env.OPENCODE_CHANNEL
-  if (env.OPENCODE_BUMP) return "latest"
   if (env.OPENCODE_VERSION && !env.OPENCODE_VERSION.startsWith("0.0.0-")) return "latest"
   const branch = await $`git branch --show-current`.text().then((x) => x.trim())
   if (!branch) return "detached"
@@ -42,22 +39,11 @@ const IS_PREVIEW = CHANNEL !== "latest"
 // published one ships. CI preview builds keep the branch-scoped id.
 const IS_CI = Boolean(process.env["CI"] || process.env["GITHUB_ACTIONS"] || process.env["GITHUB_RUN_NUMBER"])
 
-const VERSION = await (async () => {
+const VERSION = (() => {
   if (env.OPENCODE_VERSION) return env.OPENCODE_VERSION
   if (!IS_CI) return rootPkg.version
-  if (IS_PREVIEW) return `0.0.0-${CHANNEL}-${previewBuildNumber()}`
-  const version = await fetch("https://registry.npmjs.org/@opencode%2fcli/latest")
-    .then((res) => {
-      if (!res.ok) throw new Error(res.statusText)
-      return res.json()
-    })
-    .then((data: any) => data.version)
-  if (semver.lt(version, "2.0.0")) return "2.0.0"
-  const [major, minor, patch] = version.split(".").map((x: string) => Number(x) || 0)
-  const t = env.OPENCODE_BUMP?.toLowerCase()
-  if (t === "major") return `${major + 1}.0.0`
-  if (t === "minor") return `${major}.${minor + 1}.0`
-  return `${major}.${minor}.${patch + 1}`
+  if (!IS_PREVIEW) throw new Error("OPENCODE_VERSION is required for latest-channel builds")
+  return `0.0.0-${CHANNEL}-${previewBuildNumber()}`
 })()
 
 function previewBuildNumber() {
@@ -87,9 +73,6 @@ export const Script = {
   },
   get preview() {
     return IS_PREVIEW
-  },
-  get release(): boolean {
-    return !!env.OPENCODE_RELEASE
   },
   get team() {
     return team
