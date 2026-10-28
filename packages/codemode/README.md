@@ -104,6 +104,25 @@ const web = Extension.make({ name: "web", globals: { fetch: (url: string) => glo
 const runtime = CodeMode.make({ tools, extensions: [web] })
 ```
 
+A global may return a value, a Promise, or an Effect. An Effect starts only after the `extension.before` hook admits
+the call, and its requirements join the runtime's environment the same way a tool's do, so the host can provide
+per-execution services such as the calling session:
+
+```ts
+const web = Extension.make({
+  name: "web",
+  globals: {
+    fetch: (url: string) =>
+      Effect.gen(function* () {
+        const session = yield* Session
+        yield* session.authorize(url)
+        return yield* Effect.promise(() => globalThis.fetch(url))
+      }),
+  },
+})
+const result = yield* CodeMode.make({ extensions: [web] }).execute(code).pipe(Effect.provideService(Session, session))
+```
+
 Every value crossing in either direction is converted, never shared: arguments come in as copies, results go out as
 copies, and a function inside a result is callable the same way. A global that shadows a built-in or another
 extension throws at `CodeMode.make`.
@@ -179,7 +198,8 @@ every visible tool. Hosts render their own model-facing instructions from these 
 and `CodeMode.toolExpression(path)` supply the exact callable forms.
 
 The synchronous `search(...)` built-in is always available. It supports exact-path lookup, namespace-scoped search,
-empty-query browsing, and pagination, and returns callable paths with full signatures. Search counts toward
+empty-query browsing, and pagination, and returns callable paths with full signatures. Its result can be used directly,
+awaited, or chained with `then`, `catch`, and `finally`, so programs work whichever way they treat it. Search counts toward
 `maxToolCalls`. Search also matches descriptions from enclosing `Namespace` values.
 
 ## Execution Limits

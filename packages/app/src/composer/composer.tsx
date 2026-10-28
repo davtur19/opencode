@@ -6,19 +6,16 @@ import { useDialog } from "@opencode/ui/context/dialog"
 import { Icon } from "@opencode/ui/icon"
 import { Keybind } from "@opencode/ui/keybind"
 import { Slash } from "@opencode/ui/slash"
-import { consoleModelGroup } from "@/providers/models/provider-group"
-import { consoleProviderName } from "@/providers/catalog/console"
 import { Tooltip } from "@opencode/ui/tooltip"
 import { ComposerEditor } from "./editor/editor"
 import { DialogSelectModel, ModelSelectorDrawer } from "@/providers/models/select-dialog"
 import { DialogSelectModelNext, ModelSelectorDrawerNext } from "@/providers/models/select-dialog-next"
 import { useSettings } from "@/settings/model"
-import { ModelDetails } from "@/providers/models/details"
-import { createModelUsage } from "@/usage/model"
 import { DialogSelectModelUnpaid } from "@/providers/models/unpaid"
 import { formatKeybind, useCommand } from "@/shell/commands/command"
 import { useLanguage } from "@/runtime/i18n/language"
 import type { ComposerModel } from "./model"
+import type { ComposerModelLabel } from "./model-label"
 
 export function Composer(props: {
   class?: string
@@ -46,6 +43,15 @@ export function Composer(props: {
     return language.t("dialog.model.select.title")
   }
 
+  const modelLabel = () => {
+    const preview = props.model.model.preview
+    const label = preview ? preview.label : props.model.model.label
+
+    if (label) return label
+
+    return { provider: preview ? preview.provider : props.model.model.providerName, model: modelName() }
+  }
+
   return (
     <div class="flex flex-col gap-3">
       <ComposerEditor
@@ -67,8 +73,7 @@ export function Composer(props: {
             title={language.t("command.model.choose")}
             keybind={command.keybindParts("model.choose")}
             model={props.model.model.selection}
-            providerName={props.model.model.preview?.provider ?? props.model.model.providerName}
-            modelName={modelName()}
+            label={modelLabel()}
             onClose={props.model.restoreFocus}
             onUnpaidClick={() => dialog.show(() => <DialogSelectModelUnpaid model={props.model.model.selection} />)}
           />
@@ -85,8 +90,7 @@ function ComposerModelControl(props: {
   title: string
   keybind: string[]
   model: ComposerModel["model"]["selection"]
-  providerName?: string
-  modelName: string
+  label: ComposerModelLabel
   onClose: () => void
   onUnpaidClick: () => void
 }) {
@@ -95,8 +99,6 @@ function ComposerModelControl(props: {
   const mobile = createMediaQuery("(max-width: 767px)")
   const dialog = useDialog()
   const settings = useSettings()
-  const managed = createMemo(() => consoleModelGroup(props.model.list()))
-  const usage = createModelUsage()
 
   const open = (detail: number) => {
     if (!props.paid) return props.onUnpaidClick()
@@ -117,27 +119,19 @@ function ComposerModelControl(props: {
     open(detail)
   })
 
-  const providerName = (provider: { id: string; name: string }) => {
-    const group = managed()
-
-    return group?.providers.some((item) => item.id === provider.id)
-      ? consoleProviderName(group, provider.name)
-      : provider.name
-  }
-
   const content = () => (
     <>
       <span class="flex min-w-0 whitespace-nowrap leading-4">
-        <Show when={props.providerName}>
+        <Show when={props.label.provider}>
           {(name) => (
             <>
-              <span class="shrink-0 text-v2-text-text-faint">{name()}</span>
+              <bdi class="min-w-0 shrink-[2] truncate text-v2-text-text-faint">{name()}</bdi>
               <Slash />
               <span class="sr-only">{" / "}</span>
             </>
           )}
         </Show>
-        <span class="truncate">{props.modelName}</span>
+        <bdi class="min-w-0 truncate">{props.label.model}</bdi>
       </span>
       <span class="-ml-0.5 -mr-1 flex shrink-0">
         <Icon name="chevron-down" />
@@ -149,30 +143,12 @@ function ComposerModelControl(props: {
     <Show when={!props.loading || props.preview}>
       <Tooltip
         inactive={mobile()}
-        openDelay={750}
-        contentClass={props.model.current() ? "!p-0 rounded-md" : undefined}
         placement="top"
-        gutter={4}
         value={
-          <Show
-            when={props.model.current()}
-            fallback={
-              <>
-                {props.title}
-                <Keybind keys={props.keybind} variant="neutral" />
-              </>
-            }
-          >
-            {(model) => (
-              <div class="flex w-[188px] max-w-[calc(100vw-24px)] flex-col">
-                <ModelDetails model={model()} provider={providerName(model().provider)} usage={usage(model())} />
-                <div class="flex h-7 min-w-0 items-center gap-2 border-t-[0.5px] border-v2-border-border-base px-2">
-                  <span class="min-w-0 flex-1 truncate text-v2-text-text-faint">{props.title}</span>
-                  <Keybind keys={props.keybind} variant="neutral" />
-                </div>
-              </div>
-            )}
-          </Show>
+          <>
+            {props.title}
+            <Keybind keys={props.keybind} variant="neutral" />
+          </>
         }
       >
         {/* While loading, the drawer would open on a catalog that isn't there yet, so the inert chip stands in. */}

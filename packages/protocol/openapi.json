@@ -15596,6 +15596,9 @@
           "username": {
             "type": "string"
           },
+          "timezone": {
+            "type": "string"
+          },
           "permissions": {
             "$ref": "#/components/schemas/Permission.Ruleset"
           },
@@ -15875,6 +15878,9 @@
               "media_blob": {
                 "type": "boolean"
               },
+              "schedules": {
+                "type": "boolean"
+              },
               "subagent_depth": {
                 "type": "integer",
                 "minimum": 0
@@ -16088,6 +16094,30 @@
           }
         ]
       },
+      "Config.Model.VariantSettings": {
+        "type": "object",
+        "properties": {
+          "compaction": {
+            "$ref": "#/components/schemas/Provider.Compaction"
+          },
+          "encoding": {
+            "$ref": "#/components/schemas/Provider.Encoding"
+          }
+        },
+        "allOf": [
+          {
+            "type": "object",
+            "additionalProperties": {
+              "anyOf": [
+                {},
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          }
+        ]
+      },
       "Config.ModelEncoded": {
         "type": "object",
         "properties": {
@@ -16138,7 +16168,7 @@
                   "type": "string"
                 },
                 "settings": {
-                  "$ref": "#/components/schemas/Config.Model.Settings"
+                  "$ref": "#/components/schemas/Config.Model.VariantSettings"
                 },
                 "headers": {
                   "type": "object",
@@ -19293,7 +19323,7 @@
             "type": "string"
           },
           "settings": {
-            "$ref": "#/components/schemas/Model.Settings"
+            "$ref": "#/components/schemas/Model.VariantSettings"
           },
           "headers": {
             "type": "object",
@@ -19307,6 +19337,23 @@
         },
         "required": ["id"],
         "additionalProperties": false
+      },
+      "Model.VariantSettings": {
+        "type": "object",
+        "properties": {
+          "compaction": {
+            "$ref": "#/components/schemas/Provider.Compaction"
+          },
+          "encoding": {
+            "$ref": "#/components/schemas/Provider.Encoding"
+          }
+        },
+        "allOf": [
+          {
+            "type": "object",
+            "additionalProperties": {}
+          }
+        ]
       },
       "ModelNotFoundErrorEncoded": {
         "type": "object",

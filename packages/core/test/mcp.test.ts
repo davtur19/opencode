@@ -14,7 +14,6 @@ import { Document, Event, Info } from "@opencode/schema/config"
 import { ConfigMCP } from "@opencode/schema/config/mcp"
 import { McpEvent } from "@opencode/schema/mcp-event"
 import { ConfigPolicy } from "@opencode/schema/config/policy"
-import { ManagedPolicy } from "@opencode/core/managed-policy"
 import { Config } from "@opencode/core/config"
 import { ConfigMcpPlugin } from "@opencode/core/config/plugin/mcp"
 import { Credential } from "@opencode/core/credential"
@@ -61,7 +60,7 @@ import { Image } from "@opencode/core/image"
 import { Global } from "@opencode/util/global"
 import { advance, drain } from "./lib/clock"
 import { testEffect } from "./lib/effect"
-import { registerIntegrationPolicy } from "./fixture/policy"
+import { registerIntegrationPolicy, setOrganizationPolicy } from "./fixture/policy"
 import { imagePassthrough } from "./lib/image"
 import { location } from "./fixture/location"
 import { tmpdirScoped } from "./fixture/tmpdir"
@@ -297,7 +296,6 @@ function resourceMcpLayer(
   onFormCreated?: (form: Form.Info) => Effect.Effect<void>,
   options?: Mcp.Options,
   overrides?: {
-    managed?: ManagedPolicy.Interface
     policies?: readonly ConfigPolicy.Info[]
     entries?: Config.Interface["entries"]
     subscribe?: Bus.Interface["subscribe"]
@@ -323,7 +321,6 @@ function resourceMcpLayer(
     Layer.provideMerge(Form.layer),
     Layer.provide(
       Layer.mergeAll(
-        overrides?.managed ? Layer.succeed(ManagedPolicy.Service, overrides.managed) : ManagedPolicy.layer,
         overrides?.entries
           ? Layer.succeed(
               Config.Service,
@@ -2243,7 +2240,6 @@ const shutdownIt = testEffect(
   AppNodeBuilder.build(
     LayerNode.group([
       Config.node,
-      ManagedPolicy.node,
       Bus.node,
       Integration.node,
       Credential.node,
@@ -2933,12 +2929,11 @@ for (const modern of [false, true]) {
 }
 
 for (const source of ["config", "organization"] as const) {
-  testEffect(Layer.mergeAll(Config.testLayer(), ManagedPolicy.layer)).live(
+  testEffect(Config.testLayer()).live(
     `revokes and restores a connected MCP through ${source} policy`,
     () =>
       Effect.gen(function* () {
         const server = yield* resourceServer()
-        const managed = yield* ManagedPolicy.Service
         const config = yield* Config.Service
         const test = yield* Config.Test
         const updates = yield* PubSub.unbounded<{ readonly type: string }>()
@@ -2959,8 +2954,8 @@ for (const source of ["config", "organization"] as const) {
           expect((yield* service.tools()).length).toBeGreaterThan(0)
           if (source === "config") yield* test.setEntries([document("deny")])
           if (source === "organization")
-            yield* managed.set({ statements: [{ action: "integration.use", resource: "mcp:*", effect: "deny" }] })
-          if (source === "config") yield* PubSub.publish(updates, { type: Event.Updated.type })
+            yield* setOrganizationPolicy([{ action: "integration.use", resource: "mcp:*", effect: "deny" }])
+          yield* PubSub.publish(updates, { type: Event.Updated.type })
           yield* service.servers().pipe(
             Effect.filterOrFail(
               (servers) => servers.length === 0,
@@ -2989,11 +2984,9 @@ for (const source of ["config", "organization"] as const) {
           expect(server.state.toolCalls).toEqual([])
           expect(server.state.resourceReads).toEqual([])
           yield* Effect.promise(server.restart)
-          if (source === "config") {
-            yield* test.setEntries([document("allow")])
-            yield* PubSub.publish(updates, { type: Event.Updated.type })
-          }
-          if (source === "organization") yield* managed.set({ statements: [] })
+          if (source === "config") yield* test.setEntries([document("allow")])
+          if (source === "organization") yield* setOrganizationPolicy(undefined)
+          yield* PubSub.publish(updates, { type: Event.Updated.type })
           yield* service.servers().pipe(
             Effect.filterOrFail(
               (servers) => servers.some((server) => server.status.status === "connected"),
@@ -3007,7 +3000,6 @@ for (const source of ["config", "organization"] as const) {
           Effect.provide(
             resourceMcpLayer(server.url, undefined, undefined, {
               entries: config.entries,
-              managed,
               subscribe: (() => Stream.fromPubSub(updates)) as Bus.Interface["subscribe"],
             }),
           ),

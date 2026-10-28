@@ -369,6 +369,14 @@ export type ModelRef = { id: string; providerID: ProviderID; variant?: string }
 
 export type ProviderCache = { ttl?: ProviderCacheTTL }
 
+export type ModelVariantSettings = { compaction?: ProviderCompaction; encoding?: ProviderEncoding } & {
+  [x: string]: any
+}
+
+export type ConfigModelVariantSettings = { compaction?: ProviderCompaction; encoding?: ProviderEncoding } & {
+  [x: string]: JsonValue | null
+}
+
 export type PermissionRule = { action: string; resource: string; effect: PermissionEffect }
 
 export type PluginInfo = { id?: PluginID; source: PluginSource; features: PluginFeatures; state: PluginState }
@@ -981,6 +989,13 @@ export type ConfigModelSettings = {
   cache?: ProviderCache
   encoding?: ProviderEncoding
 } & { [x: string]: JsonValue | null }
+
+export type ModelVariant = {
+  id: string
+  settings?: ModelVariantSettings
+  headers?: { [x: string]: string }
+  body?: { [x: string]: any }
+}
 
 export type PermissionRuleset = Array<PermissionRule>
 
@@ -2163,11 +2178,26 @@ export type ProviderInfo = {
   body?: { [x: string]: any }
 }
 
-export type ModelVariant = {
+export type ModelInfo = {
   id: string
+  modelID: string
+  providerID: ProviderID
+  canonical?: ProviderID
+  type?: ModelType
+  family?: string
+  name: string
+  compatibility?: ModelCompatibility
+  package?: string
   settings?: ModelSettings
   headers?: { [x: string]: string }
   body?: { [x: string]: any }
+  capabilities: ModelCapabilities
+  variants: Array<ModelVariant>
+  time: { released: number }
+  cost: Array<ModelCost>
+  status: "alpha" | "beta" | "deprecated" | "active"
+  enabled: boolean
+  limit: { context: number; input?: number; output: number }
 }
 
 export type SessionInfo = {
@@ -2235,6 +2265,7 @@ export type ConfigEntry =
         share?: "manual" | "auto" | "disabled"
         enterprise?: { url?: string }
         username?: string
+        timezone?: string
         permissions?: PermissionRuleset
         policies?: Array<{
           action: "provider.use" | "tool.use" | "integration.use"
@@ -2368,7 +2399,7 @@ export type ConfigEntry =
                 capabilities?: ConfigModelCapabilities
                 variants?: Array<{
                   id: string
-                  settings?: ConfigModelSettings
+                  settings?: ConfigModelVariantSettings
                   headers?: { [x: string]: string }
                   body?: { [x: string]: JsonValue }
                 }>
@@ -2396,6 +2427,7 @@ export type ConfigEntry =
           todo?: boolean
           background_compaction?: boolean
           media_blob?: boolean
+          schedules?: boolean
           subagent_depth?: number
           location_idle_timeout?: string | false
           policies?: Array<{
@@ -2491,28 +2523,6 @@ export type AgentInfo = {
   steps?: number
   subagentsBackground?: boolean
   permissions: PermissionRuleset
-}
-
-export type ModelInfo = {
-  id: string
-  modelID: string
-  providerID: ProviderID
-  canonical?: ProviderID
-  type?: ModelType
-  family?: string
-  name: string
-  compatibility?: ModelCompatibility
-  package?: string
-  settings?: ModelSettings
-  headers?: { [x: string]: string }
-  body?: { [x: string]: any }
-  capabilities: ModelCapabilities
-  variants: Array<ModelVariant>
-  time: { released: number }
-  cost: Array<ModelCost>
-  status: "alpha" | "beta" | "deprecated" | "active"
-  enabled: boolean
-  limit: { context: number; input?: number; output: number }
 }
 
 export type SessionsResponse = {

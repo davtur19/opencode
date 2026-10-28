@@ -869,8 +869,8 @@ export function createTimelineVirtualizer(input: Input) {
           style={{
             position: "absolute",
             top: `${item().start - topOffset() - rendering.scrollAdjustment}px`,
-            left: "calc((100% - var(--panel-hold-width, 100%)) / 2)",
-            width: "var(--panel-hold-width, 100%)",
+            left: "0",
+            width: "100%",
             height: `${item().size}px`,
             overflow: "clip",
             "overflow-clip-margin": Predicate.isTagged(row(), "TurnGap") ? undefined : "0.5px",
@@ -988,7 +988,14 @@ export function createTimelineVirtualizer(input: Input) {
               visibility: coldBottomMount ? "hidden" : undefined,
             }}
           >
-            <div ref={rowLayer} class="absolute inset-0">
+            <div
+              ref={rowLayer}
+              class="absolute inset-y-0"
+              style={{
+                left: "calc((100% - var(--panel-hold-width, 100%)) / 2)",
+                width: "var(--panel-hold-width, 100%)",
+              }}
+            >
               <For each={virtualRowKeys()}>{(rowKey) => <VirtualRow rowKey={rowKey} />}</For>
             </div>
             <div
@@ -1039,7 +1046,11 @@ export function createTimelineVirtualizer(input: Input) {
     disclosure: {
       patchGroupKeys,
       value: (key: string) => toolOpen[key],
-      set: (key: string, open: boolean) => setToolOpen(key, open),
+      set: (key: string, open: boolean) => {
+        // Following the end would scroll an opened user message's top away; it stays where it was pressed.
+        if (open && key.startsWith("user-expanded:")) input.onUnpin()
+        setToolOpen(key, open)
+      },
     },
     revealPart,
     View,
