@@ -16,6 +16,7 @@ import { SessionEnvironmentStamp } from "@opencode/core/session/environment-stam
 import { SessionSchema } from "@opencode/core/session/schema"
 import { SessionRunnerRetry } from "@opencode/core/session/runner/retry"
 import { toSessionError } from "@opencode/core/session/to-session-error"
+import { SESSION_ROTATION_LIMIT } from "@opencode/util/cloud-proxy"
 import { Effect } from "effect"
 import { it } from "./lib/effect"
 
@@ -102,13 +103,13 @@ describe("SessionRunnerRetry.policy", () => {
       const policy = yield* SessionRunnerRetry.policy(sessionID)
       const aliases = [SessionEgress.identity(sessionID)]
       const results: boolean[] = []
-      for (let i = 0; i < 5; i++) {
+      for (let i = 0; i < SESSION_ROTATION_LIMIT + 2; i++) {
         results.push((yield* policy(inputFor(blocked, opencode))).retry)
         aliases.push(SessionEgress.identity(sessionID))
       }
 
-      expect(results).toEqual([true, true, true, false, false])
-      expect(new Set(aliases).size).toBe(4)
+      expect(results).toEqual([...Array(SESSION_ROTATION_LIMIT).fill(true), false, false])
+      expect(new Set(aliases).size).toBe(SESSION_ROTATION_LIMIT + 1)
     }),
   )
 
@@ -118,13 +119,13 @@ describe("SessionRunnerRetry.policy", () => {
       const policy = yield* SessionRunnerRetry.policy(sessionID)
       const aliases = [SessionEgress.identity(sessionID)]
       const results: boolean[] = []
-      for (let i = 0; i < 5; i++) {
+      for (let i = 0; i < SESSION_ROTATION_LIMIT + 2; i++) {
         results.push((yield* policy(inputFor(rateLimited, opencode))).retry)
         aliases.push(SessionEgress.identity(sessionID))
       }
 
-      expect(results).toEqual([true, true, true, false, false])
-      expect(new Set(aliases).size).toBe(4)
+      expect(results).toEqual([...Array(SESSION_ROTATION_LIMIT).fill(true), false, false])
+      expect(new Set(aliases).size).toBe(SESSION_ROTATION_LIMIT + 1)
     }),
   )
 
@@ -134,13 +135,13 @@ describe("SessionRunnerRetry.policy", () => {
       const policy = yield* SessionRunnerRetry.policy(sessionID)
       const aliases = [SessionEgress.identity(sessionID)]
       const results: boolean[] = []
-      for (let i = 0; i < 5; i++) {
+      for (let i = 0; i < SESSION_ROTATION_LIMIT + 2; i++) {
         results.push((yield* policy(inputFor(quotaLimited, opencode))).retry)
         aliases.push(SessionEgress.identity(sessionID))
       }
 
-      expect(results).toEqual([true, true, true, false, false])
-      expect(new Set(aliases).size).toBe(4)
+      expect(results).toEqual([...Array(SESSION_ROTATION_LIMIT).fill(true), false, false])
+      expect(new Set(aliases).size).toBe(SESSION_ROTATION_LIMIT + 1)
     }),
   )
 
@@ -208,7 +209,6 @@ describe("SessionRunnerRetry.policy", () => {
   )
 
   for (const [status, cause] of [
-    [502, badGateway],
     [503, unavailable],
     [504, gatewayTimeout],
   ] as const) {
@@ -228,6 +228,38 @@ describe("SessionRunnerRetry.policy", () => {
       }),
     )
   }
+
+  it.effect("rotates the wire alias on an opencode 502 and stops at the step limit", () =>
+    Effect.gen(function* () {
+      const sessionID = SessionSchema.ID.make("ses_retry_502")
+      const policy = yield* SessionRunnerRetry.policy(sessionID)
+      const aliases = [SessionEgress.identity(sessionID)]
+      const results: boolean[] = []
+      for (let i = 0; i < SESSION_ROTATION_LIMIT + 2; i++) {
+        results.push((yield* policy(inputFor(badGateway, opencode))).retry)
+        aliases.push(SessionEgress.identity(sessionID))
+      }
+
+      expect(results).toEqual([...Array(SESSION_ROTATION_LIMIT).fill(true), false, false])
+      expect(new Set(aliases).size).toBe(SESSION_ROTATION_LIMIT + 1)
+    }),
+  )
+
+  it.effect("keeps retrying another provider's 502 on the same egress", () =>
+    Effect.gen(function* () {
+      const sessionID = SessionSchema.ID.make("ses_retry_502_other")
+      const policy = yield* SessionRunnerRetry.policy(sessionID)
+      const aliases = [SessionEgress.identity(sessionID)]
+      const results: boolean[] = []
+      for (let i = 0; i < 11; i++) {
+        results.push((yield* policy(inputFor(badGateway, other))).retry)
+        aliases.push(SessionEgress.identity(sessionID))
+      }
+
+      expect(results).toEqual([...Array(10).fill(true), false])
+      expect(new Set(aliases).size).toBe(1)
+    }),
+  )
 
   it.effect("leaves another provider's alias alone on a 429", () =>
     Effect.gen(function* () {
@@ -263,7 +295,7 @@ describe("SessionRunnerRetry.policy", () => {
       for (let i = 0; i < SessionEgress.SESSION_EGRESS_BUDGET; i++) SessionEgress.rotate(sessionID)
       const alias = SessionEgress.identity(sessionID)
       const policy = yield* SessionRunnerRetry.policy(sessionID)
-      const decision = yield* policy(inputFor(badGateway, opencode))
+      const decision = yield* policy(inputFor(unavailable, opencode))
 
       expect(decision.retry).toBe(true)
       expect(SessionEgress.identity(sessionID)).toBe(alias)

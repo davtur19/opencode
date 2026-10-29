@@ -1,5 +1,6 @@
 export * as SessionEgress from "./egress.js"
 
+import { clearAliases, registerAlias } from "@opencode/util/cloud-proxy"
 import { SessionSchema } from "./schema.js"
 
 // The gateway accepts only a wire session id whose embedded timestamp is inside its freshness
@@ -44,6 +45,7 @@ export function identity(sessionID: SessionSchema.ID) {
   const current = sessions.get(sessionID)
   if (current && Date.now() - current.createdAt < ALIAS_MAX_AGE_MS) {
     remember(sessionID, current)
+    registerAlias(current.alias, sessionID)
     return current.alias
   }
   return reset(sessionID)
@@ -59,6 +61,7 @@ export function rotate(sessionID: SessionSchema.ID) {
   const current = sessions.get(sessionID)
   const alias = SessionSchema.ID.create()
   remember(sessionID, { alias, rotations: (current?.rotations ?? 0) + 1, createdAt: Date.now() })
+  registerAlias(alias, sessionID)
   return alias
 }
 
@@ -69,10 +72,12 @@ export function rotate(sessionID: SessionSchema.ID) {
 export function reset(sessionID: SessionSchema.ID) {
   const alias = SessionSchema.ID.create()
   remember(sessionID, { alias, rotations: 0, createdAt: Date.now() })
+  registerAlias(alias, sessionID)
   return alias
 }
 
 /** Forget every process-local identity; a restart has the same effect. */
 export function clear() {
   sessions.clear()
+  clearAliases()
 }

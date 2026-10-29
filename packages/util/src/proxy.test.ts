@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test"
+import { clearAliases, registerAlias } from "./cloud-proxy.js"
 import { FetchProxy } from "./proxy.js"
 
 const PROXY_URL = "http://192.168.1.6:3128"
@@ -35,6 +36,7 @@ describe("util.proxy", () => {
     delete process.env[CLOUD_PROXY_ENV]
     delete process.env[CLOUD_PROXY_DOMAINS_ENV]
     delete process.env[CLOUD_PROXY_AUTH_ENV]
+    clearAliases()
   })
 
   test("routes opencode domains through the default list", () => {
@@ -219,9 +221,25 @@ describe("util.proxy", () => {
       expect(token.status).toBe(402)
     })
 
+    test("advances the attempt on a 502 from the upstream gateway", () => {
+      FetchProxy.noteResponseStatus("ses_bad_gateway", response(502))
+      const proxy = FetchProxy.proxiedInit(url, { headers: sessionHeaders("ses_bad_gateway") })?.proxy
+      if (proxy === undefined) throw new Error("expected a proxied init")
+      expect(sessionToken(proxy)).toEqual({ boot: expect.any(String), attempt: 1, status: 502 })
+    })
+
+    test("keeps the attempt across an alias rotation", () => {
+      registerAlias("ses_wire_a", "ses_owner")
+      registerAlias("ses_wire_b", "ses_owner")
+      FetchProxy.noteResponseStatus("ses_owner", response(429))
+      const proxy = FetchProxy.proxiedInit(url, { headers: sessionHeaders("ses_wire_b") })?.proxy
+      if (proxy === undefined) throw new Error("expected a proxied init")
+      expect(new URL(proxy).username).toBe("ses_owner")
+      expect(sessionToken(proxy)).toEqual({ boot: expect.any(String), attempt: 1, status: 429 })
+    })
+
     test("ignores statuses that do not indicate a bad egress", () => {
       FetchProxy.noteResponseStatus("ses_other", response(500))
-      FetchProxy.noteResponseStatus("ses_other", response(502))
       FetchProxy.noteResponseStatus("ses_other", response(503))
       FetchProxy.noteResponseStatus("ses_other", response(504))
       FetchProxy.noteResponseStatus(undefined, response(403))

@@ -14,15 +14,51 @@ export const CLOUD_PROXY_DOMAINS_ENV = "OPENCODE_CLOUD_PROXY_DOMAINS"
 export const CLOUD_PROXY_AUTH_ENV = "OPENCODE_CLOUD_PROXY_AUTH"
 
 // Egresses one session may consume in one step before the client stops rotating. Each gateway
-// usage-limit block (402), abuse gate (403), or throttle (429) rotates the session's outgoing
-// wire alias, so every retry leaves under a new identity and address; the pool is shared, so a
-// stuck step must not walk it. The proxy enforces its own budget as well. A 5xx does not rotate:
-// the upstream, not the address, is usually the failing part, so it retries on the same egress.
-export const SESSION_ROTATION_LIMIT = 3
+// usage-limit block (402), abuse gate (403), throttle (429), or 502 gateway refusal rotates the
+// session's outgoing wire alias, so every retry leaves under a new identity and address; the pool
+// is shared, so a stuck step must not walk it. The proxy enforces its own budget as well. Other
+// 5xx do not rotate: the upstream, not the address, is usually the failing part, so they retry on
+// the same egress. The limit is configurable because it depends on how many egresses a deployment
+// provides.
+export const CLOUD_PROXY_ROTATION_LIMIT_ENV = "OPENCODE_CLOUD_PROXY_ROTATION_LIMIT"
+const DEFAULT_SESSION_ROTATION_LIMIT = 3
+
+const rotationLimit = () => {
+  const value = process.env[CLOUD_PROXY_ROTATION_LIMIT_ENV]
+  if (value === undefined) return DEFAULT_SESSION_ROTATION_LIMIT
+  const parsed = Number(value.trim())
+  return Number.isInteger(parsed) && parsed > 0 ? parsed : DEFAULT_SESSION_ROTATION_LIMIT
+}
+
+export const SESSION_ROTATION_LIMIT = rotationLimit()
 
 export function sessionRotationEnabled() {
   const value = process.env[CLOUD_PROXY_AUTH_ENV]
   if (value === undefined) return false
   if (!["1", "true", "yes", "on"].includes(value.trim().toLowerCase())) return false
   return Boolean(process.env[CLOUD_PROXY_ENV])
+}
+
+// The gateway sees a rotating wire alias, not the real session ID. The proxy
+// needs the opposite: a key that survives an alias rotation, so attempt N+1
+// can leave from a different egress. SessionEgress registers the pair when it
+// creates or rotates an alias; the fetch wrapper reads it back without putting
+// the real ID on the wire.
+const aliasOwners = new Map<string, string>()
+const ALIAS_OWNERS_TRACKED = 1024
+
+export function registerAlias(alias: string, owner: string) {
+  aliasOwners.delete(alias)
+  aliasOwners.set(alias, owner)
+  if (aliasOwners.size <= ALIAS_OWNERS_TRACKED) return
+  const oldest = aliasOwners.keys().next().value
+  if (oldest !== undefined) aliasOwners.delete(oldest)
+}
+
+export function keyForAlias(alias: string) {
+  return aliasOwners.get(alias)
+}
+
+export function clearAliases() {
+  aliasOwners.clear()
 }

@@ -1,6 +1,12 @@
 export * as FetchProxy from "./proxy.js"
 
-import { CLOUD_PROXY_DOMAINS_ENV, CLOUD_PROXY_ENV, sessionRotationEnabled, SESSION_ROTATION_LIMIT } from "./cloud-proxy.js"
+import {
+  CLOUD_PROXY_DOMAINS_ENV,
+  CLOUD_PROXY_ENV,
+  keyForAlias,
+  sessionRotationEnabled,
+  SESSION_ROTATION_LIMIT,
+} from "./cloud-proxy.js"
 
 export { SESSION_ROTATION_LIMIT, sessionRotationEnabled }
 
@@ -131,6 +137,14 @@ function sessionKey(input: RequestInfo | URL, init?: RequestInit) {
   return undefined
 }
 
+// The request carries the rotated alias; the proxy needs a key that stays put
+// across rotations. SessionEgress registers alias -> real session ID, so the
+// attempt counter survives a 403/429/502 that changes the wire identity.
+function rotationKey(alias: string | undefined) {
+  if (alias === undefined) return undefined
+  return keyForAlias(alias) ?? alias
+}
+
 function remember(key: string, rotation: Rotation) {
   rotations.delete(key)
   rotations.set(key, rotation)
@@ -145,11 +159,11 @@ function encodeToken(rotation: Rotation) {
   return btoa(JSON.stringify(rotation)).replaceAll("+", "-").replaceAll("/", "_").replace(/=+$/, "")
 }
 
-// A 402 is the gateway's usage-limit block, a 403 the abuse gate, and a 429 the throttle or free
-// usage cap; each means the next attempt should leave from another address. A 5xx stays on the
-// same egress: the upstream, not the address, is usually the failing part, so the runner retries
-// it without advancing the proxy attempt.
-const EGRESS_STATUSES = new Set([402, 403, 429])
+// A 402 is the gateway's usage-limit block, a 403 the abuse gate, a 429 the throttle or free
+// usage cap, and a 502 a gateway refusal; each means the next attempt should leave from another
+// address. Other 5xx stay on the same egress: the upstream, not the address, is usually the
+// failing part, so the runner retries it without advancing the proxy attempt.
+const EGRESS_STATUSES = new Set([402, 403, 429, 502])
 
 /**
  * Records the failure the gateway returned inside the tunnel, so the retried request can carry it
@@ -196,7 +210,7 @@ export function proxiedInit(input: RequestInfo | URL, init?: RequestInit) {
   const proxy = hostname ? getProxyForHostname(hostname) : undefined
   const existingProxy = init !== undefined && "proxy" in init && Boolean(init.proxy)
   if (!proxy || existingProxy) return undefined
-  const key = sessionRotationEnabled() ? sessionKey(input, init) : undefined
+  const key = sessionRotationEnabled() ? rotationKey(sessionKey(input, init)) : undefined
   return { ...init, proxy: key === undefined ? proxy : sessionProxy(proxy, key) } satisfies ProxyAwareInit
 }
 
@@ -269,8 +283,10 @@ export function install() {
     const response = proxied ? native(input, proxied) : native(input, next)
     if (proxied === undefined) return response
     // The retry that follows this failure rebuilds the proxy URL from the recorded state, so the
-    // observation must land before the caller reacts to the response, not after.
-    const key = sessionKey(input, next)
+    // observation must land before the caller reacts to the response, not after. The key is the
+    // stable owner, not the rotating alias: a 403/429/502 then advances the next attempt even
+    // though the wire identity changed.
+    const key = rotationKey(sessionKey(input, next))
     return response.then((result) => {
       noteResponseStatus(key, result)
       return result

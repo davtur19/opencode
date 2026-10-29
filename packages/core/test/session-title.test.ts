@@ -214,13 +214,7 @@ it.effect("generates a title from the sole user message and renames the session"
 
     expect(requests).toHaveLength(1)
     expect(requests[0]?.http?.headers).toEqual({
-      "x-opencode-session-id": sessionID,
-      "x-session-affinity": sessionID,
-      "X-Session-Id": sessionID,
       "User-Agent": App.useragent(App.make()),
-      "x-opencode-project": Project.ID.global,
-      "x-opencode-session": sessionID,
-      "x-opencode-client": "opencode",
     })
     expect(requests[0]?.promptCacheKey).toBe(sessionID)
     expect(requests[0]?.tools).toEqual([])
@@ -600,8 +594,28 @@ it.effect("preserves the existing title when regeneration fails", () =>
     yield* title.generate(sessionID)
 
     const store = yield* SessionStore.Service
-    expect(requests).toHaveLength(1)
+    expect(requests).toHaveLength(3)
     expect((yield* store.get(sessionID))?.title).toBe("Original title")
+  }),
+)
+
+it.effect("recovers a transient title failure within one generate call", () =>
+  Effect.gen(function* () {
+    yield* enableTitleAgent
+    const sessionID = Session.ID.make("ses_title_retry_transient")
+    yield* insertSession(sessionID)
+    yield* prompt(sessionID, "Retry this title once")
+    titleStream = () =>
+      requests.length === 1
+        ? Stream.make(LLMEvent.providerError({ message: "Provider unavailable" }))
+        : successfulTitle()
+
+    const title = yield* SessionTitle.Service
+    yield* title.generate(sessionID)
+
+    const store = yield* SessionStore.Service
+    expect(requests).toHaveLength(2)
+    expect((yield* store.get(sessionID))?.title).toBe("Generated Title")
   }),
 )
 
@@ -619,7 +633,7 @@ it.effect("retries after a failed title request", () =>
     yield* title.generate(sessionID)
 
     const store = yield* SessionStore.Service
-    expect(requests).toHaveLength(2)
+    expect(requests).toHaveLength(4)
     expect((yield* store.get(sessionID))?.title).toBe("Generated Title")
   }),
 )
@@ -641,7 +655,7 @@ it.effect("does not rename after a failed title stream", () =>
     yield* title.generate(sessionID)
 
     const store = yield* SessionStore.Service
-    expect(requests).toHaveLength(1)
+    expect(requests).toHaveLength(3)
     expect((yield* store.get(sessionID))?.title).toBeUndefined()
   }),
 )

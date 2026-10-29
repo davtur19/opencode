@@ -37,8 +37,9 @@ export interface Decision {
  * Retries one provider failure. `model` resolves the opencode gateway's transient flakes: its
  * intermittent 401 on anonymous public requests and its usage-limit or abuse blocks (402/403/429)
  * when the session-addressed proxy and its rotating wire alias can move the retry to another
- * egress. A 5xx stays on the same egress and uses the general retry schedule. Callers without a
- * resolved model keep the plain reason taxonomy so auxiliary requests never mask a real
+ * egress. A 502 is a transient gateway refusal the proxy can retry on another egress; other 5xx
+ * stay on the same egress and use the general retry schedule. Callers without a resolved model
+ * keep the plain reason taxonomy so auxiliary requests never mask a real
  * credential or billing failure.
  */
 export function isRetryable(
@@ -48,6 +49,10 @@ export function isRetryable(
   const override = error.reason.http?.headers["x-should-retry"]
   if (override === "true") return true
   if (override === "false") return false
+  // A 502 is a transient gateway refusal even when a provider wraps it in a
+  // reason the switch below would not retry; with the proxy it also moves the
+  // retry to another egress.
+  if (error.reason.http?.status === 502) return true
   switch (error.reason._tag) {
     case "RateLimit":
     case "ProviderInternal":
@@ -115,16 +120,17 @@ export function isRetryable(
  */
 export const RETRY_PHASES = 4
 
-// Every gateway block about a usage limit rotates the session's wire alias and proxy attempt: the
-// quota blocks on 402/429, the 403 abuse gate, and throttle 429s. The next request must leave
-// under a new identity and address. Rotation is bounded by the step allowance the proxy
-// module grants; when the session-wide budget is spent, the policy renews the alias and
-// environment stamp instead of surfacing the failure, so a long session keeps rotating
-// automatically. SessionEgress.identity also refreshes an alias that reaches the gateway's
-// timestamp window, so the first request after a long idle period does not need a rejection to get
-// a usable identity. A 5xx stays on the same egress and uses the general retry schedule: the
-// upstream, not the address, is usually the failing part.
+// Gateway blocks that indicate a bad egress rotate the session's wire alias: the quota blocks on
+// 402/429, the 403 abuse gate, and 502 gateway refusals. The next request must leave under a new
+// identity and address. Rotation is bounded by the step allowance the proxy module grants; when
+// the session-wide budget is spent, the policy renews the alias and environment stamp instead of
+// surfacing the failure, so a long session keeps rotating automatically. SessionEgress.identity
+// also refreshes an alias that reaches the gateway's timestamp window, so the first request after
+// a long idle period does not need a rejection to get a usable identity. Other 5xx stay on the
+// same egress and use the general retry schedule: the upstream, not the address, is usually the
+// failing part.
 const isEgressFailure = (error: AIError) =>
+  error.reason.http?.status === 502 ||
   (error.reason._tag === "Authentication" && error.reason.http?.status === 403) ||
   error.reason._tag === "RateLimit" ||
   error.reason._tag === "QuotaExceeded"

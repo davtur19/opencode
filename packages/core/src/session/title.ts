@@ -2,6 +2,7 @@ export * as SessionTitle from "./title.js"
 
 import { isDeepStrictEqual } from "node:util"
 import { LLMClient, LLMEvent, Message, SystemPart } from "@opencode/ai/effect"
+import type { SessionTitle } from "@opencode/plugin/effect/session"
 import type { Agent } from "@opencode/schema/agent"
 import { Context, DateTime, Effect, Layer, Stream } from "effect"
 import { Database } from "../database/database.js"
@@ -12,6 +13,7 @@ import { llmClient } from "../effect/app-node-platform.js"
 import { SessionContext } from "./context.js"
 import { SessionEvent } from "./event.js"
 import { SessionHistory } from "./history.js"
+import type { SessionModelRequest } from "./model-request.js"
 import type { SessionRunnerModel } from "./runner/model.js"
 import { SessionSchema } from "./schema.js"
 import { SessionUsage } from "./usage.js"
@@ -20,6 +22,7 @@ import { SessionStore } from "./store.js"
 const MAX_LENGTH = 100
 const MAX_CONTEXT_LENGTH = 8_000
 const MAX_FIRST_MESSAGE_LENGTH = 2_000
+const MAX_ATTEMPTS = 3
 const titleChanged = Symbol("Session title changed")
 
 export interface Interface {
@@ -50,12 +53,27 @@ export const layer = Layer.effect(
     const store = yield* SessionStore.Service
     const db = (yield* Database.Service).db
 
-    const attempt = Effect.fn("SessionTitle.attempt")(function* (input: {
+    const prepare = Effect.fn("SessionTitle.prepare")(function* (input: {
       readonly session: SessionSchema.Info
       readonly agent: Agent.Info
       readonly text: string
       readonly model: SessionRunnerModel.Resolved
     }) {
+      return yield* context.request.title({
+        session: input.session,
+        agent: input.agent.id,
+        model: input.model,
+        system: input.agent.system ? [SystemPart.make(input.agent.system)] : [],
+        messages: [Message.user(input.text)],
+      })
+    })
+
+    const attempt = Effect.fn("SessionTitle.attempt")(function* (input: {
+      readonly session: SessionSchema.Info
+      readonly prepared: SessionModelRequest.Prepared<SessionTitle>
+      readonly model: SessionRunnerModel.Resolved
+    }) {
+      if (input.prepared.event.result !== undefined) return input.prepared.event.result
       const chunks: string[] = []
       let failed = false
       let usage: SessionUsage.Recorded | undefined
@@ -68,15 +86,7 @@ export const layer = Layer.effect(
             })
           : Effect.void,
       )
-      const prepared = yield* context.request.title({
-        session: input.session,
-        agent: input.agent.id,
-        model: input.model,
-        system: input.agent.system ? [SystemPart.make(input.agent.system)] : [],
-        messages: [Message.user(input.text)],
-      })
-      if (prepared.event.result !== undefined) return prepared.event.result
-      yield* llm.stream(prepared.request, prepared.options).pipe(
+      yield* llm.stream(input.prepared.request, input.prepared.options).pipe(
         Stream.runForEach((event) => {
           if (LLMEvent.is.providerError(event)) failed = true
           if (LLMEvent.is.textDelta(event)) chunks.push(event.text)
@@ -94,7 +104,13 @@ export const layer = Layer.effect(
         Effect.onInterrupt(() => recordUsage.pipe(Effect.asVoid)),
       )
       yield* recordUsage
-      if (failed) return
+      if (failed) {
+        yield* Effect.logDebug("session title attempt failed", {
+          sessionID: input.session.id,
+          model: input.model.ref,
+        })
+        return
+      }
       return chunks
         .join("")
         .split("\n")
@@ -132,12 +148,30 @@ export const layer = Layer.effect(
         : messagePrompt(firstUser.text)
       const selection = yield* context.selectTitle(session)
       if (!selection) return
-      const title =
-        (yield* attempt({ session, agent: selection.agent, text, model: selection.selected })) ??
-        (selection.primary && !isDeepStrictEqual(selection.selected.ref, selection.primary.ref)
-          ? yield* attempt({ session, agent: selection.agent, text, model: selection.primary })
-          : undefined)
-      if (!title) return
+      const models = [selection.selected]
+      if (selection.primary && !isDeepStrictEqual(selection.selected.ref, selection.primary.ref))
+        models.push(selection.primary)
+      const prepared: Array<SessionModelRequest.Prepared<SessionTitle> | undefined> = []
+      let title: string | undefined
+      // A provider error can be transient, so spend at most MAX_ATTEMPTS requests
+      // per generation, alternating the selected and primary models.
+      for (let index = 0; index < MAX_ATTEMPTS; index++) {
+        const modelIndex = index % models.length
+        let preparedFor = prepared[modelIndex]
+        if (!preparedFor) {
+          preparedFor = yield* prepare({ session, agent: selection.agent, text, model: models[modelIndex] })
+          prepared[modelIndex] = preparedFor
+        }
+        title = yield* attempt({ session, prepared: preparedFor, model: models[modelIndex] })
+        if (title) break
+      }
+      if (!title) {
+        yield* Effect.logDebug("session title generation gave up", {
+          sessionID,
+          attempts: MAX_ATTEMPTS,
+        })
+        return
+      }
       const expectedSequence = (yield* Bus.latestSequence(db, sessionID)) + 1
       const current = yield* store.get(sessionID)
       if (!current || current.title !== session.title || current.title === truncate(title)) return
