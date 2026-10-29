@@ -13,6 +13,7 @@ import { SessionHistory } from "../history.js"
 import type { SessionMessage } from "../message.js"
 import { SessionSchema } from "../schema.js"
 import { SessionStore } from "../store.js"
+import { ImageNotice } from "../../image/notice.js"
 import { SessionMessageTable, SessionTable } from "../sql.js"
 import { ShellResult } from "../../shell/result.js"
 import { SubagentCompletion } from "../subagent-completion.js"
@@ -158,6 +159,43 @@ export const layer = (options?: Options) =>
             }),
             // Restart notices must not revive idle owners of long-lived shells.
             // Interrupted executions resume separately after their notices are admitted.
+            resume: false,
+          })
+          .pipe(
+            Effect.catchTag("Session.NotFoundError", () => Effect.void),
+            Effect.orDie,
+          )
+        yield* jobs.completeBackground(background.notificationID)
+      })
+
+      const recoverImage = Effect.fnUntraced(function* (
+        background: Job.Background,
+        recovery: Extract<Job.Recovery, { kind: "image" }>,
+      ) {
+        const body =
+          background.status === "running"
+            ? `Image request for ${recovery.path} was cancelled because the server restarted.`
+            : background.status === "completed"
+              ? (background.output ?? `Image request finished. Saved image: ${recovery.path} (${recovery.model}).`)
+              : background.status === "error"
+                ? (background.error ?? `Image request failed for ${recovery.path}.`)
+                : `Image request for ${recovery.path} was cancelled.`
+        yield* sessions
+          .synthetic({
+            id: background.notificationID,
+            sessionID: recovery.sessionID,
+            description: "Image generation",
+            text: ImageNotice.text({
+              id: background.id,
+              state: background.status === "running" ? "cancelled" : background.status,
+              body,
+            }),
+            metadata: {
+              source: "image_generate",
+              jobID: background.id,
+              state: background.status === "running" ? "cancelled" : background.status,
+              path: recovery.path,
+            },
             resume: false,
           })
           .pipe(
@@ -314,9 +352,9 @@ export const layer = (options?: Options) =>
             Effect.fnUntraced(function* (background) {
               if ((yield* jobs.get(background.id))?.status === "running") return
               const recovery = background.recovery
-              yield* recovery.kind === "shell"
-                ? recoverShell(background, recovery)
-                : recoverSubagent(background, recovery, suspended)
+              if (recovery.kind === "shell") return yield* recoverShell(background, recovery)
+              if (recovery.kind === "image") return yield* recoverImage(background, recovery)
+              yield* recoverSubagent(background, recovery, suspended)
             }),
             { discard: true },
           )
