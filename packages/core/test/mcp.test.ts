@@ -2803,6 +2803,9 @@ testEffect(Layer.empty).effect("flush waits for a server that connects within it
     yield* Effect.gen(function* () {
       const registry = yield* Tool.Service
       const registration = yield* McpTool.Service
+      const mcp = yield* Mcp.Service
+      // Boot no longer spawns: start the server the way a Session select does.
+      yield* mcp.demand("resources").pipe(Effect.forkScoped)
       yield* Deferred.await(gated.started)
       const flush = yield* registration.flush.pipe(Effect.forkChild({ startImmediately: true }))
       yield* Effect.yieldNow
@@ -2824,6 +2827,8 @@ testEffect(Layer.empty).effect("flush stops waiting for a hung server when its s
     yield* Effect.gen(function* () {
       const mcp = yield* Mcp.Service
       const registration = yield* McpTool.Service
+      // Boot no longer spawns: start the server the way a Session select does.
+      yield* mcp.demand("resources").pipe(Effect.forkScoped)
       yield* Deferred.await(gated.started)
       const flush = yield* registration.flush.pipe(Effect.forkChild({ startImmediately: true }))
       yield* TestClock.adjust("1999 millis")
@@ -3280,13 +3285,7 @@ for (const source of ["config", "organization"] as const) {
           if (source === "config") yield* test.setEntries([document("allow")])
           if (source === "organization") yield* setOrganizationPolicy(undefined)
           yield* PubSub.publish(updates, { type: Event.Updated.type })
-          yield* service.servers().pipe(
-            Effect.filterOrFail(
-              (servers) => servers.some((server) => server.status.status === "connected"),
-              () => new Error("MCP policy was not restored"),
-            ),
-            Effect.retry({ times: 200, schedule: Schedule.spaced("10 millis") }),
-          )
+          // Boot no longer spawns: restore the server the way a Session select does.
           expect(yield* settled(service)).toEqual({ status: "connected" })
           expect((yield* service.tools()).length).toBeGreaterThan(0)
         }).pipe(
