@@ -86,6 +86,7 @@ const layer = Layer.effect(
   Effect.gen(function* () {
     const hooks = yield* PluginHooks.Service
     const image = yield* Image.Service
+    const permission = yield* Permission.Service
 
     type NormalizedItem = Tool.Content | "decode" | "size"
     const normalizeImages = Effect.fnUntraced(function* (content: ReadonlyArray<Tool.Content>) {
@@ -133,6 +134,11 @@ const layer = Layer.effect(
       input: unknown,
       context: Tool.Context,
     ) {
+      yield* Effect.annotateCurrentSpan({
+        "gen_ai.tool.name": name,
+        "gen_ai.tool.call.id": context.id,
+        "session.id": context.sessionID,
+      })
       const execution = yield* execute(tool, input, context).pipe(
         Effect.map((value) => ({ value })),
         Effect.catchTag("Tool.Error", (failure) => Effect.succeed({ failure })),
@@ -290,10 +296,13 @@ const layer = Layer.effect(
             topLevel: new Set(direct.keys()),
           }
           const codeModeTool = codeModeEnabled
-            ? CodeModeTool.create(codeModeInventory, (name, tool, input, context) =>
-                beforeExecute(name, input, context).pipe(
-                  Effect.flatMap((event) => executeTool(tool, name, event.input, context)),
-                ),
+            ? CodeModeTool.create(
+                codeModeInventory,
+                (name, tool, input, context) =>
+                  beforeExecute(name, input, context).pipe(
+                    Effect.flatMap((event) => executeTool(tool, name, event.input, context)),
+                  ),
+                permission,
               )
             : undefined
           const codeModeCatalog = !codeModeEnabled
@@ -421,5 +430,5 @@ function namespaceError(name: string) {
 export const node = makeLocationNode({
   service: Service,
   layer,
-  deps: [PluginHooks.node, Image.node],
+  deps: [PluginHooks.node, Image.node, Permission.node],
 })

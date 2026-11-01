@@ -25,6 +25,19 @@ import { ShutdownDeadline } from "./shutdown-deadline"
 // wrapper. Idempotent; env-only config (OPENCODE_CLOUD_PROXY[_DOMAINS]).
 FetchProxy.install()
 
+// Keep requests to the local service off any proxy. Bun reads lowercase `no_proxy` alone whenever it is set, so both
+// spellings get the same merged list.
+const noProxy = [
+  ...new Set(
+    [process.env.NO_PROXY, process.env.no_proxy, "127.0.0.1,localhost,::1"].flatMap((value) =>
+      (value ?? "").split(",").flatMap((entry) => entry.trim() || []),
+    ),
+  ),
+].join(",")
+
+process.env.NO_PROXY = noProxy
+process.env.no_proxy = noProxy
+
 ensurePluginRuntime()
 
 if (process.env.OPENCODE_SSH_ASKPASS_PORT) {

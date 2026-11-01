@@ -159,6 +159,19 @@ describe("Permission", () => {
     }),
   )
 
+  it.effect("reports whether a request is already allowed without asking", () =>
+    Effect.gen(function* () {
+      yield* setup([])
+      const service = yield* Permission.Service
+      expect(yield* service.allows(assertion())).toBe(false)
+      expect(yield* service.list()).toEqual([])
+      yield* setRules([{ action: "read", resource: "*", effect: "allow" }])
+      expect(yield* service.allows(assertion())).toBe(true)
+      yield* setRules([{ action: "read", resource: "*", effect: "deny" }])
+      expect(yield* service.allows(assertion())).toBe(false)
+    }),
+  )
+
   test("matches Windows rule resources against slash-normalized file access resources", () => {
     const rules: Permission.Ruleset = [
       { action: "external_directory", resource: "C:\\Users\\x\\proj\\*", effect: "allow" },
@@ -521,9 +534,9 @@ describe("shell scanner permission impact", () => {
       command: "printf ok && git status > output",
       approved: ["printf *", "git status *"],
       exact: ["printf ok", "git status"],
-      denied: "git status",
+      denied: "git status *",
       savedEffect: ["allow", "allow"],
-      exactEffect: ["allow", "allow"],
+      exactEffect: ["allow", "ask"],
       deniedEffect: ["deny", "deny"],
     },
     {
@@ -532,9 +545,9 @@ describe("shell scanner permission impact", () => {
       command: "printf ok | cat < input > output",
       approved: ["printf *", "cat *"],
       exact: ["printf ok", "cat"],
-      denied: "cat",
+      denied: "cat *",
       savedEffect: ["allow", "allow"],
-      exactEffect: ["allow", "allow"],
+      exactEffect: ["allow", "ask"],
       deniedEffect: ["deny", "deny"],
     },
     {
@@ -543,10 +556,10 @@ describe("shell scanner permission impact", () => {
       command: "FOO=bar > output; printf done",
       approved: ["printf *"],
       exact: ["printf done"],
-      denied: "FOO=bar > output; printf done",
-      savedEffect: ["ask", "allow"],
-      exactEffect: ["ask", "allow"],
-      deniedEffect: ["deny", "allow"],
+      denied: "FOO=bar > output",
+      savedEffect: ["ask", "ask"],
+      exactEffect: ["ask", "ask"],
+      deniedEffect: ["deny", "deny"],
     },
     {
       name: "assignment redirect with an approved command substitution",
@@ -555,9 +568,9 @@ describe("shell scanner permission impact", () => {
       approved: ["git describe *"],
       exact: ["git describe --tags"],
       denied: "VERSION=$(git describe --tags) > build/version.txt",
-      savedEffect: ["ask", "allow"],
-      exactEffect: ["ask", "allow"],
-      deniedEffect: ["deny", "allow"],
+      savedEffect: ["ask", "ask"],
+      exactEffect: ["ask", "ask"],
+      deniedEffect: ["deny", "deny"],
     },
     {
       name: "substitution in a saved prefix",
@@ -602,6 +615,39 @@ describe("shell scanner permission impact", () => {
       savedEffect: ["allow", "ask"],
       exactEffect: ["allow", "ask"],
       deniedEffect: ["deny", "allow"],
+    },
+    {
+      name: "trailing redirect after list operator",
+      shell: "bash",
+      command: "true && cat > secret",
+      approved: ["true *", "cat *"],
+      exact: ["true", "cat"],
+      denied: "* > secret*",
+      savedEffect: ["allow", "allow"],
+      exactEffect: ["allow", "ask"],
+      deniedEffect: ["allow", "deny"],
+    },
+    {
+      name: "commandless redirect write",
+      shell: "zsh",
+      command: ">> ~/.zshrc <<< 'x'",
+      approved: [">> *"],
+      exact: [">> ~/.zshrc <<< 'x'"],
+      denied: ">> *",
+      savedEffect: ["allow", "allow"],
+      exactEffect: ["allow", "allow"],
+      deniedEffect: ["deny", "deny"],
+    },
+    {
+      name: "PowerShell .NET method invocation",
+      shell: "pwsh",
+      command: '[IO.File]::Delete("C:\\victim")',
+      approved: ["[IO.File]::Delete(*"],
+      exact: ['[IO.File]::Delete("C:\\victim")'],
+      denied: "*Delete(*",
+      savedEffect: ["allow", "allow"],
+      exactEffect: ["allow", "allow"],
+      deniedEffect: ["deny", "deny"],
     },
   ] as const) {
     for (const scenario of [
@@ -718,14 +764,31 @@ describe("shell scanner permission impact", () => {
       name: "assignment redirect prefix",
       shell: "bash",
       command: "FOO=bar > output; printf done",
-      grants: [["printf *"], ["printf *"]],
-      // Identical saved rules cover only the native resource, regardless of which parser saved them.
+      grants: [
+        ["printf *"],
+        ["FOO=bar > *", "printf *"],
+      ],
       repeat: [
         ["ask", "allow"],
         ["ask", "allow"],
       ],
-      next: "printf next",
-      nextEffect: ["allow", "allow"],
+      next: "FOO=bar rm -rf /",
+      nextEffect: ["ask", "ask"],
+    },
+    {
+      name: "PowerShell method prefix",
+      shell: "pwsh",
+      command: '[IO.File]::Delete("C:\\first")',
+      grants: [
+        ["[IO.File]::Delete(*"],
+        ["[IO.File]::Delete(*"],
+      ],
+      repeat: [
+        ["allow", "allow"],
+        ["allow", "allow"],
+      ],
+      next: '[IO.File]::WriteAllText("C:\\first", "x")',
+      nextEffect: ["ask", "ask"],
     },
     {
       name: "PowerShell tab prefix",

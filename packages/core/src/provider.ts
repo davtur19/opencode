@@ -4,7 +4,7 @@ import { Context, Effect, Layer, Option, Schema, Stream, Struct } from "effect"
 import { Provider } from "@opencode/schema/provider"
 import { Model } from "@opencode/schema/model"
 import { makeLocationNode } from "@opencode/util/effect/app-node"
-import { HttpTimeout, type ProviderPackageDefinition } from "@opencode/ai/effect"
+import { HttpTimeout, type ProviderPackage } from "@opencode/ai/effect"
 import { isRecord } from "@opencode/util/record"
 import { Npm } from "@opencode/util/npm"
 import type { DeepMutable } from "./schema.js"
@@ -44,7 +44,6 @@ export class LoadError extends Schema.TaggedError<LoadError>()("Provider.LoadErr
   package: Schema.String,
   cause: Schema.Defect(),
 }) {}
-export type ProviderPackage = ProviderPackageDefinition
 
 const packages = new Map<string, Promise<unknown>>()
 const builtins = new Map<string, () => Promise<unknown>>([
@@ -73,6 +72,7 @@ const builtins = new Map<string, () => Promise<unknown>>([
   ["@opencode/ai/providers/azure/chat", () => import("@opencode/ai/providers/azure/chat")],
   ["@opencode/ai/providers/azure/responses", () => import("@opencode/ai/providers/azure/responses")],
   ["@opencode/ai/providers/azure/images", () => import("@opencode/ai/providers/azure/images")],
+  ["@opencode/ai/providers/azure/messages", () => import("@opencode/ai/providers/azure/messages")],
   ["@opencode/ai/providers/baseten", () => import("@opencode/ai/providers/baseten")],
   ["@opencode/ai/providers/baseten/decisions", () => import("@opencode/ai/providers/baseten/decisions")],
   ["@opencode/ai/providers/cerebras", () => import("@opencode/ai/providers/cerebras")],
@@ -528,7 +528,7 @@ const layer = Layer.effect(
         },
       )
     })
-    yield* bus.subscribe([Integration.Event.Updated, Credential.Event.Updated, Credential.Event.Switched]).pipe(
+    yield* bus.subscribe([Integration.Event.Updated, Credential.Event.Switched]).pipe(
       Stream.runForEach(() => notify),
       Effect.forkScoped({ startImmediately: true }),
     )
@@ -568,5 +568,5 @@ const importPackage = Effect.fn("Provider.importPackage")(function* (
       cause: new Error(`Provider package ${specifier} does not export model(modelID, settings)`),
     })
   }
-  return module as ProviderPackageDefinition
+  return module as ProviderPackage.Definition
 })

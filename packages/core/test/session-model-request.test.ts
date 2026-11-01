@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, setSystemTime, test } from "bun:test"
-import { LLM, LanguageModel, Message, SystemPart, ToolResultPart, Media } from "@opencode/ai/effect"
+import { ai, LanguageModel, Message, SystemPart, ToolResultPart, Media } from "@opencode/ai/effect"
 import { OpenAIChat } from "@opencode/ai/protocols"
 import { Provider } from "@opencode/schema/provider"
 import { SessionMessage } from "@opencode/schema/session-message"
@@ -324,7 +324,7 @@ describe("SessionModelRequest.wireIdentity", () => {
   test("refreshes an already prepared request after a rotation", () => {
     const input = { id: SessionSchema.ID.make("ses_chat") }
     const first = wireIdentity(input, Provider.ID.opencode, true)
-    const request = LLM.request({
+    const request = ai.request({
       model,
       prompt: "hello",
       http: { headers: { "x-opencode-session-id": first.session, "x-keep": "yes" } },
@@ -344,7 +344,7 @@ describe("SessionModelRequest.wireIdentity", () => {
   test("rotates the proxy key with the environment after an identity reset", () => {
     const input = { id: SessionSchema.ID.make("ses_egress_reset") }
     const first = wireIdentity(input, Provider.ID.opencode, true)
-    const request = LLM.request({ model, prompt: "hello" })
+    const request = ai.request({ model, prompt: "hello" })
 
     SessionEgress.reset(input.id)
     SessionEnvironmentStamp.reset(input.id)
@@ -357,7 +357,7 @@ describe("SessionModelRequest.wireIdentity", () => {
   test("refreshes the environment stamp after an identity reset", () => {
     SessionEnvironmentStamp.clear()
     const input = { id: SessionSchema.ID.make("ses_env_refresh") }
-    const request = LLM.request({
+    const request = ai.request({
       model,
       system: stampEnvironment([SystemPart.make("<env>\n  Working directory: /project\n</env>")], input.id),
       prompt: "hello",
@@ -378,7 +378,7 @@ describe("SessionModelRequest.wireIdentity", () => {
     expect(identity.session).toBe(input.id)
     expect(identity.egress).toBeUndefined()
 
-    const request = LLM.request({
+    const request = ai.request({
       model,
       system: [SystemPart.make("<env>\n  Working directory: /project\n</env>")],
       prompt: "hello",
@@ -394,7 +394,7 @@ describe("SessionModelRequest.wireIdentity", () => {
 
   test("leaves a non-gateway provider completely unmodified", () => {
     const input = { id: SessionSchema.ID.make("ses_deepseek") }
-    const request = LLM.request({
+    const request = ai.request({
       model,
       system: [SystemPart.make("<env>\n  Working directory: /project\n</env>")],
       prompt: "hello",

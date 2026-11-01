@@ -102,7 +102,6 @@ export function isRetryable(
     case "ContentPolicy":
     case "InvalidRequest":
     case "UnsupportedOperation":
-    case "NoRoute":
     case "Timeout":
       return false
     default: {

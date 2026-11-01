@@ -44,7 +44,10 @@ export const usable = (server: string, rules: Permission.Ruleset): boolean => {
 }
 
 export interface Interface {
-  /** Wait for the initial MCP tool registration to settle. */
+  /**
+   * Wait for the initial MCP tool registration, give servers still connecting a bounded chance to
+   * finish, then bring the registry up to date without waiting for the debounced reload.
+   */
   readonly flush: Effect.Effect<void>
   /** Starts every server whose tools this ruleset can reach, then refreshes the registry for the caller's snapshot. */
   readonly demand: (permissions: Permission.Ruleset) => Effect.Effect<void>
@@ -177,7 +180,17 @@ export const layer = Layer.effect(
       // The snapshot taken right after this select must already contain freshly connected tools.
       yield* reconcile
     })
-    return Service.of({ flush: Effect.asVoid(Fiber.await(initial)), demand })
+    return Service.of({
+      flush: Effect.gen(function* () {
+        yield* Fiber.await(initial)
+        yield* mcp.awaitStartup()
+        // Each catalog refresh creates new tool objects, so identity shows whether the registry is behind.
+        const current = yield* mcp.tools()
+        if (current.length !== discovered.length || current.some((tool, index) => tool !== discovered[index]))
+          yield* reconcile
+      }),
+      demand,
+    })
   }),
 )
 

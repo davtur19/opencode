@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test"
-import { LanguageModel, LLM, LLMEvent } from "@opencode/ai/effect"
+import { ai, LanguageModel, LLMEvent } from "@opencode/ai/effect"
 import { OpenAIChat } from "@opencode/ai/protocols/openai-chat"
 import { TestLLM } from "@opencode/ai/testing"
 import { Agent } from "@opencode/core/agent"
@@ -96,7 +96,7 @@ const setup = Effect.fn("setup")(function* (overrides: Partial<Permission.Interf
         model,
         prepared: {
           retry: () => Effect.void,
-          request: LLM.request({ model: model.model, prompt: "Loop" }),
+          request: ai.request({ model: model.model, prompt: "Loop" }),
           options: {},
           executeTool: () =>
             Effect.sync(() => {

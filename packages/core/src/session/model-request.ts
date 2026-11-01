@@ -1,12 +1,13 @@
 export * as SessionModelRequest from "./model-request.js"
 
 import {
+  ai,
   GenerationOptions,
   type GenerationOptionsFields,
   HttpOptions,
   LanguageModel,
-  LLM,
-  LLMRequest,
+  type LLM,
+  type LLMRequest,
   type Media,
   Message,
   SystemPart,
@@ -28,6 +29,7 @@ import { Cause, Context, Effect, Layer, Result, Stream } from "effect"
 import { HttpClientRequest, HttpClientResponse } from "effect/http"
 import { makeLocationNode } from "@opencode/util/effect/app-node"
 import { App } from "../app.js"
+import { Instructions } from "../instructions/index.js"
 import { Permission } from "../permission.js"
 import { PluginHooks } from "../plugin/hooks.js"
 import { QuestionTool } from "../tool/plugin/question.js"
@@ -81,7 +83,7 @@ export interface Input {
   readonly tools?: Tool.Snapshot
   readonly system: Array<SystemPart>
   readonly messages: Array<Message>
-  readonly toolChoice?: LLM.RequestInput["toolChoice"]
+  readonly toolChoice?: LLM.LLMRequestInput["toolChoice"]
   /** Only the durable runner may use a stateful WebSocket. */
   readonly webSocket?: "session"
   /** Prompt size, measured by the provider or estimated. The default output limit leaves room for it. */
@@ -179,34 +181,38 @@ export const refresh = (
 ) => {
   const free = providerID === Provider.ID.opencode && anonymous === true
   const identity = wireIdentity(session, providerID, anonymous)
-  return LLMRequest.update(request, {
+  return {
+    ...request,
     http: new HttpOptions({
       ...request.http,
       headers: { ...request.http?.headers, ...(free ? identityHeaders(identity) : {}) },
     }),
     promptCacheKey: cacheKey(identity.affinity),
     system: free ? stampEnvironment(request.system, session.id) : request.system,
-  })
+  }
 }
 
 export const baseTranscript = (input: {
   readonly agent: Agent.Info
   readonly model: SessionRunnerModel.Resolved
   readonly tools: Tool.Snapshot
-  readonly initial: string
+  readonly initial: ReadonlyArray<Instructions.Rendered>
   readonly messages: ReadonlyArray<SessionMessage.Info>
 }) => {
   const providerMetadataKey = input.model.model.route.providerMetadataKey ?? input.model.model.provider
   return {
     providerMetadataKey,
     system: [
-      input.agent.system
-        ? input.agent.system
-        : SessionSystemPrompt.make(input.tools.definitions.map((tool) => tool.name)),
-      input.initial,
-    ]
-      .filter((part) => part.length > 0)
-      .map(SystemPart.make),
+      SystemPart.make(
+        input.agent.system
+          ? input.agent.system
+          : SessionSystemPrompt.make(input.tools.definitions.map((tool) => tool.name)),
+      ),
+      {
+        ...SystemPart.make(Instructions.join(input.initial)),
+        metadata: { experimental: { instructions: input.initial } },
+      },
+    ].filter((part) => part.text.length > 0),
     messages: toLLMMessages(input.messages, input.model.ref, providerMetadataKey),
   }
 }
@@ -383,7 +389,7 @@ export const layer = Layer.effect(
       // Titles are provider bookkeeping, not session turns: the gateway never charges them, so they
       // keep the provider default and carry no environment id. Every other flow carries the session's.
       const system = kind === "title" || !cloudFree ? shaped.system : stampEnvironment(shaped.system, session.id)
-      const base = LLM.request({
+      const base = ai.request({
         model: model.model,
         http: {
           headers: {
@@ -413,13 +419,14 @@ export const layer = Layer.effect(
         modelHook.baseURL !== undefined && modelHook.baseURL !== baseURL
           ? base.model.route.with({ endpoint: { baseURL: modelHook.baseURL } })
           : base.model.route
-      const request = LLMRequest.update(base, {
+      const request = {
+        ...base,
         model: route === base.model.route ? base.model : LanguageModel.update(base.model, { route }),
         http: new HttpOptions({
           ...base.http,
           headers: Object.keys(modelHook.headers).length === 0 ? undefined : modelHook.headers,
         }),
-      })
+      }
       const hasHttpHooks =
         (yield* hooks.has("session", "http.request", model.ref.providerID)) ||
         (yield* hooks.has("session", "http.response", model.ref.providerID))
