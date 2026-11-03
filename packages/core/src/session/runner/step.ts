@@ -187,7 +187,7 @@ export const make = Effect.gen(function* () {
       Stream.runForEach((event) =>
         Effect.gen(function* () {
           input.stall.lastEventAt = yield* Clock.currentTimeMillis
-          if (publisher.hasProviderError()) return
+          if (publisher.record().providerFailed) return
           // Wait here, where cancellation still works, rather than inside the uninterruptible publish.
           if (!publisher.hasStarted()) yield* Fiber.join(pendingStartSnapshot)
           yield* publisher.publish(event)
