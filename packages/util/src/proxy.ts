@@ -85,9 +85,9 @@ function bodyToText(body: BodyInit): string | undefined {
 }
 
 // The dedicated proxy key is the egress epoch: it survives the wire alias a gateway retry
-// rotates, so the retry can report the relay the failed attempt used. The session id remains the
-// fallback for requests that predate the header, and the affinity for the few cloud requests that
-// carry no session id at all.
+// rotates, so the retry can report the relay the failed attempt used. Only the free tier sends
+// this header, so only free traffic is proxied; the OpenCode Go API keeps the real session and
+// goes direct. The remaining headers are fallback keys for older requests.
 const SESSION_HEADERS = [
   "x-opencode-proxy-session",
   "x-opencode-session-id",
@@ -134,6 +134,15 @@ function sessionKey(input: RequestInfo | URL, init?: RequestInit) {
       if (fromRequest) return fromRequest
     }
   }
+  return undefined
+}
+
+// Only free-tier inference carries the proxy egress epoch. Requiring it here keeps credentialed
+// OpenCode Go requests, and every other cloud request, off the rotating egress.
+function proxySession(input: RequestInfo | URL, init?: RequestInit) {
+  const fromInit = headerValue(init?.headers, "x-opencode-proxy-session")
+  if (fromInit) return fromInit
+  if (input instanceof Request) return input.headers.get("x-opencode-proxy-session") ?? undefined
   return undefined
 }
 
@@ -210,7 +219,9 @@ export function proxiedInit(input: RequestInfo | URL, init?: RequestInit) {
   const proxy = hostname ? getProxyForHostname(hostname) : undefined
   const existingProxy = init !== undefined && "proxy" in init && Boolean(init.proxy)
   if (!proxy || existingProxy) return undefined
-  const key = sessionRotationEnabled() ? rotationKey(sessionKey(input, init)) : undefined
+  const free = proxySession(input, init)
+  if (free === undefined) return undefined
+  const key = sessionRotationEnabled() ? free : undefined
   return { ...init, proxy: key === undefined ? proxy : sessionProxy(proxy, key) } satisfies ProxyAwareInit
 }
 

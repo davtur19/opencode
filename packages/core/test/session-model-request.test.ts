@@ -386,7 +386,8 @@ describe("SessionModelRequest.wireIdentity", () => {
     })
     const refreshed = refresh(request, input, Provider.ID.opencode, false)
 
-    expect(refreshed.http?.headers?.["x-opencode-session-id"]).toBeUndefined()
+    expect(refreshed.http?.headers?.["x-opencode-session-id"]).toBe(input.id)
+    expect(refreshed.http?.headers?.["x-opencode-session"]).toBe(input.id)
     expect(refreshed.http?.headers?.["x-opencode-proxy-session"]).toBeUndefined()
     expect(refreshed.http?.headers?.["x-keep"]).toBe("yes")
     expect(refreshed.system[0]?.text).not.toContain("Environment id:")

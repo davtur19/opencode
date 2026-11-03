@@ -179,13 +179,14 @@ export const refresh = (
   providerID: Model.Ref["providerID"],
   anonymous?: boolean,
 ) => {
-  const free = providerID === Provider.ID.opencode && anonymous === true
+  const opencode = providerID === Provider.ID.opencode
+  const free = opencode && anonymous === true
   const identity = wireIdentity(session, providerID, anonymous)
   return {
     ...request,
     http: new HttpOptions({
       ...request.http,
-      headers: { ...request.http?.headers, ...(free ? identityHeaders(identity) : {}) },
+      headers: { ...request.http?.headers, ...(opencode ? identityHeaders(identity) : {}) },
     }),
     promptCacheKey: cacheKey(identity.affinity),
     system: free ? stampEnvironment(request.system, session.id) : request.system,
@@ -381,10 +382,11 @@ export const layer = Layer.effect(
       const entries = Object.entries(shaped.options)
       const generation = Object.fromEntries(entries.filter(([k]) => GENERATION_KEYS.has(k))) as GenerationOptionsFields
       const providerOptions = Object.fromEntries(entries.filter(([k]) => !GENERATION_KEYS.has(k)))
-      // Free-tier gateway traffic only: the wire alias, the identity headers, and the environment
-      // stamp are all gateway/egress bookkeeping. A credentialed request and every other provider
-      // (DeepSeek, Anthropic, OpenRouter, ...) keep the real identity and an untouched system prompt.
-      const cloudFree = model.ref.providerID === Provider.ID.opencode && model.anonymous === true
+      // OpenCode gateway traffic always carries the session identity headers; only the free tier
+      // carries the proxy egress epoch and the environment stamp. A credentialed Go request keeps
+      // the real session so the gateway can route it; the fetch wrapper only proxies free traffic.
+      const opencode = model.ref.providerID === Provider.ID.opencode
+      const cloudFree = opencode && model.anonymous === true
       const identity = wireIdentity(session, model.ref.providerID, model.anonymous)
       // Titles are provider bookkeeping, not session turns: the gateway never charges them, so they
       // keep the provider default and carry no environment id. Every other flow carries the session's.
@@ -393,9 +395,9 @@ export const layer = Layer.effect(
         model: model.model,
         http: {
           headers: {
-            ...(cloudFree ? identityHeaders(identity) : {}),
+            ...(opencode ? identityHeaders(identity) : {}),
             "User-Agent": App.useragent(app),
-            ...(cloudFree ? { "x-opencode-project": session.projectID, "x-opencode-client": app.name } : {}),
+            ...(opencode ? { "x-opencode-project": session.projectID, "x-opencode-client": app.name } : {}),
           },
         },
         // TODO: Persist cache lineage so nested forks reuse the root session's cache key.

@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test"
-import { clearAliases, registerAlias } from "./cloud-proxy.js"
+import { clearAliases, keyForAlias, registerAlias } from "./cloud-proxy.js"
 import { FetchProxy } from "./proxy.js"
 
 const PROXY_URL = "http://192.168.1.6:3128"
@@ -22,7 +22,7 @@ function sessionToken(proxy: string): SessionToken {
 }
 
 function sessionHeaders(sessionID: string) {
-  return { "x-opencode-session-id": sessionID }
+  return { "x-opencode-session-id": sessionID, "x-opencode-proxy-session": sessionID }
 }
 
 describe("util.proxy", () => {
@@ -114,7 +114,7 @@ describe("util.proxy", () => {
 
   test("proxiedInit adds the proxy for matching string, URL, and Request inputs", () => {
     process.env[CLOUD_PROXY_ENV] = PROXY_URL
-    const init = { headers: { "user-agent": "test" } }
+    const init = { headers: { "user-agent": "test", "x-opencode-proxy-session": "ses_proxy" } }
     expect(FetchProxy.proxiedInit("https://zenmux.ai/api/v1", init)).toEqual({
       headers: init.headers,
       proxy: PROXY_URL,
@@ -155,8 +155,8 @@ describe("util.proxy", () => {
       expect(FetchProxy.proxiedInit(url, { headers: sessionHeaders("ses_off") })?.proxy).toBe(PROXY_URL)
     })
 
-    test("leaves the proxy URL alone without a session header", () => {
-      expect(FetchProxy.proxiedInit(url, { headers: { "user-agent": "test" } })?.proxy).toBe(PROXY_URL)
+    test("does not proxy without the free-tier egress header", () => {
+      expect(FetchProxy.proxiedInit(url, { headers: { "user-agent": "test" } })).toBeUndefined()
     })
 
     test("carries the session and a first attempt in the proxy userinfo", () => {
@@ -231,8 +231,14 @@ describe("util.proxy", () => {
     test("keeps the attempt across an alias rotation", () => {
       registerAlias("ses_wire_a", "ses_owner")
       registerAlias("ses_wire_b", "ses_owner")
+      expect(keyForAlias("ses_wire_b")).toBe("ses_owner")
       FetchProxy.noteResponseStatus("ses_owner", response(429))
-      const proxy = FetchProxy.proxiedInit(url, { headers: sessionHeaders("ses_wire_b") })?.proxy
+      const proxy = FetchProxy.proxiedInit(url, {
+        headers: {
+          "x-opencode-session-id": "ses_wire_b",
+          "x-opencode-proxy-session": "ses_owner",
+        },
+      })?.proxy
       if (proxy === undefined) throw new Error("expected a proxied init")
       expect(new URL(proxy).username).toBe("ses_owner")
       expect(sessionToken(proxy)).toEqual({ boot: expect.any(String), attempt: 1, status: 429 })
