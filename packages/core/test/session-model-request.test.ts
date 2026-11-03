@@ -393,6 +393,21 @@ describe("SessionModelRequest.wireIdentity", () => {
     expect(refreshed.system[0]?.text).not.toContain("Environment id:")
   })
 
+  test("sends the real session headers for OpenCode Go", () => {
+    const input = { id: SessionSchema.ID.make("ses_go") }
+    const identity = wireIdentity(input, Provider.ID.make("opencode-go"), false)
+
+    expect(identity.session).toBe(input.id)
+    expect(identity.egress).toBeUndefined()
+
+    const request = ai.request({ model, prompt: "hello" })
+    const refreshed = refresh(request, input, Provider.ID.make("opencode-go"), false)
+
+    expect(refreshed.http?.headers?.["x-opencode-session-id"]).toBe(input.id)
+    expect(refreshed.http?.headers?.["x-opencode-session"]).toBe(input.id)
+    expect(refreshed.http?.headers?.["x-opencode-proxy-session"]).toBeUndefined()
+  })
+
   test("leaves a non-gateway provider completely unmodified", () => {
     const input = { id: SessionSchema.ID.make("ses_deepseek") }
     const request = ai.request({

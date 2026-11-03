@@ -103,10 +103,15 @@ export const outputLimit = (limit: Model.Info["limit"], inputTokens?: Input["inp
 
 type EgressSession = Pick<SessionSchema.Info, "id" | "parentID" | "fork">
 
+// OpenCode's gateway providers share the session-correlation headers. Only the free provider uses
+// the rotating wire alias and the egress proxy; OpenCode Go keeps the real session and goes direct.
+const OPENCODE_GATEWAY_PROVIDERS: ReadonlySet<string> = new Set([Provider.ID.opencode, "opencode-go"])
+const isOpencodeGateway = (providerID: Model.Ref["providerID"]) => OPENCODE_GATEWAY_PROVIDERS.has(providerID)
+
 /**
- * The identity the gateway sees. The opencode gateway gets a process-local native alias, so a
- * rotation changes its address and session identity without touching the chat ID; every other
- * provider keeps the real session and affinity.
+ * The identity the gateway sees. The free opencode gateway gets a process-local native alias, so a
+ * rotation changes its address and session identity without touching the chat ID; OpenCode Go and
+ * every other provider keep the real session and affinity.
  */
 export const wireIdentity = (
   session: EgressSession,
@@ -179,8 +184,8 @@ export const refresh = (
   providerID: Model.Ref["providerID"],
   anonymous?: boolean,
 ) => {
-  const opencode = providerID === Provider.ID.opencode
-  const free = opencode && anonymous === true
+  const opencode = isOpencodeGateway(providerID)
+  const free = providerID === Provider.ID.opencode && anonymous === true
   const identity = wireIdentity(session, providerID, anonymous)
   return {
     ...request,
@@ -385,8 +390,8 @@ export const layer = Layer.effect(
       // OpenCode gateway traffic always carries the session identity headers; only the free tier
       // carries the proxy egress epoch and the environment stamp. A credentialed Go request keeps
       // the real session so the gateway can route it; the fetch wrapper only proxies free traffic.
-      const opencode = model.ref.providerID === Provider.ID.opencode
-      const cloudFree = opencode && model.anonymous === true
+      const opencode = isOpencodeGateway(model.ref.providerID)
+      const cloudFree = model.ref.providerID === Provider.ID.opencode && model.anonymous === true
       const identity = wireIdentity(session, model.ref.providerID, model.anonymous)
       // Titles are provider bookkeeping, not session turns: the gateway never charges them, so they
       // keep the provider default and carry no environment id. Every other flow carries the session's.
