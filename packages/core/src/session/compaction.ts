@@ -1122,11 +1122,20 @@ export const recentUserMessages = (
 }
 
 const total = (estimate: Estimate) => estimate.measured + estimate.estimated
+const promptEstimates = new WeakMap<SessionContext.Loaded, Estimate>()
 
 export const estimateContext = (context: SessionContext.Loaded) => total(estimatePrompt(context))
 
 /** The size of the prompt `context` sends. */
 export const estimatePrompt = (context: SessionContext.Loaded): Estimate => {
+  const cached = promptEstimates.get(context)
+  if (cached) return cached
+  const estimate = computePromptEstimate(context)
+  promptEstimates.set(context, estimate)
+  return estimate
+}
+
+const computePromptEstimate = (context: SessionContext.Loaded): Estimate => {
   const anchorIndex = context.messages.findLastIndex((message) => hasMeasuredPrompt(message, context.model.ref))
   const anchor = context.messages[anchorIndex]
   const base = transcript(context, context.messages.slice(Math.max(0, anchorIndex)))

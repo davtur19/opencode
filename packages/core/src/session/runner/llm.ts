@@ -13,6 +13,7 @@ import { SessionEvent } from "../event.js"
 import { SessionInbox } from "../inbox.js"
 import { SessionBackground } from "../background.js"
 import { Job } from "../../job.js"
+import { Permission } from "../../permission.js"
 import { SessionHistory } from "../history.js"
 import { SessionModelRequest } from "../model-request.js"
 import { SessionModelTransport } from "../model-transport.js"
@@ -234,6 +235,13 @@ const layer = Layer.effect(
       const sessionID = first.session.id
       let assistantMessageID = SessionMessage.ID.create()
       const retry = yield* SessionRunnerRetry.make(bus, sessionID)
+      // Stream activity persists across this step's attempts so the stall watchdog also sees
+      // silence that began in an earlier attempt; each attempt re-seeds attemptStartedAt so
+      // pre-first-event silence still has its own budget to expire.
+      const stall: { lastEventAt: number | undefined; attemptStartedAt: number | undefined } = {
+        lastEventAt: undefined,
+        attemptStartedAt: undefined,
+      }
       let initial: SessionContext.Loaded | undefined = first
       let recoverOverflow = true
       let recoverContinuation = true
@@ -311,6 +319,7 @@ const layer = Layer.effect(
                   .pipe(Effect.map((result) => result.status === "completed"))
               : Effect.succeed(false),
           ),
+          stall,
         })
         const completed = yield* SessionStep.Outcome.$match(outcome, {
           Completed: Effect.fnUntraced(function* (outcome) {
@@ -446,6 +455,7 @@ export const node = makeLocationNode({
   deps: [
     Bus.node,
     LocationLifecycle.node,
+    Permission.node,
     llmClient,
     SessionContext.node,
     SessionModelTransport.node,

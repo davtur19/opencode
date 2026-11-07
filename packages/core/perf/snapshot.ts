@@ -18,7 +18,9 @@ import { Effect, Layer, Logger, ManagedRuntime, Stream } from "effect"
 import { AppNodeBuilder } from "../src/effect/app-node-builder"
 import { Git } from "../src/git"
 import { Location } from "../src/location"
+import { Permission } from "../src/permission"
 import { AbsolutePath, RelativePath } from "../src/schema"
+import { SessionStore } from "../src/session/store"
 import { Snapshot } from "../src/snapshot"
 
 // The real path: Snapshot compares a location with its worktree's real path, and macOS's temp folder is a symlink
@@ -322,16 +324,27 @@ export async function session(snapshots: "on" | "off", ttft: number) {
           retry: () => Effect.succeed({ retry: false as const }),
           recoverContinuation: false,
           recoverOverflow: Effect.succeed(false),
+          stall: { lastEventAt: undefined, attemptStartedAt: undefined },
         })
       }
     }).pipe(
       Effect.provide(layer),
       Effect.provide(
         Layer.merge(
-          AppNodeBuilder.build(LayerNode.group([Database.node, Bus.node, SessionProjector.node, ToolOutput.node]), [
-            Bus.node.replace(Bus.configured({ persist: true })),
-          ]),
-          TestLLM.testLayer(),
+          Layer.merge(
+            AppNodeBuilder.build(
+              LayerNode.group([
+                Database.node,
+                Bus.node,
+                SessionProjector.node,
+                SessionStore.node,
+                ToolOutput.node,
+              ]),
+              [Bus.node.replace(Bus.configured({ persist: true }))],
+            ),
+            TestLLM.testLayer(),
+          ),
+          Layer.mock(Permission.Service, { close: Effect.void, assert: () => Effect.void }),
         ),
       ),
       Effect.provide(Logger.layer([])),

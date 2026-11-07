@@ -16,6 +16,7 @@ import { SessionProjector } from "@opencode/core/session/projector"
 import { SessionRunnerModel } from "@opencode/core/session/runner/model"
 import { SessionStep } from "@opencode/core/session/runner/step"
 import { SessionMessageTable, SessionTable } from "@opencode/core/session/sql"
+import { SessionStore } from "@opencode/core/session/store"
 import { Snapshot } from "@opencode/core/snapshot"
 import { ToolOutput } from "@opencode/core/tool-output"
 import { Money } from "@opencode/schema/money"
@@ -23,13 +24,18 @@ import { LayerNode } from "@opencode/util/effect/layer-node"
 import { asc, eq } from "drizzle-orm"
 import { Effect, Exit, Layer } from "effect"
 import { testEffect } from "./lib/effect"
+import { permissionLayer } from "./lib/permission"
 
 const it = testEffect(
   Layer.merge(
-    AppNodeBuilder.build(LayerNode.group([Database.node, Bus.node, SessionProjector.node, ToolOutput.node]), [
-      Bus.node.replace(Bus.configured({ persist: true })),
-    ]),
-    TestLLM.testLayer(),
+    Layer.merge(
+      AppNodeBuilder.build(
+        LayerNode.group([Database.node, Bus.node, SessionProjector.node, SessionStore.node, ToolOutput.node]),
+        [Bus.node.replace(Bus.configured({ persist: true }))],
+      ),
+      TestLLM.testLayer(),
+    ),
+    permissionLayer(),
   ),
 )
 
@@ -119,6 +125,7 @@ for (const fixture of [
             Effect.succeed(retry ? { retry: true, attempt: 2, delay: 0 } : { retry: false }),
           recoverContinuation: true,
           recoverOverflow: Effect.succeed(false),
+          stall: { lastEventAt: undefined, attemptStartedAt: undefined },
         })
         .pipe(Effect.exit)
       expect(Exit.isSuccess(result)).toBe(fixture.finish === "stop")
@@ -158,6 +165,71 @@ for (const fixture of [
     }),
   )
 }
+
+it.effect("captures once when the step runs no local tool", () =>
+  Effect.gen(function* () {
+    const db = (yield* Database.Service).db
+    const llm = yield* TestLLM.Test
+    const sessionID = Session.ID.create()
+    const assistantMessageID = SessionMessage.ID.create()
+    const start = Snapshot.ID.make("before")
+    let captures = 0
+    const steps = yield* SessionStep.make.pipe(
+      Effect.provide(
+        Layer.mock(Snapshot.Service)({
+          capture: () => Effect.sync(() => (captures++, start)),
+          files: () => Effect.die("the step changed no files"),
+        }),
+      ),
+    )
+    yield* db
+      .insert(ProjectTable)
+      .values({ id: Project.ID.global, worktree: AbsolutePath.make("/project"), sandboxes: [] })
+      .run()
+    yield* db
+      .insert(SessionTable)
+      .values({ id: sessionID, project_id: Project.ID.global, slug: "step", directory: "/project", version: "test" })
+      .run()
+    const model = SessionRunnerModel.resolved(
+      LanguageModel.make({ id: "test-model", provider: "test", route: OpenAIChat.route }),
+      {
+        capabilities: { tools: true, input: ["text"], output: ["text"] },
+        limit: { context: 100_000, output: 1_000 },
+        cost: [
+          {
+            input: Money.USDPerMillionTokens.make(1),
+            output: Money.USDPerMillionTokens.make(2),
+            cache: { read: Money.USDPerMillionTokens.make(0.1), write: Money.USDPerMillionTokens.make(0.5) },
+          },
+        ],
+      },
+    )
+    yield* llm.push(TestLLM.text("Done", "text-done"))
+    const result = yield* steps
+      .attempt({
+        isLocationClosed: () => false,
+        sessionID,
+        assistantMessageID,
+        agent: Agent.defaultID,
+        model,
+        prepared: {
+          retry: () => Effect.void,
+          request: ai.request({ model: model.model, prompt: "Hello" }),
+          options: {},
+          executeTool: () => Effect.die("no tools"),
+        },
+        retry: () => Effect.succeed({ retry: false }),
+        recoverContinuation: true,
+        recoverOverflow: Effect.succeed(false),
+        stall: { lastEventAt: undefined, attemptStartedAt: undefined },
+      })
+      .pipe(Effect.exit)
+    expect(Exit.isSuccess(result)).toBe(true)
+    if (Exit.isSuccess(result))
+      expect(result.value).toEqual(SessionStep.Outcome.Completed({ needsContinuation: false }))
+    expect(captures).toBe(1)
+  }),
+)
 
 it.effect("records the cost the endpoint reports instead of the catalog price", () =>
   Effect.gen(function* () {
@@ -216,6 +288,7 @@ it.effect("records the cost the endpoint reports instead of the catalog price", 
       retry: () => Effect.succeed({ retry: false }),
       recoverContinuation: true,
       recoverOverflow: Effect.succeed(false),
+      stall: { lastEventAt: undefined, attemptStartedAt: undefined },
     })
 
     const message = yield* db

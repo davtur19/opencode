@@ -8,7 +8,7 @@ import {
   type ToolCall,
 } from "@opencode/ai/effect"
 import type { Agent } from "@opencode/schema/agent"
-import { Cause, Clock, Data, Effect, Exit, Fiber, Option, Stream } from "effect"
+import { Cause, Clock, Data, Effect, Exit, Fiber, Option, Result, Stream } from "effect"
 import { SessionError } from "@opencode/schema/session-error"
 import { Bus } from "../../bus.js"
 import { Permission } from "../../permission.js"
@@ -21,6 +21,7 @@ import { SessionEvent } from "../event.js"
 import { SessionMessage } from "../message.js"
 import { SessionModelRequest } from "../model-request.js"
 import { SessionSchema } from "../schema.js"
+import { SessionStore } from "../store.js"
 import { toSessionError } from "../to-session-error.js"
 import { SessionUsage } from "../usage.js"
 import { SessionRunnerModel } from "./model.js"
@@ -55,11 +56,25 @@ interface Input {
   readonly recoverContinuation: boolean
   /** The runner owns compaction policy; the attempt invokes it only before durable output. */
   readonly recoverOverflow: Effect.Effect<boolean>
+  /** Step-scoped so the stall watchdog counts silence that began in an earlier attempt. */
+  readonly stall: { lastEventAt: number | undefined; attemptStartedAt: number | undefined }
 }
 
 const TOOLS_INTERRUPTED = { type: "aborted", message: "Tool execution interrupted" } as const
 const STEP_INTERRUPTED = { type: "aborted", message: "Step interrupted" } as const
 const RESULT_MISSING = { type: "tool.result-missing", message: "Provider did not return a tool result" } as const
+const DOOM_LOOP_THRESHOLD = 3
+const DOOM_LOOP_MESSAGES = 16
+const DOOM_LOOP_MARKER = { doomLoop: "warn" } as const
+const DOOM_LOOP_STOP = "Doom loop repeated after warning. Stopping this turn."
+const STALL_TIMEOUT_MS = 90 * 1000
+const STALL_CHECK_INTERVAL_MS = 5 * 1000
+// Silence before the first provider event is a slow time to first token, not a stalled stream:
+// reasoning models can legitimately stay quiet for minutes. Generous, but finite, so a dead
+// provider still fails the attempt instead of idling until the transport's idle timeout.
+const TTFT_TIMEOUT_MS = 10 * 60 * 1000
+const doomLoopWarning = (name: string) =>
+  `Doom loop detected: the same ${name} tool call was repeated with identical input. Do not repeat it — change your approach, arguments, or use a different tool. The turn continues after this warning.`
 
 /** Captures Location-scoped dependencies without introducing another service or execution loop. */
 export const make = Effect.gen(function* () {
@@ -67,6 +82,8 @@ export const make = Effect.gen(function* () {
   const llm = yield* LLMClient.Service
   const snapshots = yield* Snapshot.Service
   const toolOutput = yield* ToolOutput.Service
+  const store = yield* SessionStore.Service
+  const permission = yield* Permission.Service
 
   const attempt = Effect.fn("SessionStep.attempt")(function* (input: Input) {
     // The start snapshot only has to exist before local tools run, which cannot happen before Step.Started,
@@ -92,16 +109,75 @@ export const make = Effect.gen(function* () {
       readonly fiber: Fiber.Fiber<void, Permission.DeclinedError | QuestionTool.CancelledError>
     }> = []
     const interruptTools = Effect.suspend(() => Fiber.interruptAll(toolRuns.map((run) => run.fiber)))
+    // A prior deny strike is derived from the projected warning, so it survives retries and restarts.
+    const doom = { blocked: false }
+    const gateDoomLoop = Effect.fn("SessionStep.gateDoomLoop")(function* (call: ToolCall) {
+      const messages = yield* store
+        .messages({ sessionID: input.sessionID, order: "desc", limit: DOOM_LOOP_MESSAGES })
+        .pipe(Effect.catchTag("Session.MessageDecodeError", () => Effect.succeed(undefined)))
+      // Undecodable history must not fail tool calls; without history there is nothing to detect.
+      if (messages === undefined) return
+      const boundary = messages.findIndex((message) => message.type === "user")
+      const content = messages
+        .slice(0, boundary === -1 ? undefined : boundary)
+        .reverse()
+        .flatMap((message) => (message.type === "assistant" ? message.content : []))
+      if (!doomLoopDetected(content, call)) return
+      const warned = doomLoopWarned(content)
+      yield* permission
+        .assert({
+          action: "doom_loop",
+          resources: [call.name],
+          save: [call.name],
+          metadata: { tool: call.name },
+          sessionID: input.sessionID,
+          agent: input.agent,
+          source: { type: "tool", messageID: input.assistantMessageID, id: call.id },
+        })
+        .pipe(
+          // Two strikes: deny warns the model and keeps the turn alive; a repeat stops the turn.
+          Effect.catchTag("Permission.BlockedError", () =>
+            Effect.gen(function* () {
+              if (warned) {
+                doom.blocked = true
+                return yield* new Tool.Error({ message: DOOM_LOOP_STOP })
+              }
+              return yield* new Tool.Error({ message: doomLoopWarning(call.name), metadata: DOOM_LOOP_MARKER })
+            }),
+          ),
+          // A rejection tunnels as a defect so tools cannot catch it; recover it here as the typed
+          // decline SessionModelRequest.executeTool expects to classify.
+          Effect.catchCauseFilter(
+            (cause) => {
+              const decline = cause.reasons.flatMap((r) =>
+                Cause.isDieReason(r) && r.defect instanceof Permission.DeclinedError ? [r.defect] : [],
+              )[0]
+              return decline ? Result.succeed(decline) : Result.fail(cause)
+            },
+            (decline) => Effect.fail(decline),
+          ),
+          // Mirror the tool boundary: every other permission failure becomes a model-visible tool error.
+          Effect.mapError((error) =>
+            error instanceof Tool.Error || error instanceof Permission.DeclinedError
+              ? error
+              : new Tool.Error({ message: error instanceof globalThis.Error ? error.message : String(error) }),
+          ),
+        )
+    })
     const executeTool = (call: ToolCall) => {
       if (input.prepared.request.toolChoice?.type === "none")
         return new Tool.Error({ message: "Tools are disabled after the maximum agent steps" })
-      return input.prepared.executeTool({
-        sessionID: input.sessionID,
-        agent: input.agent,
-        messageID: input.assistantMessageID,
-        call,
-        progress: (update) => publisher.progress(call.id, update),
-      })
+      return gateDoomLoop(call).pipe(
+        Effect.andThen(
+          input.prepared.executeTool({
+            sessionID: input.sessionID,
+            agent: input.agent,
+            messageID: input.assistantMessageID,
+            call,
+            progress: (update) => publisher.progress(call.id, update),
+          }),
+        ),
+      )
     }
 
     // Provider and tool fibers retain per-source order without a shared writer queue.
@@ -110,6 +186,7 @@ export const make = Effect.gen(function* () {
     const providerStream = llm.stream(input.prepared.request, input.prepared.options).pipe(
       Stream.runForEach((event) =>
         Effect.gen(function* () {
+          input.stall.lastEventAt = yield* Clock.currentTimeMillis
           if (publisher.record().providerFailed) return
           // Wait here, where cancellation still works, rather than inside the uninterruptible publish.
           if (!publisher.hasStarted()) yield* Fiber.join(pendingStartSnapshot)
@@ -134,10 +211,37 @@ export const make = Effect.gen(function* () {
       Effect.ensuring(publisher.flush()),
     )
 
+    // The fork's stall watchdog: a provider stream that goes silent — no events, no error —
+    // never fails on its own, so the step hangs until the user stops it. Silence while a tool
+    // call is pending is a long local or hosted execution idling the stream by design, and does
+    // not count. The failure shares the incomplete-stream classification, so recovery reuses the
+    // established retry and continuation paths instead of the fork's TransientTurnError.
+    const watchdog = Effect.gen(function* () {
+      while (true) {
+        yield* Effect.sleep(STALL_CHECK_INTERVAL_MS)
+        if (publisher.hasPendingTools()) continue
+        // No event in this attempt yet: silence counts from the attempt start against the slower
+        // TTFT budget. Once any event has arrived (in this or an earlier attempt), silence counts
+        // from the last event against the tight stall budget, which also keeps a retry whose
+        // predecessor went silent from paying the attempt budget again.
+        const sawEvent = input.stall.lastEventAt !== undefined
+        const base = input.stall.lastEventAt ?? input.stall.attemptStartedAt
+        if (base === undefined) continue
+        if ((yield* Clock.currentTimeMillis) - base >= (sawEvent ? STALL_TIMEOUT_MS : TTFT_TIMEOUT_MS))
+          return yield* new AIError({
+            reason: new InvalidProviderOutputError({
+              message: "The provider response went silent without completing.",
+              classification: "incomplete-stream",
+            }),
+          })
+      }
+    })
+
     // Keep the final tool and Step events uninterruptible, even when the work itself is cancelled.
     return yield* Effect.uninterruptibleMask((restore) =>
       Effect.gen(function* () {
-        const stream = yield* restore(providerStream).pipe(Effect.exit)
+        input.stall.attemptStartedAt = yield* Clock.currentTimeMillis
+        const stream = yield* restore(Effect.raceFirst(providerStream, watchdog)).pipe(Effect.exit)
         const streamFailure = Option.getOrUndefined(Exit.findErrorOption(stream))
         const streamInterrupted = Exit.hasInterrupts(stream)
         // Cancelled before the start snapshot existed: record nothing, as when the capture preceded the request.
@@ -245,15 +349,21 @@ export const make = Effect.gen(function* () {
         const record = publisher.record()
         if (record.finish || record.failure) {
           const startSnapshot = yield* Fiber.join(pendingStartSnapshot)
-          const snapshot = yield* snapshots.capture()
+          // No local tool ran, so the step changed no files: its start tree is also its end tree.
+          // Skip the second capture and diff, which serialize per repository.
+          const snapshot = toolRuns.length === 0 ? startSnapshot : yield* snapshots.capture()
           const files =
-            startSnapshot && snapshot
-              ? startSnapshot === snapshot
-                ? []
-                : yield* snapshots
-                    .files({ from: startSnapshot, to: snapshot })
-                    .pipe(Effect.orElseSucceed(() => undefined))
-              : undefined
+            toolRuns.length === 0
+              ? snapshot === undefined
+                ? undefined
+                : []
+              : startSnapshot && snapshot
+                ? startSnapshot === snapshot
+                  ? []
+                  : yield* snapshots
+                      .files({ from: startSnapshot, to: snapshot })
+                      .pipe(Effect.orElseSucceed(() => undefined))
+                : undefined
           const usage = record.finish ? SessionUsage.record(record.finish.usage, input.model.cost) : undefined
           if (record.failure) yield* publisher.publishStepFailure({ ...usage, snapshot, files })
           if (record.finish && usage && !record.failure)
@@ -287,7 +397,8 @@ export const make = Effect.gen(function* () {
         if (tools.interrupted && tools.failure) return yield* Effect.failCause(tools.failure)
         if (tools.interrupted && Exit.isFailure(joined)) return yield* Effect.failCause(joined.cause)
         if (record.failure) return yield* new StepFailedError({ error: record.failure })
-        const needsContinuation = input.prepared.request.toolChoice?.type !== "none" && record.needsContinuation
+        const needsContinuation =
+          input.prepared.request.toolChoice?.type !== "none" && record.needsContinuation && !doom.blocked
         if (record.finish?.finish === "length") return Outcome.OutputLimit({ needsContinuation })
         return Outcome.Completed({ needsContinuation })
       }),
@@ -296,6 +407,32 @@ export const make = Effect.gen(function* () {
 
   return { attempt }
 })
+
+/**
+ * The window the fork checked on the third tool-call event: the call being executed plus the two
+ * preceding turn parts are identical tool calls with settled input. Anchoring on the executing call
+ * keeps concurrent tool fibers from detecting each other's parts.
+ */
+const doomLoopDetected = (content: readonly SessionMessage.AssistantContent[], call: ToolCall) => {
+  const self = content.findIndex((item) => item.type === "tool" && item.id === call.id)
+  if (self < DOOM_LOOP_THRESHOLD - 1) return false
+  const input = JSON.stringify(call.input)
+  return content
+    .slice(self - (DOOM_LOOP_THRESHOLD - 1), self + 1)
+    .every(
+      (item) =>
+        item.type === "tool" &&
+        item.state.status !== "streaming" &&
+        item.name === call.name &&
+        JSON.stringify(item.state.input) === input,
+    )
+}
+
+/** A strike already happened in this turn when the projected warning carries its marker. */
+const doomLoopWarned = (content: readonly SessionMessage.AssistantContent[]) =>
+  content.some(
+    (item) => item.type === "tool" && item.state.status === "error" && item.state.metadata?.doomLoop === "warn",
+  )
 
 const isInterruptedStream = (failure: AIError) => {
   if (failure.reason._tag === "InvalidProviderOutput") return failure.reason.classification === "incomplete-stream"

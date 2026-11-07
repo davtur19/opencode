@@ -418,6 +418,9 @@ export const OpencodePlugin = define<
       if (!item) return
       const hasKey = Boolean(process.env.OPENCODE_API_KEY || snapshot.connection || item.provider.settings?.apiKey)
       providers.update(item.provider.id, (provider) => {
+        // Legacy keep-alive workaround (port of 0cd10587cd), opt-in via OPENCODE_EXPERIMENTAL_CONNECTION_CLOSE.
+        if (experimentalConnectionClose())
+          provider.headers = Provider.mergeHeaders(provider.headers, { Connection: "close" })
         if (!hasKey && !disableFree) {
           provider.activation = "enabled"
           provider.settings = { ...provider.settings, apiKey: "public" }
@@ -809,4 +812,9 @@ function send(http: HttpClient.HttpClient, url: string, body: Record<string, str
     HttpClientRequest.schemaBodyJson(Schema.Record(Schema.String, Schema.Union([Schema.String, Schema.Boolean])))(body),
     Effect.flatMap((request) => http.execute(request)),
   )
+}
+
+function experimentalConnectionClose() {
+  const value = process.env.OPENCODE_EXPERIMENTAL_CONNECTION_CLOSE?.toLowerCase()
+  return value === "1" || value === "true"
 }

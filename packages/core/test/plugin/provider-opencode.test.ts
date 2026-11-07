@@ -365,7 +365,7 @@ describe("OpencodePlugin", () => {
                 ...(scenario.orgID === "org-missing" ? [] : ["/api/v2/instructions", "/api/v2/skills"]),
               ])
               // The refresh and every Console fetch say which OpenCode is asking.
-              expect(agents).toEqual(requests.map(() => "opencode/beta/1.2.3/test"))
+              expect(agents).toEqual(requests.map(() => "opencode/latest/1.2.3/test"))
             }).pipe(Effect.provideService(App.Metadata, App.make({ name: "test", version: "1.2.3", channel: "beta" }))),
           ({ server }) => Effect.promise(() => server.stop(true)),
         ),
@@ -1899,6 +1899,32 @@ describe("OpencodePlugin", () => {
           }
         }),
       ({ server }) => Effect.promise(() => server.stop(true)),
+    ),
+  )
+
+  it.effect("does not force Connection close on provider requests by default", () =>
+    withEnv({ OPENCODE_EXPERIMENTAL_CONNECTION_CLOSE: undefined }, () =>
+      Effect.gen(function* () {
+        const catalog = yield* Provider.Service
+        yield* catalog.transform((catalog) => {
+          catalog.update(Provider.ID.opencode, () => {})
+        })
+        yield* addPlugin()
+        expect(required(yield* catalog.get(Provider.ID.opencode)).headers?.Connection).toBeUndefined()
+      }),
+    ),
+  )
+
+  it.effect("forces Connection close when OPENCODE_EXPERIMENTAL_CONNECTION_CLOSE is set", () =>
+    withEnv({ OPENCODE_EXPERIMENTAL_CONNECTION_CLOSE: "1" }, () =>
+      Effect.gen(function* () {
+        const catalog = yield* Provider.Service
+        yield* catalog.transform((catalog) => {
+          catalog.update(Provider.ID.opencode, () => {})
+        })
+        yield* addPlugin()
+        expect(required(yield* catalog.get(Provider.ID.opencode)).headers?.Connection).toBe("close")
+      }),
     ),
   )
 

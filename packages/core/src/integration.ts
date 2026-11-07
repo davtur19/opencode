@@ -263,6 +263,12 @@ export class Service extends Context.Service<Service, Interface>()("@opencode/In
 const attemptLifetime = Duration.toMillis(Duration.minutes(10))
 const terminalRetention = Duration.toMillis(Duration.minutes(1))
 const scrubInterval = Duration.seconds(30)
+const collator = new Intl.Collator()
+const byName = (a: Info, b: Info) => collator.compare(a.name, b.name)
+const cloneListed = (info: Info): Info => ({
+  ...info,
+  connections: info.connections.map((connection) => ({ ...connection })),
+})
 
 type AttemptTime = { created: number; expires: number }
 type PendingAttempt = {
@@ -309,8 +315,43 @@ const layer = Layer.effect(
     const commandAttempts = SynchronizedRef.makeUnsafe(new Map<AttemptID, CommandAttemptEntry>())
     // Runtime-only: statuses describe the current process's view of a connection and are not persisted.
     const statuses = new Map<string, IntegrationConnection.Status>()
+    let statusesRevision = 0
     const statusKey = (integrationID: ID, connection: IntegrationConnection.Info) =>
       `${integrationID}:${IntegrationConnection.key(connection)}`
+    // Integration definitions are immutable after publication, so their derived env names are reusable.
+    const environmentNames = new WeakMap<Entry, readonly string[]>()
+    const environment = (entry: Entry | undefined) => {
+      if (!entry) return []
+      const cached = environmentNames.get(entry)
+      if (cached) return cached
+      const names = entry.methods.flatMap((method) => (method.type === "env" ? method.names : []))
+      environmentNames.set(entry, names)
+      return names
+    }
+    let listCache:
+      | {
+          readonly revision: number
+          readonly credentials: string
+          readonly environment: string
+          readonly statuses: number
+          readonly value: Info[]
+        }
+      | undefined
+
+    const credentialsKey = (saved: readonly Credential.Info[]) => {
+      let key = ""
+      for (const credential of saved)
+        key += `${credential.id}\u0000${credential.label}\u0000${credential.value.type}\u0000`
+      return key
+    }
+
+    const environmentKey = (integrations: ReadonlyMap<ID, Entry>) => {
+      let key = ""
+      for (const entry of integrations.values())
+        for (const name of environment(entry)) if (process.env[name]) key += `${entry.ref.id}\u0000${name}\u0000`
+      return key
+    }
+
     const state = State.create<Data, Editor>({
       name: "integration",
       initial: () => ({ integrations: new Map<ID, Entry>() }),
@@ -393,9 +434,8 @@ const layer = Layer.effect(
           method: credential.value.type,
         }))
         .toReversed()
-      const env = (entry?.methods ?? [])
-        .filter((method) => method.type === "env")
-        .flatMap((method) => method.names.filter((name) => process.env[name]))
+      const env = environment(entry)
+        .filter((name) => process.env[name])
         .map((name) => ({ type: "env" as const, name }))
       return [...credentials, ...env]
     }
@@ -688,8 +728,31 @@ const layer = Layer.effect(
         return project(entry, resolveConnections(entry, yield* credentials.list(id)))
       }),
       list: Effect.fn("Integration.list")(function* () {
-        const saved = Map.groupBy(yield* credentials.all(), (credential) => credential.integrationID)
-        return sortedEntries().map((entry) => project(entry, resolveConnections(entry, saved.get(entry.ref.id) ?? [])))
+        const saved = yield* credentials.all()
+        const integrations = state.get().integrations
+        const revision = state.revision()
+        const credentialsHash = credentialsKey(saved)
+        const environmentHash = environmentKey(integrations)
+        if (
+          listCache &&
+          listCache.revision === revision &&
+          listCache.credentials === credentialsHash &&
+          listCache.environment === environmentHash &&
+          listCache.statuses === statusesRevision
+        )
+          return listCache.value.map(cloneListed)
+        const byIntegration = Map.groupBy(saved, (credential) => credential.integrationID)
+        const value = sortedEntries().map((entry) =>
+          project(entry, resolveConnections(entry, byIntegration.get(entry.ref.id) ?? [])),
+        ).toSorted(byName)
+        listCache = {
+          revision,
+          credentials: credentialsHash,
+          environment: environmentHash,
+          statuses: statusesRevision,
+          value: value.map(cloneListed),
+        }
+        return value
       }),
       connection: {
         active: Effect.fn("Integration.connection.active")(function* (id) {
@@ -777,6 +840,7 @@ const layer = Layer.effect(
           if (Equal.equals(statuses.get(key), input.status)) return
           if (input.status) statuses.set(key, input.status)
           if (!input.status) statuses.delete(key)
+          statusesRevision++
           yield* bus.publish(Integration.Event.Updated, {})
         }),
       },
