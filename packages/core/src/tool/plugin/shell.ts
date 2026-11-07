@@ -21,10 +21,21 @@ import { ShellResult } from "../../shell/result.js"
 export const name = "shell"
 // Env override for the foreground default; malformed or non-positive values fall back to it.
 export const DEFAULT_TIMEOUT_MS = shellDefaultTimeout() ?? 2 * 60 * 1_000
+// A foreground command that runs longer than this moves to the background automatically, so the
+// agent can keep working and receive the result as a synthetic message. Set the env to 0 to disable.
+export const BACKGROUND_AFTER_ENV = "OPENCODE_EXPERIMENTAL_BASH_BACKGROUND_AFTER_MS"
+export const DEFAULT_BACKGROUND_AFTER_MS = 30_000
 
 function shellDefaultTimeout() {
   const value = Number(process.env.OPENCODE_EXPERIMENTAL_BASH_DEFAULT_TIMEOUT_MS)
   return Number.isSafeInteger(value) && value > 0 ? value : undefined
+}
+
+function backgroundAfterMs() {
+  const raw = process.env[BACKGROUND_AFTER_ENV]
+  if (raw === undefined || raw.trim() === "") return DEFAULT_BACKGROUND_AFTER_MS
+  const value = Number(raw)
+  return Number.isSafeInteger(value) && value >= 0 ? value : DEFAULT_BACKGROUND_AFTER_MS
 }
 
 const BACKGROUND_INSTRUCTION =
@@ -47,6 +58,7 @@ const description = (shell?: string) =>
     "Rely on automatic truncation unless filtering the output is more useful.",
     "Commands accept an optional timeout, background commands have no timeout by default.",
     "Background commands return immediately, and you will be notified when they complete.",
+    "Foreground commands that run longer than 30 seconds are moved to the background automatically; you will be notified when they finish.",
   ].join(" ")
 
 export const Input = Schema.Struct({
@@ -250,9 +262,19 @@ export const Plugin = {
                 return backgroundResult(info.id, info.file)
               }
 
-              const result = yield* jobs
-                .block({ id: job.id, sessionID: context.sessionID })
-                .pipe(Effect.onInterrupt(() => jobs.cancel(job.id).pipe(Effect.ignore)))
+              const backgroundAfter = backgroundAfterMs()
+              const result = yield* Effect.raceFirst(
+                jobs.block({ id: job.id, sessionID: context.sessionID }),
+                backgroundAfter > 0
+                  ? Effect.sleep(backgroundAfter).pipe(Effect.as("auto-background" as const))
+                  : Effect.never,
+              ).pipe(Effect.onInterrupt(() => jobs.cancel(job.id).pipe(Effect.ignore)))
+              if (result === "auto-background") {
+                yield* jobs.background(job.id)
+                yield* shell.timeout(info.id, 0)
+                yield* notifyWhenDone(context.sessionID, job.id, info.id, info.command, settled)
+                return backgroundResult(info.id, info.file)
+              }
               if (result?.type === "backgrounded") {
                 yield* shell.timeout(info.id, 0)
                 yield* notifyWhenDone(context.sessionID, job.id, info.id, info.command, settled)

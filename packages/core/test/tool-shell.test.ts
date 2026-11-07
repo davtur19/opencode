@@ -38,6 +38,7 @@ import { ID } from "@opencode/schema/shell"
 import { ShellTool } from "@opencode/core/tool/plugin/shell"
 import { ToolOutput } from "@opencode/core/tool-output"
 import { Tool } from "@opencode/core/tool"
+import { withEnv } from "./fixture/env"
 import { tmpdir, tmpdirScoped, withTempDir } from "./fixture/tmpdir"
 import { tempGlobalLayer } from "./fixture/global"
 import { offlineModels } from "./fixture/models"
@@ -1424,6 +1425,29 @@ describe("ShellTool", () => {
               truncated: false,
             },
           })
+        }),
+      )
+    }),
+  )
+
+  it.live("moves a foreground command to the background after the threshold", () =>
+    withTempDir((tmp) => {
+      reset()
+      return withSession(tmp.path, (registry) =>
+        Effect.gen(function* () {
+          const shell = yield* Shell.Service
+          const settled = yield* withEnv(
+            { [ShellTool.BACKGROUND_AFTER_ENV]: "50" },
+            () => executeTool(registry, call({ command: idleCommand, timeout: 0 }, "call-auto-background")),
+          )
+          const shellID = typeof settled.metadata?.shellID === "string" ? settled.metadata.shellID : undefined
+
+          expect(settled.metadata).toMatchObject({ status: "running", truncated: false })
+          expect(shellID).toStartWith("sh_")
+          if (!shellID) return
+          const id = ID.make(shellID)
+          expect((yield* shell.get(id))?.status).toBe("running")
+          yield* shell.remove(id).pipe(Effect.ignore)
         }),
       )
     }),
