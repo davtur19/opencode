@@ -264,12 +264,6 @@ export type SessionCompactInput = {
 export type SessionCompactOutput = SessionInbox.Compaction
 export type SessionCompactOperation<E = never> = (input: SessionCompactInput) => Effect.Effect<SessionCompactOutput, E>
 
-export type SessionIdentityResetInput = { readonly sessionID: Session.ID }
-export type SessionIdentityResetOutput = { readonly environmentID: string }
-export type SessionIdentityResetOperation<E = never> = (
-  input: SessionIdentityResetInput,
-) => Effect.Effect<SessionIdentityResetOutput, E>
-
 export type SessionRevertStageInput = {
   readonly sessionID: Session.ID
   readonly messageID: SessionMessage.ID
@@ -422,7 +416,6 @@ export interface SessionApi<E = never> {
   readonly synthetic: SessionSyntheticOperation<E>
   readonly shell: SessionShellOperation<E>
   readonly compact: SessionCompactOperation<E>
-  readonly identity: { readonly reset: SessionIdentityResetOperation<E> }
   readonly revert: {
     readonly stage: SessionRevertStageOperation<E>
     readonly clear: SessionRevertClearOperation<E>

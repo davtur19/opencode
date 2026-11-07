@@ -2745,88 +2745,6 @@
         }
       }
     },
-    "/api/session/{sessionID}/identity/reset": {
-      "post": {
-        "tags": ["session"],
-        "operationId": "session.identity.reset",
-        "parameters": [
-          {
-            "name": "sessionID",
-            "in": "path",
-            "schema": {
-              "$ref": "#/components/schemas/Session.ID"
-            },
-            "required": true
-          }
-        ],
-        "security": [],
-        "responses": {
-          "200": {
-            "description": "Success",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "type": "object",
-                  "properties": {
-                    "data": {
-                      "type": "object",
-                      "properties": {
-                        "environmentID": {
-                          "type": "string"
-                        }
-                      },
-                      "required": ["environmentID"],
-                      "additionalProperties": false
-                    }
-                  },
-                  "required": ["data"],
-                  "additionalProperties": false
-                }
-              }
-            }
-          },
-          "400": {
-            "description": "InvalidRequestError",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/InvalidRequestErrorEncoded"
-                }
-              }
-            }
-          },
-          "401": {
-            "description": "UnauthorizedError",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/UnauthorizedErrorEncoded"
-                }
-              }
-            }
-          },
-          "404": {
-            "description": "SessionNotFoundError | LocationNotFoundError",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "anyOf": [
-                    {
-                      "$ref": "#/components/schemas/SessionNotFoundErrorEncoded"
-                    },
-                    {
-                      "$ref": "#/components/schemas/LocationNotFoundErrorEncoded"
-                    }
-                  ]
-                }
-              }
-            }
-          }
-        },
-        "description": "Rotate the provider-facing session identity without compacting or changing history. The next model request uses a new wire alias and environment id, and starts with a fresh rotation budget and a cold prompt cache.",
-        "summary": "Reset session identity"
-      }
-    },
     "/api/experimental/session/{sessionID}/wait": {
       "post": {
         "tags": ["session"],
@@ -15966,9 +15884,6 @@
             "maximum": 9007199254740991,
             "exclusiveMinimum": 0
           },
-          "subagentsBackground": {
-            "type": "boolean"
-          },
           "permissions": {
             "$ref": "#/components/schemas/Permission.Ruleset"
           }
@@ -16260,9 +16175,6 @@
             "type": "integer",
             "maximum": 9007199254740991,
             "exclusiveMinimum": 0
-          },
-          "subagentsBackground": {
-            "type": "boolean"
           },
           "disabled": {
             "type": "boolean"

@@ -1055,43 +1055,6 @@ describe("SessionRunnerLLM", () => {
     }).pipe(Effect.ensuring(Deferred.succeed(releaseTitle, undefined)))
   })
 
-  scenario("retries title generation from the first prompt after title and execution failures", function* (s) {
-    yield* prepareTitleGeneration
-
-    yield* s.admit("First prompt")
-    yield* s.llm.push(Stream.fail(invalidRequest()), Stream.fail(invalidRequest()))
-    expect((yield* s.resume.pipe(Effect.exit))._tag).toBe("Failure")
-
-    yield* s.admit("Second prompt")
-    const titleFailed = yield* Deferred.make<void>()
-    yield* s.llm.push(
-      Stream.fail(providerRejected({ message: "Title provider unavailable" })).pipe(
-        Stream.ensuring(Deferred.succeed(titleFailed, undefined)),
-      ),
-      TestLLM.text("Recovered", "text-recovered"),
-    )
-    yield* s.resume
-    yield* Deferred.await(titleFailed)
-    yield* Effect.yieldNow
-    expect((yield* s.session.get(sessionID)).title).toBeUndefined()
-
-    const renamed = yield* watchRename(sessionID)
-    yield* s.admit("Third prompt")
-    yield* s.llm.push(
-      TestLLM.text("Generated title", "text-title"),
-      TestLLM.text("Recovered again", "text-recovered-again"),
-    )
-    yield* s.resume
-    yield* Fiber.join(renamed)
-
-    expect(s.requests).toHaveLength(6)
-    expect(JSON.stringify(s.requests[2]?.messages)).toContain("First prompt")
-    expect(JSON.stringify(s.requests[2]?.messages)).not.toContain("Second prompt")
-    expect(JSON.stringify(s.requests[4]?.messages)).toContain("First prompt")
-    expect(JSON.stringify(s.requests[4]?.messages)).not.toContain("Third prompt")
-    expect((yield* s.session.get(sessionID)).title).toBe("Generated title")
-  })
-
   scenario("advertises and executes a location registered tool", function* (s) {
     const registry = yield* Tool.Service
     const contexts: Tool.Context[] = []

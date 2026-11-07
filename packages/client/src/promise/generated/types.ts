@@ -3477,10 +3477,6 @@ export type SessionCompactInput = {
 
 export type SessionCompactOutput = { data: SessionInboxCompaction }["data"]
 
-export type SessionIdentityResetInput = { readonly sessionID: string }
-
-export type SessionIdentityResetOutput = { data: { environmentID: string } }["data"]
-
 export type SessionRevertStageInput = {
   readonly sessionID: string
   readonly messageID: string

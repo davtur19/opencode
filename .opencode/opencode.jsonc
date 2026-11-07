@@ -15,6 +15,7 @@
   "mcp": {},
   "tools": {
     "github-pr-search": false,
+    "github-triage": false,
   },
   "experimental": {
     "part_rows": true,

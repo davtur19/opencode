@@ -3512,6 +3512,8 @@ describe("MCP pool", () => {
         scope,
       )
       const mcp = Context.get(context, Mcp.Service)
+      // Boot is demand-gated in this fork: start the server the way a Session select does.
+      yield* mcp.demand(overrides.name ?? "resources")
       // Up to 10 seconds: a server that is down is retried for a while before it shows failed.
       yield* status(mcp).pipe(
         Effect.filterOrFail((status) => status?.status !== "pending"),
