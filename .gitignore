@@ -39,3 +39,6 @@ tsconfig.tsbuildinfo
 # Embedded databases (tool state, never commit)
 *.sqlite*
 /artifacts/
+
+# Legal drafts pending review are kept outside the repository; never copy them in.
+legal-drafts-private/

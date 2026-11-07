@@ -1,12 +1,6 @@
-import { afterEach, beforeEach, describe, expect, setSystemTime, test } from "bun:test"
-import { ai, LanguageModel, Message, SystemPart, ToolResultPart, Media } from "@opencode/ai/effect"
-import { OpenAIChat } from "@opencode/ai/protocols"
-import { Provider } from "@opencode/schema/provider"
-import { SessionMessage } from "@opencode/schema/session-message"
-import { SessionEgress } from "@opencode/core/session/egress"
-import { SessionEnvironmentStamp } from "@opencode/core/session/environment-stamp"
-import { boundImages, refresh, stampEnvironment, unsupportedParts, wireIdentity } from "@opencode/core/session/model-request"
-import { SessionSchema } from "@opencode/core/session/schema"
+import { describe, expect, test } from "bun:test"
+import { Message, ToolMessage, ToolResultPart, Media, UserMessage } from "@opencode/ai/effect"
+import { boundImages, unsupportedParts } from "@opencode/core/session/model-request"
 
 const capabilities = (input: string[]) => ({ tools: true, input, output: ["text"] })
 
@@ -155,14 +149,15 @@ describe("SessionModelRequest.unsupportedParts", () => {
         ],
       },
     })
-    const unsupported = Message.make({ role: "tool", content: [tool, Message.text("caption")] })
+    const untouched = ToolResultPart.make({ id: "call_3", name: "read", result: "done" })
+    const unsupported = Message.make({ role: "tool", content: [tool, untouched] })
     const result = unsupportedParts([text, supported, unsupported], capabilities(["text"]))
 
     expect(result[0]).toBe(text)
     expect(result[1]).toBe(supported)
     expect(result[2]).not.toBe(unsupported)
-    expect(result[2]).toBeInstanceOf(Message)
-    expect(result[2]?.content[1]).toEqual(Message.text("caption"))
+    expect(result[2]).toBeInstanceOf(ToolMessage)
+    expect(result[2]?.content[1]).toEqual(untouched)
     expect(result[2]?.content[0]).toMatchObject({
       type: "tool-result",
       result: {
@@ -201,7 +196,7 @@ describe("SessionModelRequest.boundImages", () => {
     ]
     const result = boundImages(messages)
 
-    expect(result[0]).toBeInstanceOf(Message)
+    expect(result[0]).toBeInstanceOf(UserMessage)
     expect(result[0]?.content).toEqual([Message.text(expect.stringContaining("image was removed"))])
     expect(result[1]).toBe(text)
     expect(result[2]).not.toBe(messages[2])
@@ -249,225 +244,5 @@ describe("SessionModelRequest.boundImages", () => {
         value: [{ type: "text" }, { type: "file", name: "second.png" }],
       },
     })
-  })
-})
-
-const native = /^ses_[0-9a-f]{12}[0-9A-Za-z]{14}$/
-const model = LanguageModel.make({ id: "model", provider: "opencode", route: OpenAIChat.route })
-
-describe("SessionModelRequest.wireIdentity", () => {
-  beforeEach(() => {
-    SessionEgress.clear()
-    SessionEnvironmentStamp.clear()
-  })
-  afterEach(() => setSystemTime())
-
-  test("uses a stable native alias for the opencode gateway", () => {
-    const input = { id: SessionSchema.ID.make("ses_chat") }
-    const first = wireIdentity(input, Provider.ID.opencode, true)
-    const second = wireIdentity(input, Provider.ID.opencode, true)
-
-    expect(first.session).toBe(first.affinity)
-    expect(first.session).toBe(second.session)
-    expect(first.session).not.toBe(input.id)
-    expect(first.session).toMatch(native)
-    expect(first.parent).toBeUndefined()
-    expect(first.egress).toBe(second.egress)
-    expect(first.egress).toMatch(/^[0-9a-f]{12}$/)
-  })
-
-  test("keeps the real session and affinity for other providers", () => {
-    const parent = SessionSchema.ID.make("ses_parent")
-    const input = { id: SessionSchema.ID.make("ses_chat"), parentID: parent }
-    const identity = wireIdentity(input, Provider.ID.anthropic)
-
-    expect(identity.session).toBe(input.id)
-    expect(identity.affinity).toBe(parent)
-    expect(identity.parent).toBe(parent)
-    expect(identity.egress).toBeUndefined()
-  })
-
-  test("gives a parent its own alias on the opencode gateway", () => {
-    const parent = SessionSchema.ID.make("ses_parent")
-    const input = { id: SessionSchema.ID.make("ses_chat"), parentID: parent }
-    const identity = wireIdentity(input, Provider.ID.opencode, true)
-
-    expect(identity.parent).toBeDefined()
-    expect(identity.parent).not.toBe(parent)
-    expect(identity.parent).toMatch(native)
-  })
-
-  test("replaces a fork source affinity with the alias on the opencode gateway", () => {
-    const source = SessionSchema.ID.make("ses_imported")
-    const input = {
-      id: SessionSchema.ID.make("ses_chat"),
-      fork: { sessionID: source, boundary: { type: "before" as const, messageID: SessionMessage.ID.make("msg_1") } },
-    }
-    const identity = wireIdentity(input, Provider.ID.opencode, true)
-
-    expect(identity.affinity).toBe(identity.session)
-    expect(identity.affinity).not.toBe(source)
-  })
-
-  test("refreshes a stale alias without rotating the egress epoch", () => {
-    const input = { id: SessionSchema.ID.make("ses_chat_stale_alias") }
-    const first = wireIdentity(input, Provider.ID.opencode, true)
-
-    setSystemTime(new Date(Date.now() + SessionEgress.ALIAS_MAX_AGE_MS))
-    const next = wireIdentity(input, Provider.ID.opencode, true)
-
-    expect(next.session).not.toBe(first.session)
-    expect(next.session).toMatch(native)
-    expect(next.egress).toBe(first.egress)
-  })
-
-  test("refreshes an already prepared request after a rotation", () => {
-    const input = { id: SessionSchema.ID.make("ses_chat") }
-    const first = wireIdentity(input, Provider.ID.opencode, true)
-    const request = ai.request({
-      model,
-      prompt: "hello",
-      http: { headers: { "x-opencode-session-id": first.session, "x-keep": "yes" } },
-      promptCacheKey: first.session,
-    })
-    const next = SessionEgress.rotate(input.id)
-    const refreshed = refresh(request, input, Provider.ID.opencode, true)
-
-    expect(refreshed.http?.headers?.["x-opencode-session-id"]).toBe(next)
-    expect(refreshed.http?.headers?.["x-session-affinity"]).toBe(next)
-    // The proxy key must survive the alias rotation so the retry can report the failed relay.
-    expect(refreshed.http?.headers?.["x-opencode-proxy-session"]).toBe(first.egress)
-    expect(refreshed.http?.headers?.["x-keep"]).toBe("yes")
-    expect(refreshed.promptCacheKey).toBe(next)
-  })
-
-  test("rotates the proxy key with the environment after an identity reset", () => {
-    const input = { id: SessionSchema.ID.make("ses_egress_reset") }
-    const first = wireIdentity(input, Provider.ID.opencode, true)
-    const request = ai.request({ model, prompt: "hello" })
-
-    SessionEgress.reset(input.id)
-    SessionEnvironmentStamp.reset(input.id)
-    const refreshed = refresh(request, input, Provider.ID.opencode, true)
-
-    expect(refreshed.http?.headers?.["x-opencode-session-id"]).not.toBe(first.session)
-    expect(refreshed.http?.headers?.["x-opencode-proxy-session"]).not.toBe(first.egress)
-  })
-
-  test("refreshes the environment stamp after an identity reset", () => {
-    SessionEnvironmentStamp.clear()
-    const input = { id: SessionSchema.ID.make("ses_env_refresh") }
-    const request = ai.request({
-      model,
-      system: stampEnvironment([SystemPart.make("<env>\n  Working directory: /project\n</env>")], input.id),
-      prompt: "hello",
-    })
-
-    SessionEnvironmentStamp.reset(input.id)
-    const refreshed = refresh(request, input, Provider.ID.opencode, true)
-    const text = refreshed.system[0]?.text ?? ""
-
-    expect(text).toContain(`Environment id: ${SessionEnvironmentStamp.id(input.id)}`)
-    expect(text.match(/Environment id:/g)).toHaveLength(1)
-  })
-
-  test("keeps the real identity and an untouched prompt when the opencode request is credentialed", () => {
-    const input = { id: SessionSchema.ID.make("ses_paid") }
-    const identity = wireIdentity(input, Provider.ID.opencode, false)
-
-    expect(identity.session).toBe(input.id)
-    expect(identity.egress).toBeUndefined()
-
-    const request = ai.request({
-      model,
-      system: [SystemPart.make("<env>\n  Working directory: /project\n</env>")],
-      prompt: "hello",
-      http: { headers: { "x-keep": "yes" } },
-    })
-    const refreshed = refresh(request, input, Provider.ID.opencode, false)
-
-    expect(refreshed.http?.headers?.["x-opencode-session-id"]).toBe(input.id)
-    expect(refreshed.http?.headers?.["x-opencode-session"]).toBe(input.id)
-    expect(refreshed.http?.headers?.["x-opencode-proxy-session"]).toBeUndefined()
-    expect(refreshed.http?.headers?.["x-keep"]).toBe("yes")
-    expect(refreshed.system[0]?.text).not.toContain("Environment id:")
-  })
-
-  test("sends the real session headers for OpenCode Go", () => {
-    const input = { id: SessionSchema.ID.make("ses_go") }
-    const identity = wireIdentity(input, Provider.ID.make("opencode-go"), false)
-
-    expect(identity.session).toBe(input.id)
-    expect(identity.egress).toBeUndefined()
-
-    const request = ai.request({ model, prompt: "hello" })
-    const refreshed = refresh(request, input, Provider.ID.make("opencode-go"), false)
-
-    expect(refreshed.http?.headers?.["x-opencode-session-id"]).toBe(input.id)
-    expect(refreshed.http?.headers?.["x-opencode-session"]).toBe(input.id)
-    expect(refreshed.http?.headers?.["x-opencode-proxy-session"]).toBeUndefined()
-  })
-
-  test("leaves a non-gateway provider completely unmodified", () => {
-    const input = { id: SessionSchema.ID.make("ses_deepseek") }
-    const request = ai.request({
-      model,
-      system: [SystemPart.make("<env>\n  Working directory: /project\n</env>")],
-      prompt: "hello",
-    })
-    const refreshed = refresh(request, input, Provider.ID.make("deepseek"), true)
-
-    expect(refreshed.system[0]?.text).not.toContain("Environment id:")
-    expect(refreshed.http?.headers?.["x-opencode-session-id"]).toBeUndefined()
-  })
-})
-
-describe("SessionModelRequest.stampEnvironment", () => {
-  const environment = SystemPart.make(
-    "<env>\n  Working directory: /project\n  Workspace root folder: /project\n</env>",
-  )
-  const session = (id: string) => SessionSchema.ID.make(id)
-
-  beforeEach(() => SessionEnvironmentStamp.clear())
-
-  test("adds a stable session id inside the environment block", () => {
-    const first = stampEnvironment([environment], session("ses_a"))
-    const second = stampEnvironment([environment], session("ses_a"))
-
-    expect(first).toEqual(second)
-    expect(first[0]?.text).toContain("Working directory: /project")
-    expect(first[0]?.text).toMatch(/  Environment id: [0-9a-f]{12}\n<\/env>/)
-    expect(environment.text).not.toContain("Environment id:")
-  })
-
-  test("rotates the id after every completed compaction", () => {
-    const target = session("ses_rotate")
-    const first = stampEnvironment([environment], target)[0]?.text
-
-    SessionEnvironmentStamp.compacted(target)
-    expect(stampEnvironment([environment], target)[0]?.text).not.toBe(first)
-  })
-
-  test("replaces the id instead of adding a second one", () => {
-    const target = session("ses_idempotent")
-    const first = stampEnvironment([environment], target)
-    expect(stampEnvironment(first, target)).toEqual(first)
-
-    SessionEnvironmentStamp.reset(target)
-    const rotated = stampEnvironment(first, target)[0]?.text ?? ""
-    expect(rotated).toContain(`Environment id: ${SessionEnvironmentStamp.id(target)}`)
-    expect(rotated.match(/Environment id:/g)).toHaveLength(1)
-  })
-
-  test("uses a different id for another session", () => {
-    expect(stampEnvironment([environment], session("ses_a"))).not.toEqual(
-      stampEnvironment([environment], session("ses_b")),
-    )
-  })
-
-  test("leaves system parts without an environment block unchanged", () => {
-    const plain = SystemPart.make("plain instructions")
-
-    expect(stampEnvironment([plain], session("ses_a"))[0]).toBe(plain)
   })
 })

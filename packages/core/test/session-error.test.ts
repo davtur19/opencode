@@ -18,7 +18,6 @@ import {
 import { RequestExecutor } from "@opencode/ai/route"
 import { Permission } from "@opencode/core/permission"
 import { ID } from "@opencode/core/model"
-import { Model } from "@opencode/schema/model"
 import { ModelResolver } from "@opencode/core/model-resolver"
 import { Provider } from "@opencode/core/provider"
 import { Tool } from "@opencode/schema/tool"
@@ -336,8 +335,8 @@ describe("toSessionError", () => {
       llm(new UnsupportedOperationError({ message: "unsupported", operation: "compact" })),
     ]
 
-    expect(eligible.map((error) => SessionRunnerRetry.isRetryable(error))).toEqual([true, true, true, true])
-    expect(ineligible.map((error) => SessionRunnerRetry.isRetryable(error))).toEqual([false, false, false, false, false, false])
+    expect(eligible.map(SessionRunnerRetry.isRetryable)).toEqual([true, true, true, true])
+    expect(ineligible.map(SessionRunnerRetry.isRetryable)).toEqual([false, false, false, false, false, false])
   })
 
   test("retries accepted transport reads but not accepted writes or rejected requests", () => {
@@ -393,8 +392,8 @@ describe("toSessionError", () => {
       ),
     ]
 
-    expect(retryable.map((error) => SessionRunnerRetry.isRetryable(error))).toEqual([true, true, true, true])
-    expect(ineligible.map((error) => SessionRunnerRetry.isRetryable(error))).toEqual([false, false])
+    expect(retryable.map(SessionRunnerRetry.isRetryable)).toEqual([true, true, true, true])
+    expect(ineligible.map(SessionRunnerRetry.isRetryable)).toEqual([false, false])
   })
 
   test("honors provider retry header overrides", () => {
@@ -420,53 +419,5 @@ describe("toSessionError", () => {
         llm(new InvalidRequestError({ message: "retry", http: http({ "x-should-retry": "true" }) })),
       ),
     ).toBeTrue()
-  })
-
-  test("scopes opencode gateway flakes to anonymous public requests and free-tier quota", () => {
-    // The service that runs this test may itself have the cloud proxy enabled; the assertions
-    // below describe both states, so start from the disabled one and restore it afterwards.
-    const savedProxy = process.env.OPENCODE_CLOUD_PROXY
-    const savedAuth = process.env.OPENCODE_CLOUD_PROXY_AUTH
-    delete process.env.OPENCODE_CLOUD_PROXY
-    delete process.env.OPENCODE_CLOUD_PROXY_AUTH
-    const gateway = (status: number) =>
-      new HttpContext({ url: "https://opencode.ai/zen/v1/chat/completions", status, headers: {} })
-    const rejection = llm(new AuthenticationError({ message: "invalid_bearer_credential", http: gateway(401) }))
-    const forbidden = llm(new AuthenticationError({ message: "forbidden", http: gateway(403) }))
-    const quota = llm(new QuotaExceededError({ message: "Payment Required", http: gateway(402) }))
-    const opencode = {
-      ref: Model.Ref.make({ id: ID.make("model"), providerID: Provider.ID.opencode }),
-      anonymous: true,
-    }
-    const credentialed = { ref: opencode.ref }
-    const foreign = {
-      ref: Model.Ref.make({ id: ID.make("model"), providerID: Provider.ID.make("anthropic") }),
-      anonymous: true,
-    }
-
-    expect(SessionRunnerRetry.isRetryable(rejection, opencode)).toBeTrue()
-    expect(SessionRunnerRetry.isRetryable(rejection, credentialed)).toBeFalse()
-    expect(SessionRunnerRetry.isRetryable(rejection, foreign)).toBeFalse()
-    expect(SessionRunnerRetry.isRetryable(rejection)).toBeFalse()
-    // The free-tier abuse gate retries only when the session-addressed proxy can move the retry to
-    // another egress; otherwise the retry would leave from the same rejected address.
-    expect(SessionRunnerRetry.isRetryable(forbidden, opencode)).toBeFalse()
-    process.env.OPENCODE_CLOUD_PROXY = "http://192.168.1.6:7777"
-    process.env.OPENCODE_CLOUD_PROXY_AUTH = "true"
-    expect(SessionRunnerRetry.isRetryable(forbidden, opencode)).toBeTrue()
-    expect(SessionRunnerRetry.isRetryable(forbidden, credentialed)).toBeFalse()
-    expect(SessionRunnerRetry.isRetryable(forbidden, foreign)).toBeFalse()
-    delete process.env.OPENCODE_CLOUD_PROXY
-    delete process.env.OPENCODE_CLOUD_PROXY_AUTH
-    expect(SessionRunnerRetry.isRetryable(quota, opencode)).toBeTrue()
-    // A credentialed opencode request has a real account behind it: a 402 is a subscription
-    // limit, not the free-tier flake, so the retry-and-rotate path is for anonymous traffic only.
-    expect(SessionRunnerRetry.isRetryable(quota, credentialed)).toBeFalse()
-    expect(SessionRunnerRetry.isRetryable(quota, foreign)).toBeFalse()
-    expect(SessionRunnerRetry.isRetryable(llm(new QuotaExceededError({ message: "Payment Required" })), opencode)).toBeFalse()
-    if (savedProxy === undefined) delete process.env.OPENCODE_CLOUD_PROXY
-    else process.env.OPENCODE_CLOUD_PROXY = savedProxy
-    if (savedAuth === undefined) delete process.env.OPENCODE_CLOUD_PROXY_AUTH
-    else process.env.OPENCODE_CLOUD_PROXY_AUTH = savedAuth
   })
 })

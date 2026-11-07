@@ -1,78 +1,45 @@
-import { afterEach, beforeEach, describe, expect } from "bun:test"
-import {
-  AIError,
-  AuthenticationError,
-  HttpContext,
-  ProviderInternalError,
-  QuotaExceededError,
-  RateLimitError,
-  TransportError,
-} from "@opencode/ai/effect"
+import { describe, expect, test } from "bun:test"
+import { AIError, ProviderInternalError, TransportError } from "@opencode/ai/effect"
+import { ModelRetry } from "@opencode/core/model-retry"
 import { Agent } from "@opencode/schema/agent"
 import { Model } from "@opencode/schema/model"
 import { Provider } from "@opencode/core/provider"
-import { SessionEgress } from "@opencode/core/session/egress"
-import { SessionEnvironmentStamp } from "@opencode/core/session/environment-stamp"
 import { SessionSchema } from "@opencode/core/session/schema"
 import { SessionRunnerRetry } from "@opencode/core/session/runner/retry"
 import { toSessionError } from "@opencode/core/session/to-session-error"
-import { SESSION_ROTATION_LIMIT } from "@opencode/util/cloud-proxy"
-import { Effect } from "effect"
+import { Clock, Duration, Effect } from "effect"
+import { TestClock } from "effect/testing"
 import { it } from "./lib/effect"
 
 const timeout = new AIError({
   reason: new TransportError({ message: "Timed out", transport: "http", operation: "request", code: "Timeout" }),
 })
 const internal = new AIError({ reason: new ProviderInternalError({ message: "internal" }) })
-const http = (status: number) =>
-  new HttpContext({ url: "https://opencode.ai/inference", status, headers: {} })
-const blocked = new AIError({ reason: new AuthenticationError({ message: "blocked", http: http(403) }) })
-const rateLimited = new AIError({ reason: new RateLimitError({ message: "slow down", http: http(429) }) })
-const quotaLimited = new AIError({
-  reason: new QuotaExceededError({ message: "Rate limit exceeded. Please try again later.", http: http(429) }),
+const dnsFailure = new AIError({
+  reason: new TransportError({
+    message: "getaddrinfo ENOTFOUND opencode.ai",
+    transport: "http",
+    operation: "request",
+    code: "ENOTFOUND",
+    url: "https://opencode.ai/zen/v1/responses",
+  }),
 })
-const quotaPayment = new AIError({ reason: new QuotaExceededError({ message: "Payment required", http: http(402) }) })
-const unavailable = new AIError({
-  reason: new ProviderInternalError({ message: "Upstream request failed: Endpoint is unavailable.", http: http(503) }),
-})
-const badGateway = new AIError({
-  reason: new ProviderInternalError({ message: "Bad gateway", http: http(502) }),
-})
-const gatewayTimeout = new AIError({
-  reason: new ProviderInternalError({ message: "Gateway timeout", http: http(504) }),
-})
-const opencode = Model.Ref.make({ id: Model.ID.make("model"), providerID: Provider.ID.opencode })
-const other = Model.Ref.make({ id: Model.ID.make("model"), providerID: Provider.ID.make("other") })
-
-const env = {
-  proxy: process.env.OPENCODE_CLOUD_PROXY,
-  auth: process.env.OPENCODE_CLOUD_PROXY_AUTH,
-}
-
-beforeEach(() => {
-  process.env.OPENCODE_CLOUD_PROXY = "http://proxy.invalid:8080"
-  process.env.OPENCODE_CLOUD_PROXY_AUTH = "1"
-  SessionEgress.clear()
-  SessionEnvironmentStamp.clear()
+const refused = new AIError({
+  reason: new TransportError({
+    message: "Unable to connect",
+    transport: "http",
+    operation: "request",
+    code: "ECONNREFUSED",
+  }),
 })
 
-afterEach(() => {
-  if (env.proxy === undefined) delete process.env.OPENCODE_CLOUD_PROXY
-  else process.env.OPENCODE_CLOUD_PROXY = env.proxy
-  if (env.auth === undefined) delete process.env.OPENCODE_CLOUD_PROXY_AUTH
-  else process.env.OPENCODE_CLOUD_PROXY_AUTH = env.auth
-  SessionEgress.clear()
-  SessionEnvironmentStamp.clear()
-})
-
-const inputFor = (cause: AIError, model: Model.Ref, anonymous = true) => ({
+const input = (cause: AIError) => ({
   cause,
   error: toSessionError(cause),
   agent: Agent.ID.make("build"),
-  model,
-  anonymous,
+  model: Model.Ref.make({ id: Model.ID.make("model"), providerID: Provider.ID.make("provider") }),
   hook: () => Effect.void,
-  retry: SessionRunnerRetry.isRetryable(cause, { ref: model, anonymous }),
+  retry: SessionRunnerRetry.isRetryable(cause),
 })
 
 // Decisions for `count` consecutive failures of the same cause within one step.
@@ -80,7 +47,7 @@ const decisions = (cause: AIError, count: number) =>
   Effect.gen(function* () {
     const policy = yield* SessionRunnerRetry.policy(SessionSchema.ID.make("ses_retry"))
     const results: boolean[] = []
-    for (let i = 0; i < count; i++) results.push((yield* policy(inputFor(cause, other))).retry)
+    for (let i = 0; i < count; i++) results.push((yield* policy(input(cause))).retry)
     return results
   })
 
@@ -97,208 +64,67 @@ describe("SessionRunnerRetry.policy", () => {
     }),
   )
 
-  it.effect("rotates the wire alias on an opencode 403 and stops at the step limit", () =>
+  it.effect("keeps retrying an unreachable host for an hour with gaps of at most 30 seconds", () =>
     Effect.gen(function* () {
-      const sessionID = SessionSchema.ID.make("ses_retry_403")
-      const policy = yield* SessionRunnerRetry.policy(sessionID)
-      const aliases = [SessionEgress.identity(sessionID)]
+      const policy = yield* SessionRunnerRetry.policy(SessionSchema.ID.make("ses_retry"))
+      const started = yield* Clock.currentTimeMillis
+      const delays: number[] = []
+      while (true) {
+        const decision = yield* policy(input(dnsFailure))
+        if (!decision.retry) break
+        delays.push(decision.delay)
+        yield* TestClock.adjust(Duration.millis(decision.delay))
+      }
+      const waited = (yield* Clock.currentTimeMillis) - started
+      expect(delays.length).toBeGreaterThan(100)
+      expect(Math.max(...delays)).toBeLessThanOrEqual(30_000)
+      expect(waited).toBeGreaterThanOrEqual(Duration.toMillis(ModelRetry.UNREACHABLE_WINDOW))
+      expect(waited).toBeLessThanOrEqual(Duration.toMillis(ModelRetry.UNREACHABLE_WINDOW) + 30_000)
+    }),
+  )
+
+  it.effect("keeps a refused connection on the general allowance", () =>
+    Effect.gen(function* () {
+      expect(ModelRetry.isUnreachable(refused)).toBe(false)
+      expect(yield* decisions(refused, 11)).toEqual([...Array(10).fill(true), false])
+    }),
+  )
+
+  it.effect("doesn't spend the general allowance on an unreachable host", () =>
+    Effect.gen(function* () {
+      const policy = yield* SessionRunnerRetry.policy(SessionSchema.ID.make("ses_retry"))
+      for (let i = 0; i < 20; i++) expect((yield* policy(input(dnsFailure))).retry).toBe(true)
       const results: boolean[] = []
-      for (let i = 0; i < SESSION_ROTATION_LIMIT + 2; i++) {
-        results.push((yield* policy(inputFor(blocked, opencode))).retry)
-        aliases.push(SessionEgress.identity(sessionID))
-      }
-
-      expect(results).toEqual([...Array(SESSION_ROTATION_LIMIT).fill(true), false, false])
-      expect(new Set(aliases).size).toBe(SESSION_ROTATION_LIMIT + 1)
-    }),
-  )
-
-  it.effect("rotates the wire alias on an opencode 429", () =>
-    Effect.gen(function* () {
-      const sessionID = SessionSchema.ID.make("ses_retry_429")
-      const policy = yield* SessionRunnerRetry.policy(sessionID)
-      const aliases = [SessionEgress.identity(sessionID)]
-      const results: boolean[] = []
-      for (let i = 0; i < SESSION_ROTATION_LIMIT + 2; i++) {
-        results.push((yield* policy(inputFor(rateLimited, opencode))).retry)
-        aliases.push(SessionEgress.identity(sessionID))
-      }
-
-      expect(results).toEqual([...Array(SESSION_ROTATION_LIMIT).fill(true), false, false])
-      expect(new Set(aliases).size).toBe(SESSION_ROTATION_LIMIT + 1)
-    }),
-  )
-
-  it.effect("rotates the wire alias on an opencode 429 quota cap", () =>
-    Effect.gen(function* () {
-      const sessionID = SessionSchema.ID.make("ses_retry_quota_429")
-      const policy = yield* SessionRunnerRetry.policy(sessionID)
-      const aliases = [SessionEgress.identity(sessionID)]
-      const results: boolean[] = []
-      for (let i = 0; i < SESSION_ROTATION_LIMIT + 2; i++) {
-        results.push((yield* policy(inputFor(quotaLimited, opencode))).retry)
-        aliases.push(SessionEgress.identity(sessionID))
-      }
-
-      expect(results).toEqual([...Array(SESSION_ROTATION_LIMIT).fill(true), false, false])
-      expect(new Set(aliases).size).toBe(SESSION_ROTATION_LIMIT + 1)
-    }),
-  )
-
-  it.effect("never rotates a credentialed opencode request or a foreign provider", () =>
-    Effect.gen(function* () {
-      const sessionID = SessionSchema.ID.make("ses_retry_paid")
-      const foreignID = SessionSchema.ID.make("ses_retry_foreign")
-      const policy = yield* SessionRunnerRetry.policy(sessionID)
-      const alias = SessionEgress.identity(sessionID)
-      const otherAlias = SessionEgress.identity(foreignID)
-
-      // A normal retry is still allowed where the provider taxonomy allows it; what must never
-      // happen is a new wire identity or a new egress key.
-      for (const cause of [rateLimited, quotaLimited, blocked]) {
-        yield* policy(inputFor(cause, opencode, false))
-        yield* policy(inputFor(cause, other))
-      }
-      expect(SessionEgress.identity(sessionID)).toBe(alias)
-      expect(SessionEgress.identity(foreignID)).toBe(otherAlias)
-      // The paid gateway quota block is terminal, not a free-tier flake.
-      expect((yield* policy(inputFor(quotaLimited, opencode, false))).retry).toBeFalse()
-      expect((yield* policy(inputFor(blocked, opencode, false))).retry).toBeFalse()
-    }),
-  )
-
-  it.effect("rotates the wire alias on an opencode 402 usage-limit block and stops at the step limit", () =>
-    Effect.gen(function* () {
-      const sessionID = SessionSchema.ID.make("ses_retry_402")
-      const policy = yield* SessionRunnerRetry.policy(sessionID)
-      const aliases = [SessionEgress.identity(sessionID)]
-      const results: boolean[] = []
-      for (let i = 0; i < 5; i++) {
-        results.push((yield* policy(inputFor(quotaPayment, opencode))).retry)
-        aliases.push(SessionEgress.identity(sessionID))
-      }
-
-      expect(results).toEqual([true, true, true, false, false])
-      expect(new Set(aliases).size).toBe(4)
-    }),
-  )
-
-  it.effect("keeps an opencode 429 quota cap terminal without the proxy", () =>
-    Effect.gen(function* () {
-      delete process.env.OPENCODE_CLOUD_PROXY
-      const sessionID = SessionSchema.ID.make("ses_retry_quota_429_no_proxy")
-      const alias = SessionEgress.identity(sessionID)
-      const policy = yield* SessionRunnerRetry.policy(sessionID)
-      const decision = yield* policy(inputFor(quotaLimited, opencode))
-
-      expect(decision.retry).toBe(false)
-      expect(SessionEgress.identity(sessionID)).toBe(alias)
-    }),
-  )
-
-  it.effect("keeps another provider's 429 quota cap terminal", () =>
-    Effect.gen(function* () {
-      const sessionID = SessionSchema.ID.make("ses_retry_quota_429_other")
-      const alias = SessionEgress.identity(sessionID)
-      const policy = yield* SessionRunnerRetry.policy(sessionID)
-      const decision = yield* policy(inputFor(quotaLimited, other))
-
-      expect(decision.retry).toBe(false)
-      expect(SessionEgress.identity(sessionID)).toBe(alias)
-    }),
-  )
-
-  for (const [status, cause] of [
-    [503, unavailable],
-    [504, gatewayTimeout],
-  ] as const) {
-    it.effect(`keeps retrying an opencode ${status} on the same egress`, () =>
-      Effect.gen(function* () {
-        const sessionID = SessionSchema.ID.make(`ses_retry_${status}`)
-        const policy = yield* SessionRunnerRetry.policy(sessionID)
-        const aliases = [SessionEgress.identity(sessionID)]
-        const results: boolean[] = []
-        for (let i = 0; i < 11; i++) {
-          results.push((yield* policy(inputFor(cause, opencode))).retry)
-          aliases.push(SessionEgress.identity(sessionID))
-        }
-
-        expect(results).toEqual([...Array(10).fill(true), false])
-        expect(new Set(aliases).size).toBe(1)
-      }),
-    )
-  }
-
-  it.effect("rotates the wire alias on an opencode 502 and stops at the step limit", () =>
-    Effect.gen(function* () {
-      const sessionID = SessionSchema.ID.make("ses_retry_502")
-      const policy = yield* SessionRunnerRetry.policy(sessionID)
-      const aliases = [SessionEgress.identity(sessionID)]
-      const results: boolean[] = []
-      for (let i = 0; i < SESSION_ROTATION_LIMIT + 2; i++) {
-        results.push((yield* policy(inputFor(badGateway, opencode))).retry)
-        aliases.push(SessionEgress.identity(sessionID))
-      }
-
-      expect(results).toEqual([...Array(SESSION_ROTATION_LIMIT).fill(true), false, false])
-      expect(new Set(aliases).size).toBe(SESSION_ROTATION_LIMIT + 1)
-    }),
-  )
-
-  it.effect("keeps retrying another provider's 502 on the same egress", () =>
-    Effect.gen(function* () {
-      const sessionID = SessionSchema.ID.make("ses_retry_502_other")
-      const policy = yield* SessionRunnerRetry.policy(sessionID)
-      const aliases = [SessionEgress.identity(sessionID)]
-      const results: boolean[] = []
-      for (let i = 0; i < 11; i++) {
-        results.push((yield* policy(inputFor(badGateway, other))).retry)
-        aliases.push(SessionEgress.identity(sessionID))
-      }
-
+      for (let i = 0; i < 11; i++) results.push((yield* policy(input(internal))).retry)
       expect(results).toEqual([...Array(10).fill(true), false])
-      expect(new Set(aliases).size).toBe(1)
     }),
   )
+})
 
-  it.effect("leaves another provider's alias alone on a 429", () =>
+describe("ModelRetry.retryOneShot", () => {
+  it.effect("doesn't replay a call whose response was cut off by the network going down", () =>
     Effect.gen(function* () {
-      const sessionID = SessionSchema.ID.make("ses_retry_other_429")
-      const alias = SessionEgress.identity(sessionID)
-      const policy = yield* SessionRunnerRetry.policy(sessionID)
-      const decision = yield* policy(inputFor(rateLimited, other))
-
-      expect(decision.retry).toBe(true)
-      expect(SessionEgress.identity(sessionID)).toBe(alias)
+      let calls = 0
+      const cutOff = new AIError({
+        reason: new TransportError({
+          message: "Network is down",
+          transport: "http",
+          operation: "read",
+          code: "ENETDOWN",
+        }),
+      })
+      yield* ModelRetry.retryOneShot(Effect.suspend(() => (calls++, Effect.fail(cutOff)))).pipe(Effect.flip)
+      expect(calls).toBe(1)
     }),
   )
+})
 
-  it.effect("renews the session identity once the rotation budget is spent", () =>
-    Effect.gen(function* () {
-      const sessionID = SessionSchema.ID.make("ses_retry_budget")
-      for (let i = 0; i < SessionEgress.SESSION_EGRESS_BUDGET; i++) SessionEgress.rotate(sessionID)
-      const alias = SessionEgress.identity(sessionID)
-      const environmentID = SessionEnvironmentStamp.id(sessionID)
-      const policy = yield* SessionRunnerRetry.policy(sessionID)
-      const decision = yield* policy(inputFor(blocked, opencode))
-
-      expect(decision.retry).toBe(true)
-      expect(SessionEgress.identity(sessionID)).not.toBe(alias)
-      expect(SessionEnvironmentStamp.id(sessionID)).not.toBe(environmentID)
-      expect(SessionEgress.canRotate(sessionID)).toBe(true)
-    }),
-  )
-
-  it.effect("keeps retrying a 502 without rotating when the session budget is spent", () =>
-    Effect.gen(function* () {
-      const sessionID = SessionSchema.ID.make("ses_retry_budget_5xx")
-      for (let i = 0; i < SessionEgress.SESSION_EGRESS_BUDGET; i++) SessionEgress.rotate(sessionID)
-      const alias = SessionEgress.identity(sessionID)
-      const policy = yield* SessionRunnerRetry.policy(sessionID)
-      const decision = yield* policy(inputFor(unavailable, opencode))
-
-      expect(decision.retry).toBe(true)
-      expect(SessionEgress.identity(sessionID)).toBe(alias)
-    }),
-  )
+describe("toSessionError", () => {
+  test("names the network when the provider's host can't be reached", () => {
+    expect(toSessionError(dnsFailure)).toEqual({
+      type: "provider.transport",
+      message: "Can't reach opencode.ai. Check the network connection. (getaddrinfo ENOTFOUND opencode.ai)",
+    })
+    expect(toSessionError(refused)).toEqual({ type: "provider.transport", message: "Unable to connect" })
+  })
 })

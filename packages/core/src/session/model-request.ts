@@ -2,15 +2,20 @@ export * as SessionModelRequest from "./model-request.js"
 
 import {
   ai,
-  GenerationOptions,
+  AssistantMessage,
+  type ContentPart,
+  GENERATION_KEYS,
   type GenerationOptionsFields,
-  HttpOptions,
   LanguageModel,
   type LLM,
   type LLMRequest,
   type Media,
+  type MediaPart,
   Message,
   SystemPart,
+  ToolMessage,
+  type ToolResultPart,
+  UserMessage,
 } from "@opencode/ai/effect"
 import type { StreamOptions } from "@opencode/ai/route"
 import type {
@@ -23,7 +28,6 @@ import type {
 } from "@opencode/plugin/effect/session"
 import type { Agent } from "@opencode/schema/agent"
 import type { Model } from "@opencode/schema/model"
-import { Provider } from "@opencode/schema/provider"
 import type { Content } from "@opencode/schema/tool"
 import { Cause, Context, Effect, Layer, Result, Stream } from "effect"
 import { HttpClientRequest, HttpClientResponse } from "effect/http"
@@ -35,8 +39,6 @@ import { PluginHooks } from "../plugin/hooks.js"
 import { QuestionTool } from "../tool/plugin/question.js"
 import { Tool } from "../tool.js"
 import { SessionAffinity } from "./affinity.js"
-import { SessionEgress } from "./egress.js"
-import { SessionEnvironmentStamp } from "./environment-stamp.js"
 import { SessionModelTransport } from "./model-transport.js"
 import { SessionRunnerModel } from "./runner/model.js"
 import { SessionSchema } from "./schema.js"
@@ -48,7 +50,6 @@ const IMAGE_BYTES_TRIGGER = 25 * 1024 * 1024 // 25 MiB
 const IMAGE_BYTES_TARGET = 15 * 1024 * 1024 // 15 MiB
 const IMAGE_REMOVED =
   "[This image was removed to reduce the request size and is no longer visible. Do not make claims about its contents from memory. If needed, retrieve it again with an available tool or ask the user to attach it again.]"
-const GENERATION_KEYS = new Set(Object.keys(GenerationOptions.fields))
 // Used when the catalog has no output limit for the model.
 const OUTPUT_TOKEN_FALLBACK = 32_000
 // No reply needs more, however much the model allows.
@@ -99,103 +100,6 @@ export const outputLimit = (limit: Model.Info["limit"], inputTokens?: Input["inp
     inputTokens.measured -
     Math.ceil(inputTokens.estimated * (1 + ESTIMATE_ERROR))
   return Math.min(requested, Math.max(OUTPUT_TOKEN_MIN, room))
-}
-
-type EgressSession = Pick<SessionSchema.Info, "id" | "parentID" | "fork">
-
-// OpenCode's gateway providers share the session-correlation headers. Only the free provider uses
-// the rotating wire alias and the egress proxy; OpenCode Go keeps the real session and goes direct.
-const OPENCODE_GATEWAY_PROVIDERS: ReadonlySet<string> = new Set([Provider.ID.opencode, "opencode-go"])
-const isOpencodeGateway = (providerID: Model.Ref["providerID"]) => OPENCODE_GATEWAY_PROVIDERS.has(providerID)
-
-/**
- * The identity the gateway sees. The free opencode gateway gets a process-local native alias, so a
- * rotation changes its address and session identity without touching the chat ID; OpenCode Go and
- * every other provider keep the real session and affinity.
- */
-export const wireIdentity = (
-  session: EgressSession,
-  providerID: Model.Ref["providerID"],
-  anonymous?: boolean,
-) => {
-  const affinity = SessionAffinity.get(session)
-  // The alias only exists to survive the free gateway's session-identity blocks. A credentialed
-  // opencode request, and every other provider, keeps the real session and affinity.
-  if (providerID !== Provider.ID.opencode || anonymous !== true)
-    return { session: session.id, affinity, parent: session.parentID, egress: undefined }
-  const alias = SessionEgress.identity(session.id)
-  return {
-    session: alias,
-    affinity: alias,
-    parent: session.parentID ? SessionEgress.identity(session.parentID) : undefined,
-    // The proxy must key on an identity that survives the alias rotation a gateway retry performs,
-    // or the retry cannot report the relay that just failed under the key that used it. The
-    // environment stamp is that epoch: retries keep it, while compaction, an explicit reset, and
-    // the automatic renewal after the rotation budget rotate it together with the alias.
-    egress: SessionEnvironmentStamp.id(session.id),
-  }
-}
-
-const identityHeaders = (identity: ReturnType<typeof wireIdentity>) => ({
-  "x-opencode-session-id": identity.session,
-  ...(identity.egress === undefined ? {} : { "x-opencode-proxy-session": identity.egress }),
-  ...(identity.parent ? { "x-opencode-parent-session-id": identity.parent } : {}),
-  "x-session-affinity": identity.affinity,
-  "X-Session-Id": identity.affinity,
-  ...(identity.parent ? { "x-parent-session-id": identity.parent } : {}),
-  "x-opencode-session": identity.affinity,
-})
-
-const cacheKey = (affinity: string) => (/^ses_[0-9a-f]{64}$/.test(affinity) ? affinity.slice(4) : affinity)
-
-const ENVIRONMENT_ID_LINE = /^ {2}Environment id: [^\n]*\n/gm
-
-// The opencode gateway keys its free-tier allowance on the egress address, the /64 of the
-// x-real-ip the proxy exits from, and resets that allowance at UTC midnight. The environment
-// stamp is the proxy's egress epoch: the proxy maps it to a stable address inside the routed /48,
-// so rotating the stamp moves the session to another /64 without changing the real workspace
-// paths the tools use. The stamp rotates after every completed compaction, where the rebuilt
-// context already makes the prompt cache cold, and a new process boot also yields a new stamp.
-// Stamping is idempotent so a refreshed request replaces the id instead of carrying two.
-// The gateway also rejects a wire session id whose embedded timestamp is outside its freshness
-// window (about 90 days back and 26 hours forward). The real session id can live for years, so
-// SessionEgress refreshes the alias before it can age out.
-export const stampEnvironment = (system: ReadonlyArray<SystemPart>, sessionID: SessionSchema.ID) =>
-  system.map((part) =>
-    part.text.includes("<env>") && part.text.includes("</env>")
-      ? {
-          ...part,
-          text: part.text
-            .replace(ENVIRONMENT_ID_LINE, "")
-            .replace("</env>", `  Environment id: ${SessionEnvironmentStamp.id(sessionID)}\n</env>`),
-        }
-      : part,
-  )
-
-/**
- * Rebuilds the identity of an already prepared request from the current alias and environment
- * stamp. Compaction reuses one prepared request across retries, so it must refresh after the
- * retry policy rotates the alias or an explicit reset changes the environment; the primary runner
- * rebuilds its request on every attempt instead.
- */
-export const refresh = (
-  request: LLMRequest,
-  session: EgressSession,
-  providerID: Model.Ref["providerID"],
-  anonymous?: boolean,
-) => {
-  const opencode = isOpencodeGateway(providerID)
-  const free = providerID === Provider.ID.opencode && anonymous === true
-  const identity = wireIdentity(session, providerID, anonymous)
-  return {
-    ...request,
-    http: new HttpOptions({
-      ...request.http,
-      headers: { ...request.http?.headers, ...(opencode ? identityHeaders(identity) : {}) },
-    }),
-    promptCacheKey: cacheKey(identity.affinity),
-    system: free ? stampEnvironment(request.system, session.id) : request.system,
-  }
 }
 
 export const baseTranscript = (input: {
@@ -262,28 +166,46 @@ const mediaBytes = (media: Media.Asset) => {
 const replaceMedia = (
   messages: LLMRequest["messages"],
   replace: (media: { mime: string; name: string | undefined; bytes: () => number }) => string | undefined,
-) =>
-  messages.map((message) => {
-    const content = message.content.map((part) => {
-      if (part.type === "media") {
-        const text = replace({ mime: part.media.mediaType, name: part.filename, bytes: () => mediaBytes(part.media) })
-        return text === undefined ? part : Message.text(text)
-      }
-      if (part.type !== "tool-result" || part.result.type !== "content") return part
-      const result = part.result
-      const value = result.value.map((item): Content => {
-        if (item.type !== "file") return item
-        const text = replace({ mime: item.mime, name: item.name, bytes: () => item.uri.length })
-        return text === undefined ? item : { type: "text", text }
-      })
-      return value.every((item, index) => item === result.value[index])
-        ? part
-        : { ...part, result: { ...result, value } }
+) => {
+  const media = (part: MediaPart) => {
+    const text = replace({ mime: part.media.mediaType, name: part.filename, bytes: () => mediaBytes(part.media) })
+    return text === undefined ? part : Message.text(text)
+  }
+  const toolResult = (part: ToolResultPart) => {
+    if (part.result.type !== "content") return part
+    const result = part.result
+    const value = result.value.map((item): Content => {
+      if (item.type !== "file") return item
+      const text = replace({ mime: item.mime, name: item.name, bytes: () => item.uri.length })
+      return text === undefined ? item : { type: "text", text }
     })
-    return content.every((part, index) => part === message.content[index])
-      ? message
-      : new Message({ ...message, content })
+    return value.every((item, index) => item === result.value[index]) ? part : { ...part, result: { ...result, value } }
+  }
+  return messages.map((message) => {
+    switch (message.role) {
+      case "system":
+        return message
+      case "user": {
+        const content = message.content.map((part) => (part.type === "media" ? media(part) : part))
+        return sameParts(content, message.content) ? message : new UserMessage({ ...message, content })
+      }
+      case "assistant": {
+        const content = message.content.map((part) => {
+          if (part.type === "media") return media(part)
+          return part.type === "tool-result" ? toolResult(part) : part
+        })
+        return sameParts(content, message.content) ? message : new AssistantMessage({ ...message, content })
+      }
+      case "tool": {
+        const content = message.content.map(toolResult)
+        return sameParts(content, message.content) ? message : new ToolMessage({ ...message, content })
+      }
+    }
   })
+}
+
+const sameParts = (next: ReadonlyArray<ContentPart>, previous: ReadonlyArray<ContentPart>) =>
+  next.every((part, index) => part === previous[index])
 
 export const unsupportedParts = (
   messages: LLMRequest["messages"],
@@ -387,32 +309,28 @@ export const layer = Layer.effect(
       const entries = Object.entries(shaped.options)
       const generation = Object.fromEntries(entries.filter(([k]) => GENERATION_KEYS.has(k))) as GenerationOptionsFields
       const providerOptions = Object.fromEntries(entries.filter(([k]) => !GENERATION_KEYS.has(k)))
-      // OpenCode gateway traffic always carries the session identity headers; only the free tier
-      // carries the proxy egress epoch and the environment stamp. A credentialed Go request keeps
-      // the real session so the gateway can route it; the fetch wrapper only proxies free traffic.
-      const opencode = isOpencodeGateway(model.ref.providerID)
-      const cloudFree = model.ref.providerID === Provider.ID.opencode && model.anonymous === true
-      const identity = wireIdentity(session, model.ref.providerID, model.anonymous)
-      // Titles are provider bookkeeping, not session turns: the gateway never charges them, so they
-      // keep the provider default and carry no environment id. Every other flow carries the session's.
-      const system = kind === "title" || !cloudFree ? shaped.system : stampEnvironment(shaped.system, session.id)
+      const affinity = SessionAffinity.get(session)
       const base = ai.request({
         model: model.model,
-        http: {
-          headers: {
-            ...(opencode ? identityHeaders(identity) : {}),
-            "User-Agent": App.useragent(app),
-            ...(opencode ? { "x-opencode-project": session.projectID, "x-opencode-client": app.name } : {}),
-          },
+        headers: {
+          "x-opencode-session-id": session.id,
+          ...(session.parentID ? { "x-opencode-parent-session-id": session.parentID } : {}),
+          "x-session-affinity": affinity,
+          "X-Session-Id": affinity,
+          ...(session.parentID ? { "x-parent-session-id": session.parentID } : {}),
+          "User-Agent": App.useragent(app),
+          "x-opencode-project": session.projectID,
+          "x-opencode-session": affinity,
+          "x-opencode-client": app.name,
         },
         // TODO: Persist cache lineage so nested forks reuse the root session's cache key.
-        promptCacheKey: cacheKey(identity.affinity),
+        promptCacheKey: /^ses_[0-9a-f]{64}$/.test(affinity) ? affinity.slice(4) : affinity,
         cache: model.cache?.ttl === undefined ? undefined : { ttl: model.cache.ttl },
-        system,
+        system: shaped.system,
         messages: boundImages(unsupportedParts(shaped.messages, model.capabilities, model.model.provider)),
         tools: Array.from(hooked, ([name, t]) => ({ ...t, name })),
         toolChoice: input.toolChoice,
-        generation: Object.keys(generation).length === 0 ? undefined : generation,
+        ...generation,
         providerOptions: Object.keys(providerOptions).length === 0 ? undefined : providerOptions,
       })
 
@@ -420,7 +338,7 @@ export const layer = Layer.effect(
       const modelHook = yield* hooks.trigger("session", "model.request", {
         ...scope,
         baseURL,
-        headers: { ...base.http?.headers },
+        headers: { ...base.headers },
       })
       const route =
         modelHook.baseURL !== undefined && modelHook.baseURL !== baseURL
@@ -429,10 +347,7 @@ export const layer = Layer.effect(
       const request = {
         ...base,
         model: route === base.model.route ? base.model : LanguageModel.update(base.model, { route }),
-        http: new HttpOptions({
-          ...base.http,
-          headers: Object.keys(modelHook.headers).length === 0 ? undefined : modelHook.headers,
-        }),
+        headers: Object.keys(modelHook.headers).length === 0 ? undefined : modelHook.headers,
       }
       const hasHttpHooks =
         (yield* hooks.has("session", "http.request", model.ref.providerID)) ||

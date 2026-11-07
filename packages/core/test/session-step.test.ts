@@ -16,7 +16,6 @@ import { SessionProjector } from "@opencode/core/session/projector"
 import { SessionRunnerModel } from "@opencode/core/session/runner/model"
 import { SessionStep } from "@opencode/core/session/runner/step"
 import { SessionMessageTable, SessionTable } from "@opencode/core/session/sql"
-import { SessionStore } from "@opencode/core/session/store"
 import { Snapshot } from "@opencode/core/snapshot"
 import { ToolOutput } from "@opencode/core/tool-output"
 import { Money } from "@opencode/schema/money"
@@ -24,14 +23,12 @@ import { LayerNode } from "@opencode/util/effect/layer-node"
 import { asc, eq } from "drizzle-orm"
 import { Effect, Exit, Layer } from "effect"
 import { testEffect } from "./lib/effect"
-import { permissionLayer } from "./lib/permission"
 
 const it = testEffect(
   Layer.merge(
-    AppNodeBuilder.build(
-      LayerNode.group([Database.node, Bus.node, SessionProjector.node, ToolOutput.node, SessionStore.node]),
-      [Bus.node.replace(Bus.configured({ persist: true }))],
-    ),
+    AppNodeBuilder.build(LayerNode.group([Database.node, Bus.node, SessionProjector.node, ToolOutput.node]), [
+      Bus.node.replace(Bus.configured({ persist: true })),
+    ]),
     TestLLM.testLayer(),
   ),
 )
@@ -54,16 +51,13 @@ for (const fixture of [
       let executions = 0
       const steps = yield* SessionStep.make.pipe(
         Effect.provide(
-          Layer.merge(
-            Layer.mock(Snapshot.Service)({
-              capture: () => Effect.sync(() => (captures++ === 0 ? start : end)),
-              files: (input) => {
-                expect(input).toEqual({ from: start, to: end })
-                return Effect.succeed(files)
-              },
-            }),
-            permissionLayer(),
-          ),
+          Layer.mock(Snapshot.Service)({
+            capture: () => Effect.sync(() => (captures++ === 0 ? start : end)),
+            files: (input) => {
+              expect(input).toEqual({ from: start, to: end })
+              return Effect.succeed(files)
+            },
+          }),
         ),
       )
       yield* db
@@ -125,7 +119,6 @@ for (const fixture of [
             Effect.succeed(retry ? { retry: true, attempt: 2, delay: 0 } : { retry: false }),
           recoverContinuation: true,
           recoverOverflow: Effect.succeed(false),
-          stall: { lastEventAt: undefined, attemptStartedAt: undefined },
         })
         .pipe(Effect.exit)
       expect(Exit.isSuccess(result)).toBe(fixture.finish === "stop")
@@ -174,13 +167,10 @@ it.effect("records the cost the endpoint reports instead of the catalog price", 
     const assistantMessageID = SessionMessage.ID.create()
     const steps = yield* SessionStep.make.pipe(
       Effect.provide(
-        Layer.merge(
-          Layer.mock(Snapshot.Service)({
-            capture: () => Effect.succeed(undefined),
-            files: () => Effect.succeed([]),
-          }),
-          permissionLayer(),
-        ),
+        Layer.mock(Snapshot.Service)({
+          capture: () => Effect.succeed(undefined),
+          files: () => Effect.succeed([]),
+        }),
       ),
     )
     yield* db
@@ -226,7 +216,6 @@ it.effect("records the cost the endpoint reports instead of the catalog price", 
       retry: () => Effect.succeed({ retry: false }),
       recoverContinuation: true,
       recoverOverflow: Effect.succeed(false),
-      stall: { lastEventAt: undefined, attemptStartedAt: undefined },
     })
 
     const message = yield* db

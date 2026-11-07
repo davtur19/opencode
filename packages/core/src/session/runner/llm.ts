@@ -23,7 +23,6 @@ import { SessionMessageTable } from "../sql.js"
 import { SessionTitle } from "../title.js"
 import { toSessionError } from "../to-session-error.js"
 import { DrainResult, Service, type Interface } from "./index.js"
-import { Permission } from "../../permission.js"
 import { Snapshot } from "../../snapshot.js"
 import { makeLocationNode } from "@opencode/util/effect/app-node"
 import { llmClient } from "../../effect/app-node-platform.js"
@@ -235,10 +234,6 @@ const layer = Layer.effect(
       const sessionID = first.session.id
       let assistantMessageID = SessionMessage.ID.create()
       const retry = yield* SessionRunnerRetry.make(bus, sessionID)
-      // Stream activity persists across this step's attempts so the stall watchdog also sees
-      // silence that began in an earlier attempt; each attempt re-seeds attemptStartedAt so
-      // pre-first-event silence still has its own budget to expire.
-      const stall = { lastEventAt: undefined, attemptStartedAt: undefined }
       let initial: SessionContext.Loaded | undefined = first
       let recoverOverflow = true
       let recoverContinuation = true
@@ -305,7 +300,6 @@ const layer = Layer.effect(
               error,
               agent: loaded.agent.id,
               model: loaded.model.ref,
-              anonymous: loaded.model.anonymous,
               hook: prepared.retry,
               retry: proposed,
             }),
@@ -317,7 +311,6 @@ const layer = Layer.effect(
                   .pipe(Effect.map((result) => result.status === "completed"))
               : Effect.succeed(false),
           ),
-          stall,
         })
         const completed = yield* SessionStep.Outcome.$match(outcome, {
           Completed: Effect.fnUntraced(function* (outcome) {
@@ -419,7 +412,7 @@ const layer = Layer.effect(
     const settleStaleToolCalls = Effect.fn("SessionRunner.settleStaleToolCalls")(function* (
       sessionID: SessionSchema.ID,
     ) {
-      for (const message of yield* store.staleToolMessages(sessionID)) {
+      for (const message of yield* SessionHistory.incompleteAssistants(db, sessionID)) {
         if (message.type !== "assistant") continue
         for (const tool of message.content) {
           if (tool.type !== "tool" || (tool.state.status !== "streaming" && tool.state.status !== "running")) continue
@@ -458,7 +451,6 @@ export const node = makeLocationNode({
     SessionModelTransport.node,
     SessionStore.node,
     SessionCompaction.node,
-    Permission.node,
     Plugin.node,
     PluginHooks.node,
     Job.node,

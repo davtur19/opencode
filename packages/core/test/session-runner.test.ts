@@ -13,7 +13,6 @@ import {
   TransportError,
   InvalidProviderOutputError,
   InvalidRequestError,
-  QuotaExceededError,
   RateLimitError,
   UnknownProviderError,
 } from "@opencode/ai/effect"
@@ -51,7 +50,6 @@ import { SessionRunCoordinator } from "@opencode/core/session/run-coordinator"
 import { SessionRunner } from "@opencode/core/session/runner/index"
 import { SessionRunnerLLM } from "@opencode/core/session/runner/llm"
 import { SessionRunnerModel } from "@opencode/core/session/runner/model"
-import { SessionRunnerRetry } from "@opencode/core/session/runner/retry"
 import { SessionUsage } from "@opencode/core/session/usage"
 import { PluginSupervisor } from "@opencode/core/plugin/supervisor"
 import { Plugin } from "@opencode/core/plugin"
@@ -79,9 +77,9 @@ import { SessionSystemPrompt } from "@opencode/core/session/system-prompt"
 import { ID, Model } from "@opencode/core/model"
 import { Location } from "@opencode/core/location"
 import { Provider } from "@opencode/core/provider"
-import { Cause, Context, DateTime, Deferred, Effect, Exit, Fiber, Layer, Option, Queue, Schema, Scope, Stream } from "effect"
+import { Cause, Context, DateTime, Deferred, Effect, Exit, Fiber, Layer, Queue, Schema, Scope, Stream } from "effect"
 import { TestClock } from "effect/testing"
-import { asc, desc, eq, sql } from "drizzle-orm"
+import { and, asc, desc, eq, sql } from "drizzle-orm"
 import { testEffect } from "./lib/effect"
 import { promptLocationNode } from "./fixture/prompt-location"
 import { LocationServiceMap } from "@opencode/core/location-service-map"
@@ -344,8 +342,6 @@ const layer = Layer.unwrap(
               limit: modelLimits.get(String(selected.id)) ?? defaultModelLimit,
               variant: session.model?.variant,
               compaction: state.compaction,
-              // The gateway scenarios model the free (anonymous) path; other providers stay credentialed.
-              anonymous: selected.provider === "opencode",
             })
           }),
         ),
@@ -622,13 +618,6 @@ const RETRY_GAPS = [2_000, 4_000, 8_000, ...Array<number>(7).fill(10_000)]
 // Longest possible gap per retry (+20% jitter); advancing the clock by these always fires the retry.
 const RETRY_GAPS_MAX = RETRY_GAPS.map((gap) => gap * 1.2)
 const RETRY_ATTEMPTS = RETRY_GAPS.map((_, index) => index + 2)
-// A transient step failure renews a fresh schedule phase when its own runs out, for
-// SessionRunnerRetry.RETRY_PHASES phases total (the fork's turn-level retry budget).
-const TURN_RETRY_GAPS = Array.from({ length: SessionRunnerRetry.RETRY_PHASES }, () => RETRY_GAPS).flat()
-const TURN_RETRY_GAPS_MAX = TURN_RETRY_GAPS.map((gap) => gap * 1.2)
-// The stall watchdog polls on this interval and fires once the stream has been silent this long.
-const STALL_TIMEOUT = "90 seconds"
-const STALL_CHECK_INTERVAL = "5 seconds"
 
 // Subscribe before resuming; model requests can arrive before retry backoff is scheduled.
 const subscribeRetries = (s: Scenario) =>
@@ -711,15 +700,6 @@ const payloadTooLarge = () =>
 const rateLimited = (retryAfterMs?: number) =>
   new AIError({
     reason: new RateLimitError({ message: "Rate limited", retryAfterMs }),
-  })
-
-const freeUsageLimit = () =>
-  new AIError({
-    reason: new QuotaExceededError({
-      message: "Free usage limit reached",
-      body: JSON.stringify({ type: "error", error: { type: "FreeUsageLimitError" } }),
-      http: new HttpContext({ url: "https://opencode.ai/inference", status: 429, headers: {} }),
-    }),
   })
 
 const setupOverflowRecovery = Effect.fnUntraced(function* (s: Scenario) {
@@ -1639,7 +1619,10 @@ describe("SessionRunnerLLM", () => {
         }),
       )
       yield* s.admit("Echo before moving")
-      yield* s.llm.push(TestLLM.toolCall("call-move", "echo", { text: "moving" }), TestLLM.text("Done", "text-after-move"))
+      yield* s.llm.push(
+        TestLLM.toolCall("call-move", "echo", { text: "moving" }),
+        TestLLM.text("Done", "text-after-move"),
+      )
       const tools = yield* s.blockTools()
       const run = yield* s.resume.pipe(Effect.forkChild)
       yield* tools.started
@@ -1811,7 +1794,7 @@ describe("SessionRunnerLLM", () => {
       expect(
         s.requests
           .at(-1)
-          ?.messages.flatMap((message) => message.content)
+          ?.messages.flatMap((message) => [...message.content])
           .some((part) => part.type === "compaction"),
       ).toBe(false)
       expect(s.requests.at(-1)?.messages[0]?.content).toEqual([Message.text("Original request")])
@@ -1925,9 +1908,17 @@ describe("SessionRunnerLLM", () => {
 
     for (const field of [
       "model",
-      "generation",
+      "maxTokens",
+      "temperature",
+      "topP",
+      "topK",
+      "frequencyPenalty",
+      "presencePenalty",
+      "seed",
+      "stop",
       "providerOptions",
       "http",
+      "headers",
       "toolChoice",
       "cache",
       "tools",
@@ -2337,7 +2328,7 @@ describe("SessionRunnerLLM", () => {
       sessionID,
       model: { ...model, variant: Model.VariantID.make("low") },
     })
-    s.currentModel = LanguageModel.update(s.currentModel, { defaults: { providerOptions: { effort: "low" } } })
+    s.currentModel = LanguageModel.update(s.currentModel, { options: { providerOptions: { effort: "low" } } })
     yield* s.llm.push(TestLLM.text("Later answer", "text-effort-low"))
     yield* s.runPrompt("Second")
 
@@ -2829,12 +2820,20 @@ describe("SessionRunnerLLM", () => {
           "model",
           "system",
           "tools",
-          "generation",
+          "maxTokens",
+          "temperature",
+          "topP",
+          "topK",
+          "frequencyPenalty",
+          "presencePenalty",
+          "seed",
+          "stop",
           "providerOptions",
           "toolChoice",
           "cache",
           "promptCacheKey",
           "http",
+          "headers",
         ] as const)
           expect(compact[field]).toEqual(normal[field])
         expect(compact.toolChoice).toBeUndefined()
@@ -2982,60 +2981,6 @@ describe("SessionRunnerLLM", () => {
     })
     expect(JSON.stringify(yield* s.messages)).not.toContain("discarded-draft")
     expect((yield* s.session.get(sessionID))?.tokens.input).toBe(50)
-  })
-
-  scenario("retries a compaction rejected by the free usage limit", function* (s) {
-    yield* s.llm.push(TestLLM.text("Earlier answer", "free-limit-history"))
-    yield* s.runPrompt("Earlier question")
-    s.requests.length = 0
-    s.currentModel = LanguageModel.make({ id: "free-model", provider: "opencode", route: OpenAIChat.route })
-    yield* Effect.acquireRelease(
-      Effect.sync(() => {
-        const env = {
-          proxy: process.env.OPENCODE_CLOUD_PROXY,
-          auth: process.env.OPENCODE_CLOUD_PROXY_AUTH,
-        }
-        process.env.OPENCODE_CLOUD_PROXY = "http://proxy.invalid:8080"
-        process.env.OPENCODE_CLOUD_PROXY_AUTH = "1"
-        return env
-      }),
-      (env) =>
-        Effect.sync(() => {
-          if (env.proxy === undefined) delete process.env.OPENCODE_CLOUD_PROXY
-          else process.env.OPENCODE_CLOUD_PROXY = env.proxy
-          if (env.auth === undefined) delete process.env.OPENCODE_CLOUD_PROXY_AUTH
-          else process.env.OPENCODE_CLOUD_PROXY_AUTH = env.auth
-        }),
-    )
-    const hooks = yield* PluginHooks.Service
-    const retries: PluginHooks.Domains["session"]["retry"][] = []
-    yield* hooks.register("session", "retry", (event) =>
-      Effect.sync(() => {
-        retries.push({ ...event })
-        // The free-limit 429 must arrive here as a retry. Without the resolved model, compaction
-        // would treat the quota rejection as terminal and surface it after one request.
-        expect(event.decision).toMatchObject({ retry: true })
-        event.decision = { retry: true, delay: 0 }
-      }),
-    )
-    yield* s.llm.push(Stream.fail(freeUsageLimit()), TestLLM.text("## Objective\n- Accepted summary", "accepted"))
-    const compaction = yield* s.session.compact({ sessionID })
-    yield* s.resume
-
-    expect(s.requests).toHaveLength(2)
-    expect(retries).toHaveLength(1)
-    // The retry rotates the wire alias but keeps the proxy egress key, so the proxy can report
-    // the relay the failed attempt used and move the retry to another address.
-    expect(s.requests[1].http?.headers?.["x-opencode-session-id"]).not.toBe(
-      s.requests[0].http?.headers?.["x-opencode-session-id"],
-    )
-    expect(s.requests[1].http?.headers?.["x-opencode-proxy-session"]).toBe(
-      s.requests[0].http?.headers?.["x-opencode-proxy-session"],
-    )
-    expect((yield* s.messages).find((message) => message.id === compaction.id)).toMatchObject({
-      status: "completed",
-      summary: "## Objective\n- Accepted summary",
-    })
   })
 
   scenario("bounds compaction network retries across a template correction", function* (s) {
@@ -3678,7 +3623,7 @@ describe("SessionRunnerLLM", () => {
     expect(yield* Effect.exit(s.resume)).toMatchObject({ _tag: "Failure" })
 
     expect(s.requests).toHaveLength(1)
-    expect(s.requests[0]?.generation?.maxTokens).toBe(50)
+    expect(s.requests[0]?.maxTokens).toBe(50)
     expect(yield* s.context).toContainEqual(
       expect.objectContaining({
         type: "compaction",
@@ -3891,10 +3836,10 @@ describe("SessionRunnerLLM", () => {
     yield* s.llm.push(TestLLM.text("Continued", "text-fitted-final"))
     yield* s.runPrompt("Continue")
 
-    expect(s.requests[0]?.generation?.maxTokens).toBe(64_000)
+    expect(s.requests[0]?.maxTokens).toBe(64_000)
     // 1% of the window stays unused, since strict providers reject a request that overshoots it by a few tokens.
-    expect(s.requests[1]?.generation?.maxTokens).toBeLessThan(99_000 - 50_000)
-    expect(s.requests[1]?.generation?.maxTokens).toBeGreaterThan(99_000 - 50_000 - 200)
+    expect(s.requests[1]?.maxTokens).toBeLessThan(99_000 - 50_000)
+    expect(s.requests[1]?.maxTokens).toBeGreaterThan(99_000 - 50_000 - 200)
   })
 
   scenario("caps the output limit a large model advertises", function* (s) {
@@ -3902,7 +3847,7 @@ describe("SessionRunnerLLM", () => {
     yield* s.llm.push(TestLLM.text("Answer", "text-large-output"))
     yield* s.runPrompt("Question")
 
-    expect(s.requests[0]?.generation?.maxTokens).toBe(256_000)
+    expect(s.requests[0]?.maxTokens).toBe(256_000)
   })
 
   scenario("gives the summary its full output limit when the conversation overshot the threshold", function* (s) {
@@ -3920,8 +3865,8 @@ describe("SessionRunnerLLM", () => {
     expect(s.requests).toHaveLength(2)
     expect(userTexts(s.requests[0]).at(-1)).toContain("## Objective")
     // The summary may use the whole 30k reserve of a 200k window.
-    expect(s.requests[0]?.generation?.maxTokens).toBe(30_000)
-    expect(s.requests[1]?.generation?.maxTokens).toBe(32_000)
+    expect(s.requests[0]?.maxTokens).toBe(30_000)
+    expect(s.requests[1]?.maxTokens).toBe(32_000)
   })
 
   scenario("keeps the summary its room on a small window", function* (s) {
@@ -3938,8 +3883,8 @@ describe("SessionRunnerLLM", () => {
 
     expect(s.requests).toHaveLength(2)
     expect(userTexts(s.requests[0]).at(-1)).toContain("## Objective")
-    expect(s.requests[0]?.generation?.maxTokens).toBe(16_000)
-    expect(s.requests[1]?.generation?.maxTokens).toBe(16_000)
+    expect(s.requests[0]?.maxTokens).toBe(16_000)
+    expect(s.requests[1]?.maxTokens).toBe(16_000)
   })
 
   scenario("publishes the original overflow when recovery summarization fails", function* (s) {
@@ -5016,6 +4961,112 @@ describe("SessionRunnerLLM", () => {
     expect(modelResult).not.toContain("private")
   })
 
+  scenario("settles only unfinished tools after the latest compaction after a process crash", function* (s) {
+    yield* s.admit("Recover after compaction")
+    yield* SessionInbox.promote(s.db, s.bus, sessionID, "steer")
+    const startStep = (assistantMessageID: SessionMessage.ID) =>
+      s.bus.publish(SessionEvent.Step.Started, {
+        sessionID,
+        assistantMessageID,
+        agent: Agent.ID.make("build"),
+        model: { id: ID.make("fake-model"), providerID: Provider.ID.make("fake") },
+        started: 0,
+      })
+    const callTool = Effect.fnUntraced(function* (assistantMessageID: SessionMessage.ID, id: string, name: string) {
+      yield* s.bus.publish(SessionEvent.Tool.Input.Started, { sessionID, assistantMessageID, id, name })
+      yield* s.bus.publish(SessionEvent.Tool.Input.Ended, { sessionID, assistantMessageID, id, text: "{}" })
+      yield* s.bus.publish(SessionEvent.Tool.Called, { sessionID, assistantMessageID, id, input: {}, executed: true })
+    })
+    const old = SessionMessage.ID.create()
+    yield* startStep(old)
+    yield* callTool(old, "call-old", "echo")
+    yield* s.bus.publish(SessionEvent.Compaction.Started, {
+      sessionID,
+      reason: "manual",
+      inputID: SessionMessage.ID.create(),
+    })
+    yield* s.bus.publish(SessionEvent.Compaction.Ended, {
+      sessionID,
+      reason: "manual",
+      text: "## Objective\n- Checkpoint",
+    })
+    const done = SessionMessage.ID.create()
+    yield* startStep(done)
+    yield* callTool(done, "call-done", "echo")
+    yield* s.bus.publish(SessionEvent.Tool.Success, {
+      sessionID,
+      assistantMessageID: done,
+      id: "call-done",
+      content: [{ type: "text", text: "done" }],
+      executed: true,
+    })
+    // Starting this step completes the previous assistant, as in a normal run.
+    const crashed = SessionMessage.ID.create()
+    yield* startStep(crashed)
+    yield* s.bus.publish(SessionEvent.Tool.Input.Started, {
+      sessionID,
+      assistantMessageID: crashed,
+      id: "call-streaming",
+      name: "read",
+    })
+    yield* callTool(crashed, "call-running", "subagent")
+    yield* s.db
+      .update(SessionMessageTable)
+      .set({
+        data: sql`json_set(${SessionMessageTable.data}, '$.content[1].state.metadata', json('{"sessionID":"ses_child"}'))`,
+      })
+      .where(eq(SessionMessageTable.id, crashed))
+      .run()
+      .pipe(Effect.orDie)
+    // An unfinished assistant behind the checkpoint is outside the history the runner settles.
+    yield* s.db
+      .update(SessionMessageTable)
+      .set({ data: sql`json_remove(${SessionMessageTable.data}, '$.time.completed')` })
+      .where(eq(SessionMessageTable.id, old))
+      .run()
+      .pipe(Effect.orDie)
+    yield* s.llm.push([])
+    yield* s.resume
+
+    const failed = yield* s.db
+      .select({ data: EventTable.data })
+      .from(EventTable)
+      .where(and(eq(EventTable.aggregate_id, sessionID), eq(EventTable.type, "session.tool.failed.2")))
+      .orderBy(asc(EventTable.seq))
+      .all()
+      .pipe(Effect.orDie)
+    expect(failed.map((row) => row.data)).toEqual([
+      {
+        sessionID,
+        assistantMessageID: crashed,
+        id: "call-streaming",
+        error: { type: "aborted", message: "Tool execution interrupted: read" },
+        executed: false,
+      },
+      {
+        sessionID,
+        assistantMessageID: crashed,
+        id: "call-running",
+        error: { type: "aborted", message: "Tool execution interrupted: subagent (sessionID: ses_child)" },
+        metadata: { sessionID: "ses_child" },
+        executed: true,
+      },
+    ])
+    const messages = yield* s.messages
+    const tools = (id: SessionMessage.ID) => {
+      const message = messages.find((message) => message.id === id)
+      return message?.type === "assistant"
+        ? message.content.flatMap((part) => (part.type === "tool" ? [[part.id, part.state.status]] : []))
+        : []
+    }
+    expect(tools(old)).toEqual([["call-old", "running"]])
+    expect(tools(done)).toEqual([["call-done", "completed"]])
+    expect(tools(crashed)).toEqual([
+      ["call-streaming", "error"],
+      ["call-running", "error"],
+    ])
+  })
+
   scenario("durably fails hosted tools left running by a prior process before continuing inline", function* (s) {
     yield* s.admit("Recover interrupted hosted tool")
     yield* SessionInbox.promote(s.db, s.bus, sessionID, "steer")
@@ -5144,10 +5195,14 @@ describe("SessionRunnerLLM", () => {
   scenario("adds session correlation headers to model requests", function* (s) {
     yield* s.runPrompt("Run correlated request")
 
-    // The session-correlation headers belong to the opencode gateway only; a foreign provider
-    // (the harness default is "fake") must receive nothing but the client user agent.
-    expect(s.requests[0]?.http?.headers).toEqual({
+    expect(s.requests[0]?.headers).toEqual({
+      "x-opencode-session-id": sessionID,
+      "x-session-affinity": sessionID,
+      "X-Session-Id": sessionID,
       "User-Agent": App.useragent(App.make()),
+      "x-opencode-project": Project.ID.global,
+      "x-opencode-session": sessionID,
+      "x-opencode-client": "opencode",
     })
   })
 
@@ -5162,6 +5217,14 @@ describe("SessionRunnerLLM", () => {
       .pipe(Effect.orDie)
     yield* s.runPrompt("Run child request")
 
+    expect(s.requests[0]?.headers).toMatchObject({
+      "x-opencode-session-id": sessionID,
+      "x-opencode-parent-session-id": parentID,
+      "x-session-affinity": parentID,
+      "X-Session-Id": parentID,
+      "x-parent-session-id": parentID,
+      "x-opencode-session": parentID,
+    })
     expect(s.requests[0]?.promptCacheKey).toBe(parentID)
   })
 
@@ -5720,7 +5783,11 @@ describe("SessionRunnerLLM", () => {
     expect(s.requests).toHaveLength(1)
     expect(yield* s.context).toMatchObject([
       Expected.user("Fail durably"),
-      { type: "assistant", finish: "error", error: { type: "provider.invalid-request", message: "Provider unavailable" } },
+      {
+        type: "assistant",
+        finish: "error",
+        error: { type: "provider.invalid-request", message: "Provider unavailable" },
+      },
     ])
   })
 
@@ -5732,7 +5799,11 @@ describe("SessionRunnerLLM", () => {
     expect(s.requests).toHaveLength(1)
     expect(yield* s.context).toMatchObject([
       Expected.user("Fail before step"),
-      { type: "assistant", finish: "error", error: { type: "provider.invalid-request", message: "Provider unavailable" } },
+      {
+        type: "assistant",
+        finish: "error",
+        error: { type: "provider.invalid-request", message: "Provider unavailable" },
+      },
     ])
   })
 
@@ -6060,7 +6131,10 @@ describe("SessionRunnerLLM", () => {
     // the window instead of rejecting it.
     s.currentModel = recoveryModel
     yield* s.llm.push(
-      TestLLM.complete({ reason: { normalized: "length" }, usage: { inputTokens: 199_994, nonCachedInputTokens: 199_994, outputTokens: 0 } }),
+      TestLLM.complete({
+        reason: { normalized: "length" },
+        usage: { inputTokens: 199_994, nonCachedInputTokens: 199_994, outputTokens: 0 },
+      }),
       TestLLM.text("## Objective\n- summary", "summary"),
       TestLLM.text("Done", "done"),
     )
@@ -6430,16 +6504,16 @@ describe("SessionRunnerLLM", () => {
         LLMEvent.textDelta({ id: "mixed-partial", text: "Partial" }),
       )
       // Alternate transparent failures and partial continuations until the retry allowance is spent.
-      const outcomes = TURN_RETRY_GAPS.map((_, index) => (index % 2 === 0 ? Stream.fail(failure) : partial))
+      const outcomes = RETRY_GAPS.map((_, index) => (index % 2 === 0 ? Stream.fail(failure) : partial))
       yield* s.llm.push(...outcomes, partial)
       const run = yield* s.resume.pipe(Effect.forkChild)
       const identities: SessionMessage.ID[] = []
-      for (const delay of TURN_RETRY_GAPS_MAX) {
+      for (const delay of RETRY_GAPS_MAX) {
         identities.push(yield* Queue.take(scheduled))
         yield* TestClock.adjust(delay)
       }
       expect(yield* Fiber.join(run).pipe(Effect.flip)).toBe(failure)
-      expect(s.requests).toHaveLength(TURN_RETRY_GAPS.length + 1)
+      expect(s.requests).toHaveLength(RETRY_GAPS.length + 1)
       // A transparent retry keeps the assistant identity; a partial continuation starts a new one.
       for (const [index, identity] of identities.entries()) {
         if (index === 0) continue
@@ -6451,7 +6525,7 @@ describe("SessionRunnerLLM", () => {
       expect(messages.filter((message) => message.type === "assistant")).toHaveLength(partials + 1)
       expect(messages.filter((message) => message.type === "synthetic")).toHaveLength(partials)
       const events = yield* recordedEventTypes(sessionID)
-      expect(events.filter((type) => type === "session.retry.scheduled.1")).toHaveLength(TURN_RETRY_GAPS.length)
+      expect(events.filter((type) => type === "session.retry.scheduled.1")).toHaveLength(RETRY_GAPS.length)
       expect(events.filter((type) => type === "session.step.failed.1")).toHaveLength(partials + 1)
     },
   )
@@ -6470,15 +6544,15 @@ describe("SessionRunnerLLM", () => {
 
     const scheduled = yield* subscribeRetries(s)
     const run = yield* s.resume.pipe(Effect.forkChild)
-    for (const delay of TURN_RETRY_GAPS_MAX) {
+    for (const delay of RETRY_GAPS_MAX) {
       yield* Queue.take(scheduled)
       yield* TestClock.adjust(delay)
     }
     expect(yield* Fiber.join(run).pipe(Effect.flip)).toBe(failure)
-    expect(s.requests).toHaveLength(TURN_RETRY_GAPS.length + 1)
+    expect(s.requests).toHaveLength(RETRY_GAPS.length + 1)
     const context = yield* s.context
-    expect(context.filter((message) => message.type === "assistant")).toHaveLength(TURN_RETRY_GAPS.length + 1)
-    expect(context.filter((message) => message.type === "synthetic")).toHaveLength(TURN_RETRY_GAPS.length)
+    expect(context.filter((message) => message.type === "assistant")).toHaveLength(RETRY_GAPS.length + 1)
+    expect(context.filter((message) => message.type === "synthetic")).toHaveLength(RETRY_GAPS.length)
   })
 
   scenario("stops once the retry allowance is spent", function* (s) {
@@ -6488,12 +6562,12 @@ describe("SessionRunnerLLM", () => {
 
     const scheduled = yield* subscribeRetries(s)
     const run = yield* s.resume.pipe(Effect.forkChild)
-    for (const delay of TURN_RETRY_GAPS_MAX) {
+    for (const delay of RETRY_GAPS_MAX) {
       yield* Queue.take(scheduled)
       yield* TestClock.adjust(delay)
     }
     expect(yield* Fiber.join(run).pipe(Effect.flip)).toBe(failure)
-    expect(s.requests).toHaveLength(TURN_RETRY_GAPS.length + 1)
+    expect(s.requests).toHaveLength(RETRY_GAPS.length + 1)
 
     const retries = yield* s.db
       .select({ data: EventTable.data })
@@ -6503,190 +6577,21 @@ describe("SessionRunnerLLM", () => {
       .all()
       .pipe(Effect.orDie)
     // Each scheduled time falls within the jittered cumulative window for that retry.
-    expect(retries).toHaveLength(TURN_RETRY_GAPS.length)
+    expect(retries).toHaveLength(RETRY_GAPS.length)
     let elapsed = 0
-    for (const [index, gap] of TURN_RETRY_GAPS.entries()) {
+    for (const [index, gap] of RETRY_GAPS.entries()) {
       elapsed += gap
       expect(retries[index]?.data.at).toBeGreaterThanOrEqual(elapsed * 0.8)
       expect(retries[index]?.data.at).toBeLessThanOrEqual(elapsed * 1.2)
     }
     expect((yield* recordedEventTypes(sessionID)).filter((type) => type === "session.step.started.1")).toHaveLength(
-      TURN_RETRY_GAPS.length + 1,
+      RETRY_GAPS.length + 1,
     )
     const assistant = requireAssistant(yield* s.context)
     expect(yield* recordedStepSettlementEvents(sessionID, assistant.id)).toMatchObject([
-      ...TURN_RETRY_GAPS.map(() => ({ type: "session.step.started.1" })),
+      ...RETRY_GAPS.map(() => ({ type: "session.step.started.1" })),
       { type: "session.step.started.1" },
       { type: "session.step.failed.1" },
-    ])
-  })
-
-  scenario("renews a fresh retry phase and recovers when the gateway heals", function* (s) {
-    yield* s.admit("Renew after phase spent")
-    const failure = providerUnavailable()
-    const failures = Array.from({ length: RETRY_GAPS.length + 1 }, () => Stream.fail(failure))
-    yield* s.llm.push(...failures, TestLLM.text("Recovered after renewal", "renewal-recovered"))
-
-    const scheduled = yield* subscribeRetries(s)
-    const run = yield* s.resume.pipe(Effect.forkChild)
-    for (const delay of RETRY_GAPS_MAX) {
-      yield* Queue.take(scheduled)
-      yield* TestClock.adjust(delay)
-    }
-    // The spent schedule renews a fresh phase with its opening gap instead of finalizing.
-    yield* Queue.take(scheduled)
-    yield* TestClock.adjust("2400 millis")
-    yield* Fiber.join(run)
-
-    expect(s.requests).toHaveLength(RETRY_GAPS.length + 2)
-    expect((yield* recordedEventTypes(sessionID)).filter((type) => type === "session.retry.scheduled.1")).toHaveLength(
-      RETRY_GAPS.length + 1,
-    )
-    expect(yield* s.context).toMatchObject([
-      Expected.user("Renew after phase spent"),
-      Expected.assistant({ finish: "stop" }, [Expected.text("Recovered after renewal")]),
-    ])
-    yield* replaySessionProjection(sessionID)
-    expect((yield* s.context).filter((message) => message.type === "assistant")).toHaveLength(1)
-  })
-
-  scenario("recovers when the provider stream goes silent before output", function* (s) {
-    yield* s.admit("Stall recovery")
-    yield* s.llm.push(TestLLM.hangAfter(LLMEvent.stepStart({ index: 0 })))
-    yield* s.llm.push(TestLLM.text("Recovered after stall", "stall-recovery"))
-
-    // The silence window starts when the stream emits its first event, so wait for Step.Started.
-    const started = yield* Queue.unbounded<SessionMessage.ID>()
-    yield* s.bus.subscribe(SessionEvent.Step.Started).pipe(
-      Stream.filter((event) => event.data.sessionID === sessionID),
-      Stream.runForEach((event) => Queue.offer(started, event.data.assistantMessageID)),
-      Effect.forkScoped({ startImmediately: true }),
-    )
-    const scheduled = yield* subscribeRetries(s)
-    const run = yield* s.resume.pipe(Effect.forkChild)
-    yield* Queue.take(started)
-    yield* TestClock.adjust(STALL_TIMEOUT)
-    yield* Queue.take(scheduled)
-    yield* TestClock.adjust("2400 millis")
-    yield* Fiber.join(run)
-
-    expect(s.requests).toHaveLength(2)
-    expect(
-      (yield* recordedEventTypes(sessionID)).filter((type) => type === "session.retry.scheduled.1"),
-    ).toHaveLength(1)
-    expect(yield* s.context).toMatchObject([
-      Expected.user("Stall recovery"),
-      Expected.assistant({ finish: "stop" }, [Expected.text("Recovered after stall")]),
-    ])
-  })
-
-  scenario("excludes tool execution silence and fires once tools settle", function* (s) {
-    yield* s.admit("Stall waits for tools")
-    const tools = yield* s.blockTools()
-    yield* s.llm.push(
-      TestLLM.hangAfter(
-        LLMEvent.stepStart({ index: 0 }),
-        LLMEvent.toolCall({ id: "call-stall", name: "echo", input: { text: "waited" } }),
-      ),
-    )
-    yield* s.llm.push(TestLLM.text("Recovered after tool stall", "tool-stall-recovery"))
-
-    const settled = yield* Queue.unbounded<SessionMessage.ID>()
-    yield* s.bus.subscribe(SessionEvent.Tool.Success).pipe(
-      Stream.filter((event) => event.data.sessionID === sessionID),
-      Stream.runForEach((event) => Queue.offer(settled, event.data.assistantMessageID)),
-      Effect.forkScoped({ startImmediately: true }),
-    )
-    const scheduled = yield* subscribeRetries(s)
-    const run = yield* s.resume.pipe(Effect.forkChild)
-    // The tool-call event is published before execution starts, arming the silence window.
-    yield* tools.started
-    yield* TestClock.adjust(STALL_TIMEOUT)
-    expect(Option.isNone(yield* Queue.poll(scheduled))).toBeTrue()
-    expect(s.requests).toHaveLength(1)
-
-    yield* tools.release
-    yield* Queue.take(settled)
-    yield* Effect.yieldNow
-    // Silence accumulated while the tool ran still counts once no tool call is pending.
-    yield* TestClock.adjust(STALL_CHECK_INTERVAL)
-    yield* Queue.take(scheduled)
-    yield* TestClock.adjust("2400 millis")
-    yield* Fiber.join(run)
-
-    expect(s.executions).toEqual(["waited"])
-    expect(s.requests).toHaveLength(2)
-    expect(
-      (yield* recordedEventTypes(sessionID)).filter((type) => type === "session.retry.scheduled.1"),
-    ).toHaveLength(1)
-    expect(yield* s.context).toMatchObject([
-      Expected.user("Stall waits for tools"),
-      Expected.assistant({ finish: "error", error: { type: "provider.invalid-output" } }, [
-        Expected.completedTool({ id: "call-stall" }, { content: [Expected.text("waited")] }),
-      ]),
-      { type: "synthetic", text: INCOMPLETE_STREAM_CONTINUATION },
-      Expected.assistant({ finish: "stop" }, [Expected.text("Recovered after tool stall")]),
-    ])
-  })
-
-  scenario("does not treat silence before the first event as a stall", function* (s) {
-    yield* s.admit("Slow first token")
-    const gate = yield* s.llm.gate()
-    yield* s.llm.push(TestLLM.text("Answer after slow start", "slow-start"))
-
-    const scheduled = yield* subscribeRetries(s)
-    const run = yield* s.resume.pipe(Effect.forkChild)
-    yield* gate.started
-    // Time to first token gets the slower TTFT tier instead of the tight stall budget:
-    // 300 seconds leaves a silent attempt waiting far inside the ten minute budget.
-    yield* TestClock.adjust("300 seconds")
-    expect(Option.isNone(yield* Queue.poll(scheduled))).toBeTrue()
-    expect(s.requests).toHaveLength(1)
-
-    yield* gate.release
-    yield* Fiber.join(run)
-
-    expect(s.requests).toHaveLength(1)
-    expect(yield* s.context).toMatchObject([
-      Expected.user("Slow first token"),
-      Expected.assistant({ finish: "stop" }, [Expected.text("Answer after slow start")]),
-    ])
-  })
-
-  scenario("expires the TTFT budget when the provider streams no event", function* (s) {
-    yield* s.admit("Silent provider")
-    const gate = yield* s.llm.gate()
-    yield* s.llm.push(
-      TestLLM.text("Held behind the gate", "silent-held"),
-      TestLLM.text("Recovered after silent start", "silent-recovered"),
-    )
-
-    const scheduled = yield* subscribeRetries(s)
-    const run = yield* s.resume.pipe(Effect.forkChild)
-    yield* gate.started
-    // The pre-first-token tier is generous but finite: silence just under the budget keeps
-    // the attempt waiting, past the budget the attempt fails incomplete-stream.
-    yield* TestClock.adjust("9 minutes")
-    expect(Option.isNone(yield* Queue.poll(scheduled))).toBeTrue()
-    expect(s.requests).toHaveLength(1)
-
-    yield* TestClock.adjust("65 seconds")
-    yield* Queue.take(scheduled)
-    // The stalled attempt's request was intercepted by the gate, so opening it here hands
-    // the retried attempt its queued recovery response instead of leaving the gate armed.
-    yield* gate.release
-    yield* TestClock.adjust("2400 millis")
-    yield* Fiber.join(run)
-
-    expect(s.requests).toHaveLength(2)
-    expect(
-      (yield* recordedEventTypes(sessionID)).filter((type) => type === "session.retry.scheduled.1"),
-    ).toHaveLength(1)
-    // A stalled attempt that never emitted anything leaves no assistant part behind; the
-    // previous response was never started, so the runner schedules a plain retry.
-    expect(yield* s.context).toMatchObject([
-      Expected.user("Silent provider"),
-      Expected.assistant({ finish: "stop" }, [Expected.text("Recovered after silent start")]),
     ])
   })
 

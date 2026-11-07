@@ -35,47 +35,63 @@ const schedule = Schedule.max([
   }),
 )
 
+// This machine has no network path to the provider: the host name didn't resolve, or there is no route or interface.
+// While that lasts every attempt fails before reaching the provider, and the outage behind it (a router restart, a
+// dropped VPN, a laptop between networks) usually outlasts the general allowance, so these retry on their own budget:
+// exponential from 2s capped at 30s per gap, for up to an hour after the first one. A refused connection is left out:
+// something answered, so it is the server's state.
+const UNREACHABLE_CODES = new Set(["ENOTFOUND", "EAI_AGAIN", "ENETUNREACH", "EHOSTUNREACH", "ENETDOWN"])
+export const UNREACHABLE_WINDOW = Duration.hours(1)
+const UNREACHABLE_GAP_MAX = 30_000
+
+/** Whether the failure says this machine has no network path to the provider's host. */
+export const isUnreachable = (error: AIError) =>
+  error.reason._tag === "Transport" && error.reason.code !== undefined && UNREACHABLE_CODES.has(error.reason.code)
+
+const unreachableSchedule = Schedule.max([
+  Schedule.min([Schedule.exponential("2 seconds"), Schedule.spaced(Duration.millis(UNREACHABLE_GAP_MAX))]),
+  Schedule.during(UNREACHABLE_WINDOW),
+]).pipe(
+  Schedule.jittered,
+  Schedule.setInputType<Input>(),
+  // Jitter scales the capped gap by up to 1.2, so cap it again after.
+  Schedule.modifyDelay(({ duration }) =>
+    Effect.succeed(Duration.millis(Math.min(Math.ceil(Duration.toMillis(duration)), UNREACHABLE_GAP_MAX))),
+  ),
+)
+
 // A timed-out attempt already waited minutes before failing, so the general allowance would let a
 // dead provider hold a call for most of an hour. Cap those attempts well below it.
 const MAX_TIMEOUT_RETRIES = 3
 
-/**
- * `phases` renews the schedule once it runs out instead of giving up: the fork's step-level retry
- * budget keeps retrying the failed call from scratch while the gateway heals, each phase about
- * 84s. Buffered generations keep the single phase upstream uses.
- */
-export const policy = (phases = 1) =>
-  Effect.gen(function* () {
-    let step = yield* Schedule.toStep(schedule)
-    let attempt = 1
-    let phase = 1
-    let timeouts = 0
-    return (input: Input) =>
-      Effect.gen(function* () {
-        const now = yield* Clock.currentTimeMillis
-        let next = yield* step(now, input).pipe(Pull.catchDone(() => Effect.succeed(undefined)))
-        // Renewal never bypasses the retry hook: an exhausted schedule returns before the hook
-        // runs, while a hook veto exits from a schedule that still has steps left.
-        if (!next && input.retry && phase++ < phases) {
-          step = yield* Schedule.toStep(schedule)
-          next = yield* step(now, input).pipe(Pull.catchDone(() => Effect.succeed(undefined)))
-        }
-        if (!next) return undefined
-        const [, duration] = next
-        attempt++
-        if (input.cause.reason._tag === "Transport" && input.cause.reason.code === "Timeout") timeouts++
-        return {
-          attempt,
-          delay: Math.ceil(Duration.toMillis(duration)),
-          retry: input.retry && timeouts <= MAX_TIMEOUT_RETRIES,
-        }
-      })
-  })
+export const policy = Effect.gen(function* () {
+  const step = yield* Schedule.toStep(schedule)
+  const unreachable = yield* Schedule.toStep(unreachableSchedule)
+  let attempt = 1
+  let timeouts = 0
+  return (input: Input) =>
+    Effect.gen(function* () {
+      const now = yield* Clock.currentTimeMillis
+      // Unreachable failures don't spend the general allowance, so a flaky link that also drops streams keeps it.
+      const next = yield* (input.retry && isUnreachable(input.cause) ? unreachable : step)(now, input).pipe(
+        Pull.catchDone(() => Effect.succeed(undefined)),
+      )
+      if (!next) return undefined
+      const [, duration] = next
+      attempt++
+      if (input.cause.reason._tag === "Transport" && input.cause.reason.code === "Timeout") timeouts++
+      return {
+        attempt,
+        delay: Math.ceil(Duration.toMillis(duration)),
+        retry: input.retry && timeouts <= MAX_TIMEOUT_RETRIES,
+      }
+    })
+})
 
 /** Retry a buffered model call from scratch; failed attempts never contribute to its returned output. */
 export const retry = <A, R>(effect: Effect.Effect<A, AIError, R>) =>
   Effect.gen(function* () {
-    const decide = yield* policy()
+    const decide = yield* policy
     while (true) {
       const result = yield* Effect.result(effect)
       if (result._tag === "Success") return result.success
@@ -88,6 +104,7 @@ export const retry = <A, R>(effect: Effect.Effect<A, AIError, R>) =>
 // One-shot generations (stateless text, images, decisions) can be billed per attempt, so they retry only failures
 // the provider never ran, a few times, with the same backoff and retry-after handling.
 const ONE_SHOT_RETRIES = 3
+// Only codes that fail before a connection exists: a dropped interface or route can also fail a response already being read.
 const NOT_SENT_CODES = new Set(["ECONNREFUSED", "ENOTFOUND", "EAI_AGAIN"])
 
 const notRun = (error: AIError) => {
@@ -105,7 +122,7 @@ const notRun = (error: AIError) => {
 /** Retry a one-shot call only when the provider clearly didn't run it: rate limits, overload, unreachable hosts. */
 export const retryOneShot = <A, R>(effect: Effect.Effect<A, AIError, R>) =>
   Effect.gen(function* () {
-    const decide = yield* policy()
+    const decide = yield* policy
     let retries = 0
     while (true) {
       const result = yield* Effect.result(effect)
