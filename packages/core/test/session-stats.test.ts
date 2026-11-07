@@ -18,6 +18,7 @@ import { SessionHistory } from "@opencode/core/session/history"
 import { SessionStats } from "@opencode/core/session/stats"
 import { AppNodeBuilder } from "@opencode/core/effect/app-node-builder"
 import { LayerNode } from "@opencode/util/effect/layer-node"
+import { eq, sql } from "drizzle-orm"
 import { DateTime, Effect, Layer, Schema } from "effect"
 import { TestClock } from "effect/testing"
 import { makeDurableObjectStorage } from "./fixture/durable-object-storage"
@@ -395,6 +396,88 @@ describe("SessionStats", () => {
         cache: { read: 120 * 4, write: 120 },
       })
       expect(stats.cost).toBe(Money.USD.make(120 * 1.5 + 1))
+    }),
+  )
+
+  it.effect("keeps the derived usage row in step with message writes", () =>
+    Effect.gen(function* () {
+      const db = (yield* Database.Service).db
+      const triggerProjectID = Project.ID.make("stats-trigger-project")
+      const triggerSessionID = Session.ID.make("ses_stats_trigger")
+      const messageID = SessionMessage.ID.make("msg_stats_trigger")
+      yield* db
+        .insert(ProjectTable)
+        .values({ id: triggerProjectID, worktree: AbsolutePath.make("/trigger"), name: "trigger", sandboxes: [] })
+        .run()
+        .pipe(Effect.orDie)
+      yield* db
+        .insert(SessionTable)
+        .values({
+          id: triggerSessionID,
+          project_id: triggerProjectID,
+          slug: "trigger",
+          directory: "/trigger",
+          version: "test",
+        })
+        .run()
+        .pipe(Effect.orDie)
+      const read = () =>
+        db
+          .get<{
+            providerID: string | null
+            modelID: string | null
+            variant: string | null
+            input: number | null
+            output: number | null
+            reasoning: number | null
+            cacheRead: number | null
+            cacheWrite: number | null
+            cost: number | null
+          }>(
+            sql`
+              SELECT provider_id AS providerID, model_id AS modelID, variant, input, output, reasoning,
+                cache_read AS cacheRead, cache_write AS cacheWrite, cost
+              FROM session_message_usage
+              WHERE message_id = ${messageID}
+            `,
+          )
+          .pipe(Effect.orDie)
+
+      const inserted = messageRow(triggerSessionID, 1, assistant(messageID, Date.UTC(2026, 0, 2, 10), [], "sonnet", 2))
+      yield* db.insert(SessionMessageTable).values(inserted).run().pipe(Effect.orDie)
+      expect(yield* read()).toEqual({
+        providerID: "anthropic",
+        modelID: "sonnet",
+        variant: null,
+        input: 20,
+        output: 10,
+        reasoning: 4,
+        cacheRead: 8,
+        cacheWrite: 2,
+        cost: 3,
+      })
+
+      const updated = messageRow(triggerSessionID, 1, assistant(messageID, Date.UTC(2026, 0, 2, 11), [], "other", 3))
+      yield* db
+        .update(SessionMessageTable)
+        .set({ data: updated.data, time_created: updated.time_created })
+        .where(eq(SessionMessageTable.id, messageID))
+        .run()
+        .pipe(Effect.orDie)
+      expect(yield* read()).toEqual({
+        providerID: "anthropic",
+        modelID: "other",
+        variant: null,
+        input: 30,
+        output: 15,
+        reasoning: 6,
+        cacheRead: 12,
+        cacheWrite: 3,
+        cost: 4.5,
+      })
+
+      yield* db.delete(SessionMessageTable).where(eq(SessionMessageTable.id, messageID)).run().pipe(Effect.orDie)
+      expect(yield* read()).toBeUndefined()
     }),
   )
 })

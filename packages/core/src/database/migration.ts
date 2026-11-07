@@ -7,6 +7,7 @@ import { supportsForeignKeyToggle } from "#sqlite"
 import { EffectDrizzleSqlite } from "./drizzle.js"
 import { migrations } from "./migration.gen.js"
 import legacyCredentials from "./migration/20260805200742_import_legacy_credentials.js"
+import { SessionMessageUsage } from "../session/message-usage.js"
 import schema from "./schema.gen.js"
 import { Global } from "@opencode/util/global"
 
@@ -37,6 +38,7 @@ export function apply(db: Database) {
       Effect.gen(function* () {
         yield* schema.up(tx)
         yield* legacyCredentials.up(tx)
+        yield* SessionMessageUsage.up(tx)
         yield* tx.run(
           sql`CREATE TABLE ${sql.identifier("migration")} (id TEXT PRIMARY KEY, time_completed INTEGER NOT NULL)`,
         )

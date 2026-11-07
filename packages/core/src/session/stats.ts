@@ -13,6 +13,7 @@ import { TokenUsage } from "@opencode/schema/token-usage"
 import { Database } from "../database/database.js"
 import { DatabaseBatch } from "../database/batch.js"
 import { EventTable } from "../event/sql.js"
+import { SessionMessageUsage } from "./message-usage.js"
 import { SessionMessageTable, SessionPartTable, SessionTable } from "./sql.js"
 
 type Input = {
@@ -122,25 +123,25 @@ export const get = Effect.fn("SessionStats.get")(function* (input: Input = {}) {
         .all<MessageRow>(
           sql`
           SELECT
-            message.session_id AS sessionID,
+            usage.session_id AS sessionID,
             session.parent_id AS parentID,
-            message.type AS type,
-            message.time_created AS timeCreated,
-            json_extract(message.data, '$.model.providerID') AS providerID,
-            json_extract(message.data, '$.model.id') AS modelID,
-            json_extract(message.data, '$.model.variant') AS variant,
-            json_extract(message.data, '$.tokens.input') AS input,
-            json_extract(message.data, '$.tokens.output') AS output,
-            json_extract(message.data, '$.tokens.reasoning') AS reasoning,
-            json_extract(message.data, '$.tokens.cache.read') AS cacheRead,
-            json_extract(message.data, '$.tokens.cache.write') AS cacheWrite,
-            json_extract(message.data, '$.cost') AS cost
-          FROM ${SessionMessageTable} AS message
-          JOIN ${SessionTable} AS session ON session.id = message.session_id
-          WHERE message.type IN ('user', 'assistant')
-            AND message.time_created >= ${range.from}
-            AND message.time_created < ${range.to}
-            AND (session.fork_session_id IS NULL OR message.time_created >= session.time_created)
+            usage.type AS type,
+            usage.time_created AS timeCreated,
+            usage.provider_id AS providerID,
+            usage.model_id AS modelID,
+            usage.variant AS variant,
+            usage.input AS input,
+            usage.output AS output,
+            usage.reasoning AS reasoning,
+            usage.cache_read AS cacheRead,
+            usage.cache_write AS cacheWrite,
+            usage.cost AS cost
+          FROM ${sql.identifier(SessionMessageUsage.table)} AS usage
+          JOIN ${SessionTable} AS session ON session.id = usage.session_id
+          WHERE usage.type IN ('user', 'assistant')
+            AND usage.time_created >= ${range.from}
+            AND usage.time_created < ${range.to}
+            AND (session.fork_session_id IS NULL OR usage.time_created >= session.time_created)
             ${project}
         `,
         )
@@ -427,16 +428,16 @@ function addToolStatus(
 }
 
 function makeDateKey(timezone = "UTC") {
-  const formatter = new Intl.DateTimeFormat("en-US", {
+  // en-CA writes a numeric date as YYYY-MM-DD, so one format() call replaces
+  // formatToParts plus an object per message row. On a 30 day range that is
+  // half a million calls.
+  const formatter = new Intl.DateTimeFormat("en-CA", {
     timeZone: timezone,
     year: "numeric",
     month: "2-digit",
     day: "2-digit",
   })
-  return (time: number) => {
-    const parts = Object.fromEntries(formatter.formatToParts(time).map((part) => [part.type, part.value]))
-    return `${parts.year}-${parts.month}-${parts.day}`
-  }
+  return (time: number) => formatter.format(time)
 }
 
 function longestStreak(days: string[]) {
