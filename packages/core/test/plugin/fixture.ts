@@ -1,4 +1,5 @@
 import { Agent } from "@opencode/core/agent"
+import { App } from "@opencode/core/app"
 import { Artifact } from "@opencode/core/artifact"
 import { AISDK } from "@opencode/core/aisdk"
 import { Command } from "@opencode/core/command"
@@ -7,6 +8,7 @@ import { Credential } from "@opencode/core/credential"
 import { Database } from "@opencode/core/database/database"
 import { Environment } from "@opencode/core/environment/index"
 import { FileAccess } from "@opencode/core/file-access"
+import { Flag } from "@opencode/core/flag"
 import { LayerNodePlatform } from "@opencode/util/effect/app-node-platform"
 import { AppProcess } from "@opencode/util/process"
 import { LayerNode } from "@opencode/util/effect/layer-node"
@@ -30,6 +32,7 @@ import { Provider } from "@opencode/core/provider"
 import { Session } from "@opencode/core/session"
 import { SharedCache } from "@opencode/core/shared-cache"
 import { InstructionEntry } from "@opencode/core/session/instruction-entry"
+import { SessionStore } from "@opencode/core/session/store"
 import { PersistentPty } from "@opencode/core/persistent-pty"
 import { LocationServiceMap } from "@opencode/core/location-service-map"
 import { AppNodeBuilder } from "@opencode/core/effect/app-node-builder"
@@ -89,6 +92,7 @@ const permissionLayer = Layer.succeed(
 export const makePluginTestLayer = (permission = permissionLayer, generate = generateLayer) =>
   AppNodeBuilder.build(
     LayerNode.group([
+      App.node,
       AppProcess.node,
       FileSystem.node,
       FSUtil.node,
@@ -96,6 +100,7 @@ export const makePluginTestLayer = (permission = permissionLayer, generate = gen
       Npm.node,
       Credential.node,
       Config.node,
+      Flag.node,
       Database.node,
       Environment.node,
       FileAccess.node,
@@ -117,6 +122,7 @@ export const makePluginTestLayer = (permission = permissionLayer, generate = gen
       KV.node,
       Mcp.node,
       Session.node,
+      SessionStore.node,
       SharedCache.node,
       InstructionEntry.node,
       PersistentPty.node,
