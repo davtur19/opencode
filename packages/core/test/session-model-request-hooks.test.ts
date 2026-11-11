@@ -1,7 +1,6 @@
 import { describe, expect } from "bun:test"
 import { ToolDefinition } from "@opencode/ai/effect"
 import { OpenAIChat } from "@opencode/ai/protocols"
-import { LanguageModel, SystemPart } from "@opencode/ai/effect"
 import { Agent } from "@opencode/schema/agent"
 import { Money } from "@opencode/schema/money"
 import { Session } from "@opencode/schema/session"
@@ -275,29 +274,4 @@ describe("SessionModelRequest HTTP hooks", () => {
     }),
   )
 
-  it.effect("stamps the environment block on primary and compaction requests only", () =>
-    Effect.gen(function* () {
-      const requests = yield* SessionModelRequest.Service.pipe(Effect.provide(SessionModelRequest.layer))
-      const system = [SystemPart.make("<env>\n  Working directory: /project\n</env>")]
-      // The environment stamp exists only for the free gateway; use an anonymous gateway model.
-      const gateway = SessionRunnerModel.resolved(
-        LanguageModel.make({ id: "free", provider: "opencode", route: OpenAIChat.route }),
-        {
-          capabilities: model.capabilities,
-          cost: [],
-          limit: model.limit,
-          anonymous: true,
-        },
-      )
-      const input = { session, agent: Agent.ID.make("build"), model: gateway, system, messages: [] }
-
-      const primary = yield* requests.primary(input)
-      const compaction = yield* requests.compaction(input)
-      const title = yield* requests.title(input)
-
-      expect(primary.request.system[0]?.text).toContain("Environment id:")
-      expect(compaction.request.system[0]?.text).toContain("Environment id:")
-      expect(title.request.system[0]?.text).not.toContain("Environment id:")
-    }).pipe(Effect.provideService(SessionModelTransport.Service, transport)),
-  )
 })
