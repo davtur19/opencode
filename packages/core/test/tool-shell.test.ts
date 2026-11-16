@@ -1525,12 +1525,14 @@ describe("ShellTool", () => {
   it.effect("treats a foreground timeout of zero as the default timeout", () =>
     withTempDir((tmp) => {
       reset()
+      // The fork's 30 second auto-background would otherwise win before the 120 second default timeout.
       return withSession(tmp.path, (registry) =>
-        Effect.gen(function* () {
-          const running = yield* executeTool(
-            registry,
-            call({ command: progressOverflowCommand(0, "release"), timeout: 0 }, "call-zero-timeout"),
-          ).pipe(Effect.forkScoped({ startImmediately: true }))
+        withEnv({ [ShellTool.BACKGROUND_AFTER_ENV]: "0" }, () =>
+          Effect.gen(function* () {
+            const running = yield* executeTool(
+              registry,
+              call({ command: progressOverflowCommand(0, "release"), timeout: 0 }, "call-zero-timeout"),
+            ).pipe(Effect.forkScoped({ startImmediately: true }))
           // The wait starts only after the command spawns, so keep advancing the clock until the call returns.
           const result = yield* Fiber.join(running).pipe(
             Effect.raceFirst(
@@ -1546,7 +1548,8 @@ describe("ShellTool", () => {
           expect((yield* shell.get(id)).status).toBe("running")
           yield* Effect.promise(() => Bun.write(path.join(tmp.path, "release"), ""))
           expect(yield* shell.wait(id)).toMatchObject({ status: "exited", exit: 0 })
-        }),
+          }),
+        ),
       )
     }),
   )
@@ -2515,7 +2518,7 @@ describe("ShellTool stopped", () => {
     }),
   )
 
-  parity.live("stops a command whose call an interrupt cut off, with no handoff to take it over", () =>
+  parity.live("stops a command whose call an interrupt cmand whose call an interrupt cut off, with no handoff to take it over", () =>
     withTempDir((tmp) => {
       reset()
       return withSession(tmp.path, (registry) =>

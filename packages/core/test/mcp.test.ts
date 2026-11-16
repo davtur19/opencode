@@ -3440,6 +3440,8 @@ for (const source of ["config", "organization"] as const) {
         if (source === "config") yield* test.setEntries([document("allow")])
         if (source === "organization") yield* setOrganizationPolicy(undefined)
         yield* PubSub.publish(updates, { type: Event.Updated.type })
+        // Boot no longer spawns: restore the server the way a Session select does.
+        yield* service.demand("resources")
         yield* service.servers().pipe(
           Effect.filterOrFail(
             (servers) => servers.some((server) => server.status.status === "connected"),
@@ -4141,7 +4143,8 @@ describe("MCP pool", () => {
 
 describe("MCP events", () => {
   const ready = (mcp: Mcp.Interface) =>
-    mcp.awaitStartup().pipe(
+    mcp.demand("resources").pipe(
+      Effect.andThen(mcp.awaitStartup()),
       Effect.andThen(mcp.servers()),
       Effect.map((all) => all[0]?.status),
     )

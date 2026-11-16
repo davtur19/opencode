@@ -2203,7 +2203,12 @@ describe("SessionRestart orphan settlement", () => {
       const parent = Session.ID.make("ses_orphan_parent")
       const child = Session.ID.make("ses_orphan_child")
       yield* seedSessions(database, [parent], { time_suspended: Date.now() })
-      yield* seedSessions(database, [child], { parent_id: parent, time_suspended: Date.now() })
+      // The child's parent is gone, so the sweep clears the child's claim while the
+      // still-present parent keeps its own and drains.
+      yield* seedSessions(database, [child], {
+        parent_id: Session.ID.make("ses_orphan_deleted_parent"),
+        time_suspended: Date.now(),
+      })
       const parentAssistant = yield* seedOrphanTurn(database, parent, { id: "call_parent_shell", name: "shell" })
       const childAssistant = yield* seedOrphanTurn(database, child, { id: "call_child_question", name: "question" })
 
