@@ -43,6 +43,7 @@ export function up(tx: Transaction) {
     yield* tx.run(`
       CREATE TRIGGER IF NOT EXISTS session_message_usage_insert
       AFTER INSERT ON session_message
+      WHEN json_valid(new.data)
       BEGIN
         INSERT OR REPLACE INTO session_message_usage (
           message_id, session_id, type, time_created, provider_id, model_id, variant,
@@ -64,6 +65,7 @@ export function up(tx: Transaction) {
     yield* tx.run(`
       CREATE TRIGGER IF NOT EXISTS session_message_usage_update
       AFTER UPDATE OF data, type, time_created, session_id ON session_message
+      WHEN json_valid(new.data)
       BEGIN
         INSERT OR REPLACE INTO session_message_usage (
           message_id, session_id, type, time_created, provider_id, model_id, variant,
@@ -110,5 +112,6 @@ export function backfill(tx: Transaction) {
       json_extract(data, '$.tokens.cache.write'),
       json_extract(data, '$.cost')
     FROM session_message
+    WHERE json_valid(data)
   `)
 }

@@ -343,7 +343,8 @@ describe("goal plugin", () => {
         if (isReview(request)) return TestLLM.text('{"verdict":"paused","reason":"Stop here."}', "review")
         if (calls.remaining === 0) return TestLLM.text("On it.", "work")
         calls.remaining--
-        return TestLLM.toolCall(`call-${calls.remaining}`, "missing_tool", {})
+        // Distinct inputs keep the fork's doom-loop guard from asking on the third repeat.
+        return TestLLM.toolCall(`call-${calls.remaining}`, "missing_tool", { step: calls.remaining })
       })
       yield* sessions.prompt({ sessionID: session.id, text: "Look at the failing CI job" })
       yield* sessions.wait(session.id)

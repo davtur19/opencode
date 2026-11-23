@@ -124,6 +124,7 @@ const makeContextLayer = (overrides: string | undefined) =>
       Mcp.node.replace(
         Layer.mock(Mcp.Service, {
           awaitStartup: () => Effect.void,
+          servers: () => Effect.succeed([]),
           instructions: () => Effect.succeed([{ server: Mcp.ServerName.make("alpha"), instructions: "Alpha docs" }]),
           tools: () =>
             Effect.succeed([{ server: Mcp.ServerName.make("alpha"), name: "search", inputSchema: { type: "object" } }]),
