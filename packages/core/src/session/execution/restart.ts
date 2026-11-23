@@ -5,13 +5,19 @@ import { isReadonlyArrayNonEmpty } from "effect/Array"
 import { and, eq, isNotNull, sql } from "drizzle-orm"
 import { makeGlobalNode } from "@opencode/util/effect/app-node"
 import { Shell as ShellSchema } from "@opencode/schema/shell"
+import { FSUtil } from "@opencode/util/fs-util"
+import { BlobStore } from "../../blob-store.js"
 import { Bus } from "../../bus.js"
 import { Database } from "../../database/database.js"
+import { Environment } from "../../environment/index.js"
 import { Instance } from "../../instance/service.js"
 import { Job } from "../../job.js"
+import { CodeModeJob } from "../../codemode/job.js"
 import { Session } from "../../session.js"
 import { Shell } from "../../shell.js"
 import { ShellTool } from "../../tool/plugin/shell.js"
+import { VideoGenerateTool } from "../../tool/plugin/video-generate.js"
+import { VideoGeneration } from "../../video-generation.js"
 import { SessionEvent } from "../event.js"
 import { SessionExecution } from "../execution.js"
 import { SessionHistory } from "../history.js"
@@ -146,6 +152,7 @@ export const layer = (options?: Options) =>
       })
 
       const restartMessage = (background: Job.Background, recovery: Exclude<Job.Recovery, { kind: "subagent" }>) => {
+        if (recovery.kind === "codemode") return CodeModeJob.notice(background)
         const state = background.status === "running" ? "cancelled" : background.status
         if (recovery.kind === "shell") {
           const text =
@@ -167,6 +174,21 @@ export const layer = (options?: Options) =>
             }),
           }
         }
+        if (recovery.kind === "video") {
+          const body =
+            background.status === "running"
+              ? `Video request for ${recovery.path} couldn't be saved after the server restarted: its project folder no longer exists.`
+              : state === "completed"
+                ? (background.output ?? `Video request finished. Saved video: ${recovery.path}.`)
+                : state === "error"
+                  ? (background.error ?? `Video request failed for ${recovery.path}.`)
+                  : `Video request for ${recovery.path} was cancelled.`
+          return {
+            description: "Video generation",
+            text: VideoGenerateTool.notice({ id: background.id, state, body }),
+            metadata: { source: VideoGenerateTool.name, jobID: background.id, state, path: recovery.path },
+          }
+        }
         const body =
           background.status === "running"
             ? `Image request for ${recovery.path} was cancelled because the server restarted.`
@@ -179,7 +201,7 @@ export const layer = (options?: Options) =>
           description: "Image generation",
           text: ImageNotice.text({ id: background.id, state, body }),
           metadata: {
-            source: "experimental_image_generate",
+            source: "generate_image",
             jobID: background.id,
             state,
             path: recovery.path,
@@ -226,6 +248,44 @@ export const layer = (options?: Options) =>
           )
         if (!delivered) return
         yield* jobs.completeBackground(background.notificationID)
+      })
+
+      // The video service keeps polling a running video itself, here or in another server, so the tool's wait, copy and
+      // notice just continue. Without the session's Location it is reported as lost.
+      const recoverVideoJob = Effect.fnUntraced(function* (
+        background: Job.Background,
+        recovery: Extract<Job.Recovery, { kind: "video" }>,
+        notices: Notices,
+      ) {
+        if (background.status !== "running") return yield* recoverToolJob(background, recovery)
+        const session = yield* store.get(recovery.sessionID)
+        const services = session
+          ? yield* Effect.all([
+              Effect.serviceOption(VideoGeneration.Service),
+              Effect.serviceOption(BlobStore.Service),
+              Effect.serviceOption(FSUtil.Service),
+              Effect.serviceOption(Environment.Service),
+            ]).pipe(
+              Effect.map((found) => Option.all(found)),
+              instances.provide(session),
+              Effect.catchTag("FileSystem.DirectoryNotFoundError", () => Effect.succeed(Option.none())),
+            )
+          : Option.none()
+        if (Option.isNone(services)) return yield* recoverToolJob(background, recovery)
+        const [videos, blobs, fs, environment] = services.value
+        yield* VideoGenerateTool.track({
+          jobs,
+          sessions: notices,
+          videos,
+          blobs,
+          fs,
+          files: environment.files,
+          scope,
+          notificationID: background.notificationID,
+          sessionID: recovery.sessionID,
+          videoID: recovery.videoID,
+          path: recovery.path,
+        })
       })
 
       // The Shell of a session's Location, booted so it takes back the commands the daemon still runs for it.
@@ -526,6 +586,7 @@ export const layer = (options?: Options) =>
               const recovery = background.recovery
               if (recovery.kind === "subagent" || !(yield* recoverable(background))) return
               if (recovery.kind === "shell") return yield* recoverShellJob(background, recovery, notices, reattached)
+              if (recovery.kind === "video") return yield* recoverVideoJob(background, recovery, notices)
               yield* recoverToolJob(background, recovery)
             }),
             { discard: true },

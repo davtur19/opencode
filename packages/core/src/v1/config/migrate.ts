@@ -30,6 +30,13 @@ export function normalizeAction(action: string) {
   if (action === "write" || action === "patch" || action === "apply_patch") return "edit"
   if (action === "task") return "subagent"
   if (action === "bash") return "shell"
+  return renamedTool(action)
+}
+
+// The media tools dropped their experimental prefix after native permission rules could name them.
+export function renamedTool(action: string) {
+  if (action === "experimental_image_generate") return "generate_image"
+  if (action === "experimental_video_generate") return "generate_video"
   return action
 }
 
@@ -247,9 +254,7 @@ function migrateModel(info: typeof ConfigProviderV1.Model.Type, npm: string | un
     capabilities,
     headers: info.headers,
     body: migrated?.body,
-    variants:
-      info.variants &&
-      Object.entries(info.variants).map(([id, options]) => ({ id, ...split(options) })),
+    variants: info.variants && Object.entries(info.variants).map(([id, options]) => ({ id, ...split(options) })),
     cost: costs,
     disabled: info.status === "deprecated" ? true : undefined,
     limit: info.limit && {

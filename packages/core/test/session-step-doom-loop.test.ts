@@ -12,6 +12,7 @@ import { ProjectTable } from "@opencode/core/project/sql"
 import { AbsolutePath } from "@opencode/core/schema"
 import { Session } from "@opencode/core/session"
 import { SessionMessage } from "@opencode/core/session/message"
+import { SessionHistory } from "@opencode/core/session/history"
 import { SessionProjector } from "@opencode/core/session/projector"
 import { SessionRunnerModel } from "@opencode/core/session/runner/model"
 import { SessionStep } from "@opencode/core/session/runner/step"
@@ -134,11 +135,10 @@ it.effect("warns when a tool call repeats with identical input a third time", ()
       expect(result.value).toEqual(SessionStep.Outcome.Completed({ needsContinuation: true }))
     expect(executions).toBe(2)
     expect(checks).toBe(1)
-    const message = yield* db
-      .select()
-      .from(SessionMessageTable)
-      .where(eq(SessionMessageTable.id, assistantMessageID))
-      .get()
+    const [message] = yield* SessionHistory.withParts(
+      db,
+      yield* db.select().from(SessionMessageTable).where(eq(SessionMessageTable.id, assistantMessageID)).all(),
+    )
     expect(message?.data).toMatchObject({
       content: [
         { type: "tool", state: { status: "completed" } },
@@ -178,11 +178,10 @@ it.effect("stops the turn when the loop repeats after the warning", () =>
       expect(second.value).toEqual(SessionStep.Outcome.Completed({ needsContinuation: false }))
     expect(executions).toBe(2)
     expect(checks).toBe(2)
-    const message = yield* db
-      .select()
-      .from(SessionMessageTable)
-      .where(eq(SessionMessageTable.id, assistantMessageID))
-      .get()
+    const [message] = yield* SessionHistory.withParts(
+      db,
+      yield* db.select().from(SessionMessageTable).where(eq(SessionMessageTable.id, assistantMessageID)).all(),
+    )
     expect(message?.data).toMatchObject({
       content: [
         {
