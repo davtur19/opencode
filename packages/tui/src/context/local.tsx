@@ -45,8 +45,16 @@ export const { use: useLocal, provider: LocalProvider } = createSimpleContext({
     const models = () => data.location.model.list(location.ref)
     const providers = () => data.location.provider.list(location.ref)
 
+    // Indexed because the model picker looks up every model, and catalogs such as OpenRouter's hold thousands.
+    const modelIndex = createMemo(
+      () =>
+        new Map(
+          (models() ?? []).map((item) => [modelPreferenceKey({ providerID: item.providerID, modelID: item.id }), item]),
+        ),
+    )
+
     function findModel(model: ModelPreferenceModel) {
-      return models()?.find((item) => item.providerID === model.providerID && item.id === model.modelID)
+      return modelIndex().get(modelPreferenceKey(model))
     }
 
     function isModelValid(model: ModelPreferenceModel) {
@@ -69,9 +77,10 @@ export const { use: useLocal, provider: LocalProvider } = createSimpleContext({
     }
 
     function createAgent() {
-      const agents = createMemo(() =>
-        (data.location.agent.list(location.ref) ?? []).filter((agent) => agent.mode !== "subagent" && !agent.hidden),
+      const primaryAgents = createMemo(() =>
+        (data.location.agent.list(location.ref) ?? []).filter((agent) => agent.mode !== "subagent"),
       )
+      const agents = createMemo(() => primaryAgents().filter((agent) => !agent.hidden))
       const visibleAgents = createMemo(() =>
         (data.location.agent.list(location.ref) ?? []).filter((agent) => !agent.hidden),
       )
@@ -108,7 +117,8 @@ export const { use: useLocal, provider: LocalProvider } = createSimpleContext({
                 data.session.get(route.data.sessionID)?.agent ??
                 agentStore.current)
               : agentStore.current
-          return agents().find((agent) => agent.id === selected) ?? agents().at(0)
+          // A command can switch the session to a hidden agent, which stays out of the list but is still in use.
+          return primaryAgents().find((agent) => agent.id === selected) ?? agents().at(0)
         },
         set(id: string) {
           if (!agents().some((agent) => agent.id === id))
@@ -263,10 +273,21 @@ export const { use: useLocal, provider: LocalProvider } = createSimpleContext({
       }
 
       function preferredSelection(model: ModelPreferenceModel): ModelSelection {
+        // A model runs at the speed last used with it.
+        const speed = preferences.speed[modelPreferenceKey(model)]
+        const remembered = speed && speeds(model).find((item) => item.experimental?.speed?.id === speed)
+        const target = remembered ? { providerID: model.providerID, modelID: remembered.id } : model
         const configured = agent.current()?.model
         const fallback = configuredModel()
-        // A model's speeds share its variant.
-        const preferred = preferences.variant[modelPreferenceKey(standardModel(model))]
+        // A model's speeds share its variant. Preferences saved before then may name one of its speeds instead.
+        const standard = standardModel(model)
+        const preferred = [
+          standard,
+          target,
+          ...speeds(standard).map((item) => ({ providerID: item.providerID, modelID: item.id })),
+        ]
+          .map((item) => preferences.variant[modelPreferenceKey(item)])
+          .find((value) => value !== undefined)
         const variant = normalizeModelVariant(
           preferred ??
             (configured?.providerID === model.providerID && configured.id === model.modelID
@@ -276,13 +297,10 @@ export const { use: useLocal, provider: LocalProvider } = createSimpleContext({
               ? fallback.variant
               : undefined),
         )
-        const info = findModel(model)
-        // A model runs at the speed last used with it.
-        const speed = preferences.speed[modelPreferenceKey(model)]
-        const remembered = speed && speeds(model).find((item) => item.experimental?.speed?.id === speed)
+        const info = findModel(target)
         return {
-          providerID: model.providerID,
-          modelID: remembered ? remembered.id : model.modelID,
+          providerID: target.providerID,
+          modelID: target.modelID,
           variant: info?.variants.some((item) => item.id === variant) ? variant : undefined,
         }
       }

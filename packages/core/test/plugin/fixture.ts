@@ -33,6 +33,7 @@ import { Plugin } from "@opencode/core/plugin"
 import { PluginHooks } from "@opencode/core/plugin/hooks"
 import { Provider } from "@opencode/core/provider"
 import { Session } from "@opencode/core/session"
+import { SessionInbox } from "@opencode/core/session/inbox"
 import { SharedCache } from "@opencode/core/shared-cache"
 import { InstructionEntry } from "@opencode/core/session/instruction-entry"
 import { SessionStore } from "@opencode/core/session/store"
@@ -141,6 +142,7 @@ export const makePluginTestLayer = (
       Job.node,
       KV.node,
       Mcp.node,
+      SessionInbox.node,
       Session.node,
       SessionStore.node,
       SharedCache.node,

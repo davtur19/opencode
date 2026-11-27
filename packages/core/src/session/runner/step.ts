@@ -60,6 +60,8 @@ interface Input {
     retry: boolean,
   ) => Effect.Effect<{ readonly retry: false } | SessionRunnerRetry.Decision>
   readonly recoverContinuation: boolean
+  /** A tool whose successful call ends this turn without another model step. */
+  readonly endsTurnTool?: string
   /** The runner owns compaction policy; the attempt invokes it only before durable output. */
   readonly recoverOverflow: Effect.Effect<boolean>
   /** Step-scoped so the stall watchdog counts silence that began in an earlier attempt. */
@@ -115,6 +117,7 @@ export const make = Effect.gen(function* () {
       pendingSnapshot: Fiber.join(pendingStartSnapshot),
       started,
     })
+    let endsTurn = false
     const toolRuns: Array<{
       readonly call: ToolCall
       readonly fiber: Fiber.Fiber<void, Permission.DeclinedError | QuestionTool.CancelledError>
@@ -227,7 +230,10 @@ export const make = Effect.gen(function* () {
             fiber: yield* Effect.uninterruptibleMask((restore) =>
               restore(executeTool(event, cancel)).pipe(
                 Effect.flatMap(toolOutput.truncate),
-                Effect.flatMap((outcome) => publisher.toolExecution(event.id, event.name, outcome)),
+                Effect.flatMap((outcome) => {
+                  if (input.endsTurnTool !== undefined && event.name === input.endsTurnTool) endsTurn = true
+                  return publisher.toolExecution(event.id, event.name, outcome)
+                }),
                 Effect.catchTag("Tool.Error", (error) =>
                   publisher.failTool(event.id, toSessionError(error), error.metadata).pipe(Effect.asVoid),
                 ),
@@ -436,7 +442,10 @@ export const make = Effect.gen(function* () {
         if (tools.interrupted && Exit.isFailure(joined)) return yield* Effect.failCause(joined.cause)
         if (record.failure) return yield* new StepFailedError({ error: record.failure })
         const needsContinuation =
-          input.prepared.request.toolChoice?.type !== "none" && record.needsContinuation && !doom.blocked
+          !endsTurn &&
+          input.prepared.request.toolChoice?.type !== "none" &&
+          record.needsContinuation &&
+          !doom.blocked
         if (record.finish?.finish === "length") return Outcome.OutputLimit({ needsContinuation })
         return Outcome.Completed({ needsContinuation })
       }),

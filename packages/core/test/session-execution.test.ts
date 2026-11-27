@@ -46,7 +46,6 @@ import {
   Exit,
   Fiber,
   Layer,
-  LayerMap,
   Logger,
   Schedule,
   Schema,
@@ -2489,7 +2488,9 @@ function attempts(database: Database.Service["Service"], sessionID: Session.ID) 
 /** Builds the local execution layer plus the restart actions against the test harness services. */
 function buildExecution(
   scope: Scope.Closeable,
-  drain: (input: Parameters<SessionRunner.Interface["drain"]>[0]) => Effect.Effect<void, SessionRunner.RunError>,
+  drain: (
+    input: Parameters<SessionRunner.Interface["drain"]>[0],
+  ) => Effect.Effect<void, SessionRunner.RunError, SessionInbox.Service>,
   options?: SessionRestart.Options,
   overrideJobs?: Job.Interface,
   shell?: Shell.Interface,
@@ -2519,12 +2520,16 @@ function buildExecution(
     const runner = Layer.succeed(
       SessionRunner.Service,
       SessionRunner.Service.of({
-        drain: (input) => drain(input).pipe(Effect.as(SessionRunner.DrainResult.Complete())),
+        drain: (input) =>
+          drain(input).pipe(
+            Effect.provideService(SessionInbox.Service, inbox),
+            Effect.as(SessionRunner.DrainResult.Complete()),
+          ),
       }),
     )
     const locations = Layer.effect(
       LocationServiceMap.Service,
-      LayerMap.make(
+      LocationServiceMap.make(
         () =>
           // The local execution test only needs the Session runner (and the Shell, if given) from the Location graph.
           // oxlint-disable-next-line typescript-eslint/no-unsafe-type-assertion
